@@ -7,7 +7,7 @@ torch::Tensor add_tensors(torch::Tensor a, torch::Tensor b)
     return a + b;
 }
 
-// 포인카레 볼 지수 사상 구현
+// 포인카레 볼 지수 사상 구현 (CPU)
 torch::Tensor poincare_exp_map(torch::Tensor x, torch::Tensor v, double c)
 {
     auto x_norm_squared = torch::sum(x * x, -1, true);
@@ -27,6 +27,7 @@ torch::Tensor poincare_exp_map(torch::Tensor x, torch::Tensor v, double c)
     return x + numerator / denominator;
 }
 
+// 포인카레 볼 로그 사상 구현 (CPU)
 torch::Tensor poincare_log_map(torch::Tensor x, torch::Tensor y, double c) {
     auto x_norm_squared = torch::sum(x * x, -1, true);
     auto lambda_x = 2.0 / (1.0 - c * x_norm_squared);
@@ -61,6 +62,7 @@ torch::Tensor poincare_distance(torch::Tensor x, torch::Tensor y, double c) {
     return 2 * torch::atanh(numerator / denominator) / sqrt_c;
 }
 
+// 버터플라이 변환 구현 (CPU)
 torch::Tensor butterfly_factor(torch::Tensor input, torch::Tensor params, int layer) {
     int n = input.size(0);
     int block_size = 1 << layer;
@@ -122,6 +124,12 @@ torch::Tensor hyper_butterfly_forward(torch::Tensor x, torch::Tensor params, dou
     return poincare_exp_map(zeros, u, c);
 }
 
+// 장치 확인 함수
+bool is_cuda_available() {
+    return torch::cuda::is_available();
+}
+
+// 모듈 정의
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 {
     m.def("add_tensors", &add_tensors, "Add two tensors");
@@ -130,4 +138,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     m.def("poincare_distance", &poincare_distance, "Poincare ball distance");
     m.def("butterfly_factor", &butterfly_factor, "Butterfly factor transform");
     m.def("hyper_butterfly_forward", &hyper_butterfly_forward, "Hyper-Butterfly forward pass");
+    m.def("is_cuda_available", &is_cuda_available, "Check if CUDA is available");
 }

@@ -1,9 +1,12 @@
 from setuptools import setup, find_packages
-from torch.utils.cpp_extension import CppExtension, BuildExtension
+from torch.utils.cpp_extension import CppExtension, CUDAExtension, BuildExtension
 import torch
+import os
 
-# CUDA 버전 불일치로 인해 CPU 전용 확장만 사용
-print("CUDA와 PyTorch 버전 불일치로 인해 CPU 확장만 빌드합니다.")
+# Check if CUDA is available
+cuda_available = torch.cuda.is_available()
+
+# Base C++ extension
 ext_modules = [
     CppExtension(
         name="riemannian_manifold._C",
@@ -11,6 +14,24 @@ ext_modules = [
         extra_compile_args=['-O3', '-std=c++14']
     )
 ]
+
+# Add CUDA extension if available
+if cuda_available:
+    print("CUDA is available. Building with CUDA extensions.")
+    cuda_ext = CUDAExtension(
+        name="riemannian_manifold.riemannian_cuda",
+        sources=[
+            "riemannian_manifold/csrc/butterfly_cuda.cu",
+            "riemannian_manifold/csrc/butterfly_gpu.cu"
+        ],
+        extra_compile_args={
+            'cxx': ['-O3', '-std=c++14'],
+            'nvcc': ['-O3', '--use_fast_math', '--expt-extended-lambda']
+        }
+    )
+    ext_modules.append(cuda_ext)
+else:
+    print("CUDA is not available. Building CPU-only extensions.")
 
 setup(
     name="riemannian_manifold",

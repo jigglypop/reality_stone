@@ -2,15 +2,15 @@ from setuptools import setup, find_packages
 from torch.utils.cpp_extension import CppExtension, BuildExtension
 
 setup(
-    name="riemannian_extension",
+    name="riemannian_manifold",
     version="0.1",
-    description="Riemannian manifold operations for PyTorch",
+    description="Efficient Hyper-Butterfly Network for PyTorch",
     author="Your Name",
     author_email="your.email@example.com",
     ext_modules=[
         CppExtension(
-            name="riemannian_extension._C",
-            sources=["riemannian_extension/csrc/extension.cpp"],
+            name="riemannian_manifold._C",
+            sources=["riemannian_manifold/csrc/extension.cpp"],
         ),
     ],
     cmdclass={

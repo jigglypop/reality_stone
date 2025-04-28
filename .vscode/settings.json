@@ -37,13 +37,7 @@
   "C_Cpp_Runner.warningsAsError": false,
   "C_Cpp_Runner.compilerArgs": [],
   "C_Cpp_Runner.linkerArgs": [],
-  "C_Cpp_Runner.includePaths": [
-    "C:/Users/ydh22/Desktop/riemannian/riemannian_manifold/csrc",
-    "C:/Users/ydh22/Desktop/riemannian/venv/Lib/site-packages/torch/include",
-    "C:/Users/ydh22/Desktop/riemannian/venv/Lib/site-packages/torch/include/torch/csrc/api/include",
-    "C:/Users/ydh22/Desktop/riemannian/venv/Lib/site-packages/torch/include/TH",
-    "C:/Users/ydh22/Desktop/riemannian/venv/Lib/site-packages/torch/include/THC"
-  ],
+  "C_Cpp_Runner.includePaths": [],
   "C_Cpp_Runner.includeSearch": [
     "*",
     "**/*"
@@ -66,10 +60,27 @@
     "*.ts": "typescript",
     "*.tsx": "typescriptreact",
     "*.json": "jsonc",
-    "*.cpp": "cmake",
-    "ostream": "cpp"
-  },
-  "cmake.configureSettings": {
-    "CMAKE_PREFIX_PATH": "C:/Users/ydh22/Desktop/riemannian/venv/Lib/site-packages/torch/share/cmake"
+    "*.cpp": "cpp",
+    "random": "cpp",
+    "chrono": "cpp",
+    "algorithm": "cpp",
+    "xiosbase": "cpp",
+    "xlocale": "cpp",
+    "xutility": "cpp",
+    "array": "cpp",
+    "bitset": "cpp",
+    "string_view": "cpp",
+    "initializer_list": "cpp",
+    "regex": "cpp",
+    "utility": "cpp",
+    "valarray": "cpp",
+    "deque": "cpp",
+    "list": "cpp",
+    "queue": "cpp",
+    "stack": "cpp",
+    "vector": "cpp",
+    "xhash": "cpp",
+    "xstring": "cpp",
+    "xtree": "cpp"
   }
 }

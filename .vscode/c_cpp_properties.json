@@ -3,12 +3,7 @@
     {
       "name": "windows-gcc-x86",
       "includePath": [
-        "${workspaceFolder}/**",
-        "C:/Users/ydh22/Desktop/riemannian/riemannian_manifold/csrc",
-        "C:/Users/ydh22/Desktop/riemannian/venv/Lib/site-packages/torch/include",
-        "C:/Users/ydh22/Desktop/riemannian/venv/Lib/site-packages/torch/include/torch/csrc/api/include",
-        "C:/Users/ydh22/Desktop/riemannian/venv/Lib/site-packages/torch/include/TH",
-        "C:/Users/ydh22/Desktop/riemannian/venv/Lib/site-packages/torch/include/THC"
+        "${workspaceFolder}/**"
       ],
       "compilerPath": "C:/MinGW/bin/gcc.exe",
       "cStandard": "${default}",

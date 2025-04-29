@@ -1,8 +1,5 @@
 #pragma once
 #include <torch/extension.h>
-#include "common_defs.h"
-#include "maps.h"
-#include "butterfly.h"
 
 // CPU exports
 torch::Tensor log_map_origin_cpu_export(torch::Tensor x, float c);

@@ -5,13 +5,6 @@
 #include <cuda_runtime.h>
 #include <cmath>
 #include <vector>
-#include "common_defs.h"
-#include "hyper_butterfly.h"
-#include "maps.h"
-#include "butterfly.h"
-
-using riemutils::butterfly_layer_cuda;
-using riemutils::butterfly_layer_backward_cuda;
 
 #define CHECK_CUDA_CONTIGUOUS(x)                                    \
   TORCH_CHECK((x).device().is_cuda(), #x " must be CUDA tensor");   \
@@ -23,10 +16,23 @@ using riemutils::butterfly_layer_backward_cuda;
                 cudaGetErrorString(e));                             \
   } while (0)
 
+static constexpr float EPS = 1e-7f;
+
 // atanh 헬퍼 (clamp 포함)
 __device__ __forceinline__ float atanh_device(float x) {
   x = fminf(fmaxf(x, -1.0f + 1e-6f), 1.0f - 1e-6f);
   return 0.5f * logf((1.0f + x) / (1.0f - x));
+}
+
+// 다음 2의 거듭제곱
+static inline int next_pow2(int v) {
+  v--;
+  v |= v >> 1;
+  v |= v >> 2;
+  v |= v >> 4;
+  v |= v >> 8;
+  v |= v >> 16;
+  return v + 1;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -330,15 +336,13 @@ __global__ void log_map_backward_kernel(
   float norm = sqrtf(s_x2[0]);
   float u    = sqrtf(c)*norm;
   u = fminf(fmaxf(u, 1e-6f), 0.999999f);
-  
-  // atanh(u) 계산
-  float atanhu = 0.5f * logf((1.0f + u) / (1.0f - u));
-  float factor = atanhu/(u + 1e-6f);
+  float numer = atanh_device(u);
+  float factor= numer/(u + 1e-6f);
 
-  float sech2 = 1.0f - u*u;
-  float df_du = (u*sech2 - atanhu)/(u*u);
+  float sech2 = 1.0f - numer*numer;
+  float df_du = (u*sech2 - numer)/(u*u);
   float df_dn = df_du*sqrtf(c);
-  float xdotg = s_xu[0];
+  float xdotg= s_xu[0];
 
   // 2) per-dim gradient
   for (int i = tid; i < D; i += stride) {
@@ -412,10 +416,19 @@ std::vector<torch::Tensor> hyper_butterfly_cuda(
   
   // Step 3: Apply butterfly transforms
   torch::Tensor v = u.clone();
+  int threads = std::min(D_padded, 1024);
+  int blocks = (B * D_padded + threads - 1) / threads;
   
   for (int l = 0; l < L; l++) {
-    int layer_idx = l % int(std::log2(D_padded));
-    v = butterfly_layer_cuda(v, params, layer_idx, B, D_padded);
+    torch::Tensor next_v = torch::empty_like(v);
+    AT_DISPATCH_FLOATING_TYPES(v.scalar_type(), "butterfly_layer_cuda", [&]{
+      butterfly_layer_kernel<scalar_t><<<blocks, threads>>>(
+        v.data_ptr<scalar_t>(),
+        next_v.data_ptr<scalar_t>(),
+        params.data_ptr<scalar_t>(),
+        B, D_padded, l);
+    });
+    v = next_v;
   }
   
   // Step 4: Exp map
@@ -462,10 +475,19 @@ std::vector<torch::Tensor> hyper_butterfly_backward_cuda(
   intermediates.push_back(u);
   
   torch::Tensor v = u.clone();
+  int threads = std::min(D_padded, 1024);
+  int blocks = (B * D_padded + threads - 1) / threads;
   
   for (int l = 0; l < L; l++) {
-    int layer_idx = l % int(std::log2(D_padded));
-    v = butterfly_layer_cuda(v, params, layer_idx, B, D_padded);
+    torch::Tensor next_v = torch::empty_like(v);
+    AT_DISPATCH_FLOATING_TYPES(v.scalar_type(), "butterfly_layer_cuda", [&]{
+      butterfly_layer_kernel<scalar_t><<<blocks, threads>>>(
+        v.data_ptr<scalar_t>(),
+        next_v.data_ptr<scalar_t>(),
+        params.data_ptr<scalar_t>(),
+        B, D_padded, l);
+    });
+    v = next_v;
     intermediates.push_back(v);
   }
   
@@ -475,10 +497,9 @@ std::vector<torch::Tensor> hyper_butterfly_backward_cuda(
   // Step 3: Backward pass
   // Starting with grad_out at exp_map
   torch::Tensor grad_v = torch::zeros_like(v);
-  int threads = std::min(D_padded, 1024);
-  int shbytes = 2 * sizeof(float);
+  int shbytes = sizeof(float);
   
-  // Backward through exp_map
+  // Exp map backward
   AT_DISPATCH_FLOATING_TYPES(v.scalar_type(), "exp_map_backward_cuda", [&]{
     exp_map_backward_kernel<scalar_t><<<B, threads, shbytes>>>(
       v.data_ptr<scalar_t>(),
@@ -487,109 +508,36 @@ std::vector<torch::Tensor> hyper_butterfly_backward_cuda(
       c, B, D_padded);
   });
   
-  // Backward through butterfly layers
-  auto grad_params = torch::zeros_like(params);
-  auto grad_u = torch::zeros_like(u);
+  // Butterfly layers backward
+  torch::Tensor grad_params = torch::zeros_like(params);
   
-  // Final layer's grad_out is grad_v
-  torch::Tensor grad_curr = grad_v;
-  
-  // Backward through butterfly layers (in reverse order)
   for (int l = L-1; l >= 0; l--) {
-    int layer_idx = l % int(std::log2(D_padded));
-    torch::Tensor input = intermediates[l];
-    
-    // Butterfly backward
-    auto result = butterfly_layer_backward_cuda(
-      grad_curr, input, params, layer_idx);
-    
-    torch::Tensor grad_input = result[0];
-    torch::Tensor layer_grad_params = result[1];
-    
-    // Accumulate parameter gradients
-    int p_offset = 0;
-    for (int i = 0; i < layer_idx; i++) {
-      int block_size = 1 << i;
-      p_offset += 2 * (D_padded / (2 * block_size));
-    }
-    int p_size = 2 * (D_padded / (2 * (1 << layer_idx)));
-    grad_params.narrow(0, p_offset, p_size).add_(layer_grad_params.narrow(0, p_offset, p_size));
-    
-    // Update grad for next layer
-    grad_curr = grad_input;
+    torch::Tensor grad_prev_v = torch::zeros_like(intermediates[l]);
+    AT_DISPATCH_FLOATING_TYPES(grad_v.scalar_type(), "butterfly_backward_cuda", [&]{
+      butterfly_layer_backward_kernel<scalar_t><<<blocks, threads>>>(
+        grad_v.data_ptr<scalar_t>(),
+        intermediates[l].data_ptr<scalar_t>(),
+        grad_prev_v.data_ptr<scalar_t>(),
+        params.data_ptr<scalar_t>(),
+        grad_params.data_ptr<scalar_t>(),
+        B, D_padded, l);
+    });
+    grad_v = grad_prev_v;
   }
   
-  // Set grad_u for log_map backward
-  grad_u = grad_curr;
-  
-  // Backward through log_map
+  // Log map backward
   torch::Tensor grad_x_padded = torch::zeros_like(x_padded);
-  AT_DISPATCH_FLOATING_TYPES(x_padded.scalar_type(), "log_map_backward_cuda", [&]{
+  AT_DISPATCH_FLOATING_TYPES(u.scalar_type(), "log_map_backward_cuda", [&]{
     log_map_backward_kernel<scalar_t><<<B, threads, shbytes>>>(
       x_padded.data_ptr<scalar_t>(),
-      grad_u.data_ptr<scalar_t>(),
+      grad_v.data_ptr<scalar_t>(),
       grad_x_padded.data_ptr<scalar_t>(),
       c, B, D_padded);
   });
   
-  // Get gradients for original dimensions
+  // Step 6: Slice gradient to original dimension if needed
   torch::Tensor grad_x = (D_padded > D) ? grad_x_padded.narrow(1, 0, D) : grad_x_padded;
   
   return {grad_x, grad_params};
 }
-
-namespace riemutils {
-
-torch::Tensor butterfly_layer_cuda(
-    torch::Tensor input,
-    torch::Tensor params,
-    int layer_idx,
-    int batch_size,
-    int dim) {
-    
-    auto output = torch::empty_like(input);
-    dim3 grid(std::min((batch_size * dim + 511) / 512, 1024));
-    dim3 block(512);
-    
-    AT_DISPATCH_FLOATING_TYPES(input.scalar_type(), "butterfly_layer_cuda", ([&] {
-        butterfly_layer_kernel<scalar_t><<<grid, block>>>(
-            input.data_ptr<scalar_t>(),
-            output.data_ptr<scalar_t>(),
-            params.data_ptr<scalar_t>(),
-            batch_size, dim, layer_idx);
-    }));
-    
-    CUDA_CHECK(cudaGetLastError());
-    return output;
-}
-
-std::vector<torch::Tensor> butterfly_layer_backward_cuda(
-    torch::Tensor grad_out,
-    torch::Tensor input,
-    torch::Tensor params,
-    int layer_idx) {
-    
-    auto grad_input = torch::zeros_like(input);
-    auto grad_params = torch::zeros_like(params);
-    int batch_size = input.size(0);
-    int dim = input.size(1);
-    
-    dim3 grid(std::min((batch_size * dim + 511) / 512, 1024));
-    dim3 block(512);
-    
-    AT_DISPATCH_FLOATING_TYPES(input.scalar_type(), "butterfly_layer_backward_cuda", ([&] {
-        butterfly_layer_backward_kernel<scalar_t><<<grid, block>>>(
-            grad_out.data_ptr<scalar_t>(),
-            input.data_ptr<scalar_t>(),
-            grad_input.data_ptr<scalar_t>(),
-            params.data_ptr<scalar_t>(),
-            grad_params.data_ptr<scalar_t>(),
-            batch_size, dim, layer_idx);
-    }));
-    
-    CUDA_CHECK(cudaGetLastError());
-    return {grad_input, grad_params};
-}
-
-} // namespace riemutils
 

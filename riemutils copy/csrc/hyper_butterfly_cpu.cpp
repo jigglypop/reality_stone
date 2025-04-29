@@ -2,19 +2,52 @@
 #include <cmath>
 #include <vector>
 #include "hyper_butterfly.h"
-#include "maps.h"
-#include "butterfly.h"
 
 // CPU에서의 로그 맵 구현 (클램핑 적용)
 torch::Tensor log_map_origin_cpu_export(torch::Tensor x, float c)
 {
-    return riemutils::log_map_origin_cpu(x, c);
+    // 최소 norm과 분모 안전화를 위한 EPS
+    static constexpr float EPS = 1e-6f;
+
+    // 1) 각 배치별 L2 norm 계산 및 최소값 클램핑
+    auto norm = torch::norm(x, 2, 1, true).clamp(EPS);
+    float sqrt_c = std::sqrt(c);
+
+    // 2) atanh 인자 클램핑: [EPS, 1 - 1e-6]
+    auto scn = (sqrt_c * norm).clamp(EPS, 1.0f - 1e-6f);
+
+    // 3) 분모 안전화
+    auto denom = scn + EPS;
+
+    // 4) atanh 계산
+    auto numer = torch::atanh(scn);
+    auto factor = numer / denom;
+
+    // 5) 최종 스케일 적용
+    return factor * x;
 }
 
 // CPU에서의 지수 맵 구현 (클램핑 적용)
 torch::Tensor exp_map_origin_cpu_export(torch::Tensor v, float c)
 {
-    return riemutils::exp_map_origin_cpu(v, c);
+    static constexpr float EPS = 1e-6f;
+
+    // 1) 각 배치별 L2 norm 계산 및 최소값 클램핑
+    auto norm = torch::norm(v, 2, 1, true).clamp(EPS);
+    float sqrt_c = std::sqrt(c);
+
+    // 2) tanh 인자 클램핑: [EPS, 10]
+    auto scn = (sqrt_c * norm).clamp(EPS, 10.0f);
+
+    // 3) 분모에 여유를 더 준다
+    auto denom = scn + 1e-3f;
+
+    // 4) tanh 계산
+    auto numer = torch::tanh(scn);
+    auto factor = numer / denom;
+
+    // 5) 최종 스케일 적용
+    return factor * v;
 }
 
 // 단일 Butterfly 레이어 적용
@@ -69,7 +102,7 @@ std::vector<torch::Tensor> hyper_butterfly_cpu_export(
     for (int l = 0; l < L; ++l)
     {
         int layer_idx = l % int(std::log2(dim));
-        v = riemutils::butterfly_layer_cpu(v, params, layer_idx, batch_size, dim);
+        v = butterfly_layer_cpu(v, params, layer_idx, batch_size, dim);
     }
 
     // 3) 지수 맵 적용

@@ -1,8 +1,5 @@
 #include <torch/extension.h>
-#include "common_defs.h"
 #include "hyper_butterfly.h"
-#include "maps.h"
-#include "butterfly.h"
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     // CPU exports - 포인터 형식으로 함수 참조

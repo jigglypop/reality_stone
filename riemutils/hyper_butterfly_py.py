@@ -1,6 +1,7 @@
+# riemutils/csrc/hyper_butterfly_py.py
+
 import torch
 import math
-
 
 def log_map(x: torch.Tensor, c: float) -> torch.Tensor:
     """

@@ -1,3 +1,5 @@
+# riemutils/__init__.py
+
 import torch
 from torch.autograd import Function
 
@@ -44,8 +46,6 @@ class HyperButterflyFunction(Function):
     def backward(ctx, grad_out):
         x, params = ctx.saved_tensors
         c, L = ctx.c, ctx.L
-        # If C++ extension provides backward (it doesn't), else use autograd via PyTorch
-        # So call Python fn under autograd tracking off
         with torch.enable_grad():
             x_req = x.detach().requires_grad_()
             p_req = params.detach().requires_grad_()

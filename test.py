@@ -4,10 +4,10 @@ import torch.nn as nn
 import torch.optim as optim
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
-import riemutils
+import hyper_butterfly as hb
 
 # 확인: hyper_butterfly 바인딩
-print("hyper_butterfly binding:", riemutils.hyper_butterfly)
+print("hyper_butterfly binding:", hb.hyper_butterfly)
 
 # 1) Euclid MLP
 class EuclidMLP(nn.Module):
@@ -47,7 +47,7 @@ class HyperMLP(nn.Module):
         h = torch.relu(self.fc1(x))
 
         # Hyper-Butterfly 적용
-        u = riemutils.hyper_butterfly(h, self.params, self.c, self.L)
+        u = hb.hyper_butterfly(h, self.params, self.c, self.L)
 
         # NaN 감지 및 대체
         if torch.isnan(u).any():

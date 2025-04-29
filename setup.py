@@ -1,5 +1,17 @@
 from setuptools import setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
+import os
+
+# 컴파일러 플래그 설정
+extra_compile_args = {
+    "cxx": ["-O3"],
+    "nvcc": [
+        "-O3", 
+        "--extended-lambda",
+        "-Xcompiler", 
+        "/MD" 
+    ]
+}
 
 setup(
     name="riemutils",
@@ -13,10 +25,7 @@ setup(
             ],
             include_dirs=["riemutils/csrc"],
             define_macros=[("WITH_CUDA", None)],
-            extra_compile_args={
-                "cxx": ["-O3", "/std:c++17"],
-                "nvcc": ["-O3", "-std=c++14"]
-            },
+            extra_compile_args=extra_compile_args,
         )
     ],
     cmdclass={"build_ext": BuildExtension},

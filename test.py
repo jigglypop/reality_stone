@@ -27,10 +27,8 @@ class HyperMLP(nn.Module):
         super().__init__()
         self.c = c
         self.L = L
-
         # 입력→hidden 변환
         self.fc1 = nn.Linear(in_dim, hid)
-
         # hid 기반 파라미터 수 계산 및 작은 스케일 초기화
         log2_hid = int(torch.log2(torch.tensor(hid)).item())
         total_params = 0
@@ -94,7 +92,7 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     batch_size = 256
     lr = 1e-3
-    epochs = 5
+    epochs = 10
 
     transform = transforms.Compose([
         transforms.ToTensor(),

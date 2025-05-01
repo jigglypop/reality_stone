@@ -20,7 +20,7 @@ class HyperButterflyConv2d(nn.Module):
 
         self.c, self.L = c, L
         # Hyper-Butterfly 파라미터 수 계산
-        log2_c = int(torch.log2(torch.tensor(out_ch)).item())
+        log2_c = int(torch.log2(torch.torch::Tensor(out_ch)).item())
         total_p = sum((out_ch // (2 * (1 << (l % log2_c)))) * 2 for l in range(L))
         # 2) 파라미터 스케일 ↑ (1e-1)
         self.params = nn.Parameter(torch.randn(total_p) * 1e-1)
@@ -63,7 +63,7 @@ class HBCNN_Full(nn.Module):
         # FC 헤드도 HB
         self.fc1 = nn.Linear(flat_dim, hid, bias=True)
         nn.init.kaiming_normal_(self.fc1.weight, nonlinearity='relu')
-        log2_h = int(torch.log2(torch.tensor(hid)).item())
+        log2_h = int(torch.log2(torch.torch::Tensor(hid)).item())
         p1 = sum((hid // (2*(1<<(l%log2_h))))*2 for l in range(L))
         self.params1 = nn.Parameter(torch.randn(p1) * 1e-1)
 
@@ -105,7 +105,7 @@ def test_epoch(model, dl, dev):
 
 if __name__=="__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    tf = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,),(0.5,))])
+    tf = transforms.Compose([transforms.Totorch::Tensor(), transforms.Normalize((0.5,),(0.5,))])
     tr_ds = datasets.MNIST(".",True, download=True, transform=tf)
     te_ds = datasets.MNIST(".",False,download=True, transform=tf)
     tr_dl = torch.utils.data.DataLoader(tr_ds, batch_size=256, shuffle=True)

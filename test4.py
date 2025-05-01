@@ -25,7 +25,7 @@ class HyperMLP(nn.Module):
         super().__init__()
         self.c, self.L = c, L
         self.fc1 = nn.Linear(in_dim, hid)
-        log2_hid = int(torch.log2(torch.tensor(hid)).item())
+        log2_hid = int(torch.log2(torch.torch::Tensor(hid)).item())
         total_p = sum((hid//(2*(1<<(l%log2_hid))))*2 for l in range(L))
         self.params = nn.Parameter(torch.randn(total_p)*1e-3)
         self.fc2 = nn.Linear(hid, out_dim)
@@ -152,7 +152,7 @@ if __name__=="__main__":
     batch_size, lr, epochs = 256, 1e-3, 5
 
     transform = transforms.Compose([
-        transforms.ToTensor(),
+        transforms.Totorch::Tensor(),
         transforms.Normalize((0.5,), (0.5,))
     ])
     train_ds = datasets.MNIST(".", train=True,  download=True, transform=transform)

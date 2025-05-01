@@ -39,7 +39,7 @@
 # 
 #     @staticmethod
 #     def backward(ctx, grad_out):
-#         x, params = ctx.saved_tensors
+#         x, params = ctx.saved_Tensors
 #         c, L = ctx.c, ctx.L
 #         if x.is_cuda and _has_cuda:
 #             grad_x, grad_p = hyper_butterfly_backward_cuda(
@@ -68,10 +68,6 @@ from ._C import (
     log_map_cpu,
     exp_map_cpu,
     butterfly_forward_cpu,
-    butterfly_backward_cpu,
-    log_map_backward_cpu,
-    exp_map_backward_cpu,
-
 )
 
 _has_cuda = False
@@ -95,18 +91,15 @@ class HyperButterflyFunction(Function):
     def forward(ctx, x, params, c, L):
         ctx.save_for_backward(x, params)
         ctx.c, ctx.L = c, L
-        
         # 로그 맵 적용
         if x.is_cuda and _has_cuda:
             u = log_map_cuda(x, c)
         else:
             u = log_map_cpu(x, c)
-        
         # 버터플라이 변환 적용
         v = u.clone()
         batch_size, dim = x.shape
-        log2_dim = int(torch.log2(torch.tensor(dim)).item())
-        
+        log2_dim = int(torch.log2(torch.tensor(float(dim))).item())
         for l in range(L):
             layer_idx = l % log2_dim
             if v.is_cuda and _has_cuda:
@@ -119,11 +112,9 @@ class HyperButterflyFunction(Function):
             y = exp_map_cuda(v, c)
         else:
             y = exp_map_cpu(v, c)
-        
         # 중간 결과 저장 (역전파용)
         ctx.save_for_backward(x, params)
         ctx.intermediate = (u, v)
-        
         return y
 
     @staticmethod
@@ -132,19 +123,15 @@ class HyperButterflyFunction(Function):
         c, L = ctx.c, ctx.L
         u, v = ctx.intermediate
         batch_size, dim = x.shape
-        log2_dim = int(torch.log2(torch.tensor(dim)).item())
-        
+        log2_dim = int(torch.log2(torch.tensor(float(dim))).item())
         if x.is_cuda and _has_cuda:
             # 지수 맵 역전파 (C++ 구현 사용)
             grad_v = exp_map_backward_cuda(grad_out.contiguous(), v, c)[0]
-            
             # 버터플라이 네트워크 역전파 (레이어별로 역순으로)
             grad_params = torch.zeros_like(params)
             current_grad = grad_v
-            
             for l in range(L-1, -1, -1):
                 layer_idx = l % log2_dim
-                
                 # 단일 레이어 역전파 (C++ 구현 사용)
                 layer_grads = butterfly_backward_cuda(
                     current_grad, 
@@ -152,10 +139,8 @@ class HyperButterflyFunction(Function):
                     params, 
                     layer_idx
                 )
-                
                 current_grad = layer_grads[0]  # 입력에 대한 그래디언트
                 grad_params += layer_grads[1]  # 파라미터 그래디언트 누적
-            
             # 로그 맵 역전파 (C++ 구현 사용)
             grad_x = log_map_backward_cuda(current_grad, x, c)[0]
         else:
@@ -163,19 +148,15 @@ class HyperButterflyFunction(Function):
             with torch.enable_grad():
                 x_req = x.detach().requires_grad_()
                 p_req = params.detach().requires_grad_()
-                
                 # forward 과정 수행
                 u_req = log_map_cpu(x_req, c)
                 v_req = u_req.clone()
-                
                 for l in range(L):
                     layer_idx = l % log2_dim
                     v_req = butterfly_forward_cpu(v_req, p_req, layer_idx, batch_size, dim)
                 y_req = exp_map_cpu(v_req, c)
-                
                 # 그래디언트 계산
                 grad_x, grad_params = torch.autograd.grad(y_req, (x_req, p_req), grad_outputs=grad_out)
-        
         return grad_x, grad_params, None, None
 # 메인 API 함수
 def hyper_butterfly(x: torch.Tensor, params: torch.Tensor, c: float, L: int):

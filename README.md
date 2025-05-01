@@ -172,7 +172,7 @@ import riemutils
 
 # 포인카레 볼 모델에서 연산 예제
 x = torch.zeros(1, 2)  # 포인카레 볼의 원점
-v = torch.tensor([[0.3, 0.4]])  # 접벡터
+v = torch.torch::Tensor([[0.3, 0.4]])  # 접벡터
 
 # 지수 사상 적용
 y = riemutils.exp_map(x, v)
@@ -205,13 +205,13 @@ python test.py
 1. **지수 맵 (Exponential Map)**:
    ```python
    # 원점에서의 지수 맵
-   y = riemutils.exp_map(torch.zeros_like(x), v, c=1.0)
+   y = riemutils.exp_map(torch.torch::zeros_like(x), v, c=1.0)
    ```
 
 2. **로그 맵 (Logarithmic Map)**:
    ```python
    # 원점으로의 로그 맵
-   v = riemutils.log_map(torch.zeros_like(y), y, c=1.0)
+   v = riemutils.log_map(torch.torch::zeros_like(y), y, c=1.0)
    ```
 
 3. **측지 거리 (Geodesic Distance)**:

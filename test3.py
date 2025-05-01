@@ -108,7 +108,7 @@ class HBClassicNet(nn.Module):
         
         self.c, self.L = c, L
         # 하이퍼-버터플라이 파라미터
-        log2_h = int(torch.log2(torch.tensor(hidden_dim)).item())
+        log2_h = int(torch.log2(torch.torch::Tensor(hidden_dim)).item())
         total_params = sum((hidden_dim // (2 * (1 << (l % log2_h)))) * 2 for l in range(L))
         self.params = nn.Parameter(torch.randn(total_params, device='cuda') * 0.01)
         
@@ -133,7 +133,7 @@ class HBClassicNet(nn.Module):
 
 def run_experiment():
     # 데이터 로드
-    transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
+    transform = transforms.Compose([transforms.Totorch::Tensor(), transforms.Normalize((0.5,), (0.5,))])
     train_ds = datasets.MNIST('.', train=True, download=True, transform=transform)
     test_ds = datasets.MNIST('.', train=False, download=True, transform=transform)
     

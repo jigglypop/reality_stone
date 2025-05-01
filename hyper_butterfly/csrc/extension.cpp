@@ -24,59 +24,62 @@
 // core/csrc/extension.cpp
 #include <torch/extension.h>
 #include "utils/common_defs.h"
-#include "geometry/base_poincare.h"
-#include "geometry/poincare/forward_poincare.h"
+// #include "geometry/base_poincare.h"
+// #include "geometry/poincare/forward_poincare.h"
+// #include "geometry/poincare/poincare_backward.h"
+// #include "ops/butterfly/forward_butterfly.h"
+// #include "ops/butterfly/backward_butterfly.h"
+#include "geometry/poincare/poincare_forward.h"
 #include "geometry/poincare/poincare_backward.h"
-#include "ops/butterfly/forward_butterfly.h"
-#include "ops/butterfly/backward_butterfly.h"
+#include "ops/butterfly/butterfly_forward.h"
+#include "ops/butterfly/butterfly_backward.h"
+#include "geometry/poincare_base.h"
 
-use namespace std;
-use namespace torch;
 // CPU 함수 선언
-Tensor log_map_cpu_export(Tensor x, float c);
-Tensor exp_map_cpu_export(Tensor v, float c);
-Tensor butterfly_forward_cpu_export(
-    Tensor input,
-    Tensor params,
+torch::Tensor log_map_cpu_export(torch::Tensor x, float c);
+torch::Tensor exp_map_cpu_export(torch::Tensor v, float c);
+torch::Tensor butterfly_forward_cpu_export(
+    torch::Tensor input,
+    torch::Tensor params,
     int layer_idx,
     int batch_size,
     int dim);
-vector<Tensor> log_map_backward_cpu_export(
-    Tensor grad_output,
-    Tensor x,
+std::vector<torch::Tensor> log_map_backward_cpu_export(
+    torch::Tensor grad_output,
+    torch::Tensor x,
     float c);
-vector<Tensor> exp_map_backward_cpu_export(
-    Tensor grad_output,
-    Tensor v,
+std::vector<torch::Tensor> exp_map_backward_cpu_export(
+    torch::Tensor grad_output,
+    torch::Tensor v,
     float c);
 
 #ifdef WITH_CUDA
 // CUDA 함수 선언
-Tensor log_map_cuda_export(Tensor x, float c);
-Tensor exp_map_cuda_export(Tensor v, float c);
-Tensor butterfly_forward_cuda_export(
-    Tensor input,
-    Tensor params,
+torch::Tensor log_map_cuda_export(torch::Tensor x, float c);
+torch::Tensor exp_map_cuda_export(torch::Tensor v, float c);
+torch::Tensor butterfly_forward_cuda_export(
+    torch::Tensor input,
+    torch::Tensor params,
     int layer_idx,
     int batch_size,
     int dim);
-vector<Tensor> butterfly_backward_cuda_export(
-    Tensor grad_out,
-    Tensor input,
-    Tensor params,
+std::vector<torch::Tensor> butterfly_backward_cuda_export(
+    torch::Tensor grad_out,
+    torch::Tensor input,
+    torch::Tensor params,
     int layer_idx);
-vector<Tensor> log_map_backward_cuda_export(
-    Tensor grad_output,
-    Tensor x,
+std::vector<torch::Tensor> log_map_backward_cuda_export(
+    torch::Tensor grad_output,
+    torch::Tensor x,
     float c);
-vector<Tensor> exp_map_backward_cuda_export(
-    Tensor grad_output,
-    Tensor v,
+std::vector<torch::Tensor> exp_map_backward_cuda_export(
+    torch::Tensor grad_output,
+    torch::Tensor v,
     float c);
 #endif
 
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
-{
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     // CPU exports
     m.def("log_map_cpu", &log_map_cpu_export, "Log map (CPU)");
     m.def("exp_map_cpu", &exp_map_cpu_export, "Exp map (CPU)");

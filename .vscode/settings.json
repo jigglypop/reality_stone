@@ -78,7 +78,7 @@
     "list": "cpp",
     "queue": "cpp",
     "stack": "cpp",
-    "vector": "cpp",
+    "std::vector": "cpp",
     "xhash": "cpp",
     "xstring": "cpp",
     "xtree": "cpp",
@@ -144,5 +144,5 @@
     "xloctime": "cpp",
     "xmemory": "cpp",
     "xtr1common": "cpp"
-  }
+  },
 }

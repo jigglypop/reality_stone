@@ -1,16 +1,16 @@
-#include "forward_butterfly.h"
+#include "butterfly_forward.h"
 
-namespace hyper_butterfly
-{
-    namespace ops
-    {
-        namespace butterfly
-        {
+using namespace std;
+using namespace torch;
 
-            // 헤더에 인라인으로 이미 구현되어 있음
+namespace hyper_butterfly {
+namespace ops {
+namespace butterfly {
 
-        } // namespace butterfly
-    } // namespace transforms
+// 헤더에 인라인으로 이미 구현되어 있음
+
+} // namespace butterfly
+} // namespace transforms
 } // namespace core
 
 // Python 바인딩을 위한 함수
@@ -19,8 +19,7 @@ torch::Tensor butterfly_forward_cpu_export(
     torch::Tensor params,
     int layer_idx,
     int batch_size,
-    int dim)
-{
+    int dim) {
     return hyper_butterfly::ops::butterfly::butterfly_forward_cpu(
         input, params, layer_idx, batch_size, dim);
 }

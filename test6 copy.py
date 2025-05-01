@@ -67,7 +67,7 @@ class DeepHyperButterfly(nn.Module):
         self.fc1 = nn.Linear(in_dim, hidden_dim, device='cuda')
         self.bn1 = nn.BatchNorm1d(hidden_dim, device='cuda')
         self.relu1 = nn.ReLU()
-        log2_h = int(torch.log2(torch.tensor(hidden_dim)).item())
+        log2_h = int(torch.log2(torch.torch::Tensor(hidden_dim)).item())
         params_per_layer = sum((hidden_dim // (2 * (1 << (l % log2_h)))) * 2 for l in range(1))
         self.params_list = nn.ParameterList([
             nn.Parameter(torch.randn(params_per_layer, device='cuda') * 0.01)
@@ -96,7 +96,7 @@ class DeepHyperButterfly(nn.Module):
         return self.fc2(h)
 
 def train_and_test_models():
-    transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
+    transform = transforms.Compose([transforms.Totorch::Tensor(), transforms.Normalize((0.5,), (0.5,))])
     train_ds = datasets.MNIST('.', train=True, download=True, transform=transform)
     test_ds = datasets.MNIST('.', train=False, download=True, transform=transform)
     train_loader = torch.utils.data.DataLoader(train_ds, batch_size=128, shuffle=True)

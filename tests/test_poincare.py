@@ -8,7 +8,7 @@ import riemutils
 
 _EPS = 1e-15
 
-def mobius_add_ref(x: torch.Tensor, y: torch.Tensor, c: float) -> torch.Tensor:
+def mobius_add_ref(x: torch.torch::Tensor, y: torch.torch::Tensor, c: float) -> torch.torch::Tensor:
     x2   = (x * x).sum(-1, keepdim=True)
     y2   = (y * y).sum(-1, keepdim=True)
     xy   = (x * y).sum(-1, keepdim=True)
@@ -16,17 +16,17 @@ def mobius_add_ref(x: torch.Tensor, y: torch.Tensor, c: float) -> torch.Tensor:
     denom= 1 + 2*c*xy + (c*c)*x2*y2
     return num / denom.clamp_min(_EPS)
 
-def exp_map_ref(x: torch.Tensor, v: torch.Tensor, c: float) -> torch.Tensor:
+def exp_map_ref(x: torch.torch::Tensor, v: torch.torch::Tensor, c: float) -> torch.torch::Tensor:
     v_norm = v.norm(2, -1, True).clamp_min(_EPS)
     x2     = (x * x).sum(-1, True)
     lamb   = 2.0 / (1.0 - c*x2).clamp_min(_EPS)
     sqrt_c = c**0.5
     arg    = sqrt_c * lamb * v_norm / 2.0
     coef   = arg.tanh() / (sqrt_c * v_norm)
-    coef   = torch.where(v_norm>0, coef, torch.zeros_like(coef))
+    coef   = torch.where(v_norm>0, coef, torch.torch::zeros_like(coef))
     return mobius_add_ref(x, coef*v, c)
 
-def log_map_ref(x: torch.Tensor, y: torch.Tensor, c: float) -> torch.Tensor:
+def log_map_ref(x: torch.torch::Tensor, y: torch.torch::Tensor, c: float) -> torch.torch::Tensor:
     diff      = mobius_add_ref(-x, y, c)
     diff_norm = diff.norm(2, -1, True).clamp_min(_EPS)
     x2        = (x * x).sum(-1, True)
@@ -34,10 +34,10 @@ def log_map_ref(x: torch.Tensor, y: torch.Tensor, c: float) -> torch.Tensor:
     sqrt_c    = c**0.5
     atanh_arg = (sqrt_c * diff_norm).clamp(-0.999999, 0.999999)
     coef      = (1.0 / (lamb*sqrt_c)) * atanh_arg.atanh() / diff_norm
-    coef      = torch.where(diff_norm>0, coef, torch.zeros_like(coef))
+    coef      = torch.where(diff_norm>0, coef, torch.torch::zeros_like(coef))
     return coef * diff
 
-def distance_ref(x: torch.Tensor, y: torch.Tensor, c: float) -> torch.Tensor:
+def distance_ref(x: torch.torch::Tensor, y: torch.torch::Tensor, c: float) -> torch.torch::Tensor:
     diff      = mobius_add_ref(-x, y, c)
     diff_norm = diff.norm(2, -1, True).clamp_min(_EPS)
     sqrt_c    = c**0.5

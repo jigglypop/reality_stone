@@ -36,13 +36,14 @@ try:
                     # 메인 확장 파일
                     "hyper_butterfly/csrc/extension.cpp",
                     # 포앵카레 기하학 구현
-                    "hyper_butterfly/csrc/geometry/poincare/forward_poincare_cpu.cpp",
-                    "hyper_butterfly/csrc/geometry/poincare/forward_poincare_gpu.cu",
+                    "hyper_butterfly/csrc/geometry/poincare/poincare_forward_cpu.cpp",
+                    "hyper_butterfly/csrc/geometry/poincare/poincare_backward_cpu.cpp",
+                    "hyper_butterfly/csrc/geometry/poincare/poincare_forward_gpu.cu",
                     "hyper_butterfly/csrc/geometry/poincare/poincare_backward_gpu.cu",
                     # 버터플라이 변환 구현
-                    "hyper_butterfly/csrc/ops/butterfly/forward_butterfly_cpu.cpp",
-                    "hyper_butterfly/csrc/ops/butterfly/forward_butterfly_gpu.cu",
-                    "hyper_butterfly/csrc/ops/butterfly/backward_butterfly_gpu.cu",
+                    "hyper_butterfly/csrc/ops/butterfly/butterfly_forward_cpu.cpp",
+                    "hyper_butterfly/csrc/ops/butterfly/butterfly_forward_gpu.cu",
+                    "hyper_butterfly/csrc/ops/butterfly/butterfly_backward_gpu.cu",
                 ],
                 # 헤더(.h) 검색 경로
                 include_dirs=[
@@ -79,9 +80,9 @@ try:
                 name="hyper_butterfly._C",
                 sources=[
                     "hyper_butterfly/csrc/extension.cpp",
-                    "hyper_butterfly/csrc/geometry/poincare/forward_poincare_cpu.cpp",
-                    "hyper_butterfly/csrc/ops/butterfly/forward_butterfly_cpu.cpp",
+                    "hyper_butterfly/csrc/geometry/poincare/poincare_forward_cpu.cpp",
                     "hyper_butterfly/csrc/geometry/poincare/poincare_backward_cpu.cpp",
+                    "hyper_butterfly/csrc/ops/butterfly/butterfly_forward_cpu.cpp",
                 ],
                 include_dirs=[
                     "hyper_butterfly/csrc",

@@ -221,7 +221,7 @@ rich==13.9.3
 riemannian-manifold==0.1
 -e git+https://github.com/jigglypop/riemutils.git@92f2179aa94679b17dd6ca0694413e0857bd8d02#egg=riemutils
 rsa==4.9
-safetensors==0.4.5
+safetorch::Tensors==0.4.5
 scikit-image==0.24.0
 scikit-learn==1.5.2
 scipy==1.14.1
@@ -236,13 +236,13 @@ SQLAlchemy==2.0.36
 starlette==0.41.2
 sympy==1.13.1
 tenacity==9.0.0
-tensorboard==2.13.0
-tensorboard-data-server==0.7.2
-tensorflow==2.13.0
-tensorflow-cpu==2.15.0
-tensorflow-estimator==2.13.0
-tensorflow-intel==2.13.0
-tensorflow-io-gcs-filesystem==0.31.0
+torch::Tensorboard==2.13.0
+torch::Tensorboard-data-server==0.7.2
+torch::Tensorflow==2.13.0
+torch::Tensorflow-cpu==2.15.0
+torch::Tensorflow-estimator==2.13.0
+torch::Tensorflow-intel==2.13.0
+torch::Tensorflow-io-gcs-filesystem==0.31.0
 termcolor==2.5.0
 threadpoolctl==3.5.0
 tifffile==2024.9.20

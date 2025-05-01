@@ -1,8 +1,8 @@
 #pragma once
 #include <torch/extension.h>
-#include "common_defs.h"
+#include <hyper_butterfly/utils/common_defs.h>
 
-namespace riemutils {
+namespace hyper_butterfly {
 
 // CPU 함수 선언
 torch::Tensor butterfly_layer_cpu(
@@ -35,7 +35,7 @@ inline torch::Tensor butterfly_layer_cpu(
     int layer_idx,
     int batch_size,
     int dim) {
-    
+
     auto output = torch::empty_like(input);
     AT_DISPATCH_FLOATING_TYPES(input.scalar_type(), "butterfly_layer_cpu", ([&] {
         const auto* x_ptr = input.data_ptr<scalar_t>();
@@ -50,16 +50,16 @@ inline torch::Tensor butterfly_layer_cpu(
                 bool hi = loc >= block_size;
                 int off = loc % block_size;
                 int pidx = blk * 2;
-                scalar_t a  = p_ptr[pidx];
-                scalar_t bb = p_ptr[pidx+1];
+                scalar_t a = p_ptr[pidx];
+                scalar_t bb = p_ptr[pidx + 1];
                 int base = b * dim + blk * 2 * block_size;
                 scalar_t x1 = x_ptr[base + off];
                 scalar_t x2 = x_ptr[base + off + block_size];
-                y_ptr[b*dim + f] = hi ? (-bb * x1 + a * x2) : (a * x1 + bb * x2);
+                y_ptr[b * dim + f] = hi ? (-bb * x1 + a * x2) : (a * x1 + bb * x2);
             }
         }
-    }));
+        }));
     return output;
 }
 
-} // namespace riemutils 
+} // namespace hyper_butterfly 

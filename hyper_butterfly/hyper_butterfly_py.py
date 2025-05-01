@@ -1,4 +1,4 @@
-# riemutils/csrc/hyper_butterfly_py.py
+# hyper_butterfly/csrc/hyper_butterfly_py.py
 
 import torch
 import math

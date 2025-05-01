@@ -1,7 +1,7 @@
 #include <torch/extension.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
-#include "common_defs.h"
+#include <hyper_butterfly/utils/common_defs.h>
 #include "butterfly.h"
 
 // 버터플라이 레이어 역전파 커널

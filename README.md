@@ -9,6 +9,51 @@
 
 **HyperButterfly**는 하이퍼볼릭 공간에서의 기하학적 딥러닝을 위한 고성능 PyTorch 확장 라이브러리입니다. 리만 다양체, 특히 하이퍼볼릭 공간에서의 효율적인 연산과 Butterfly 팩터를 통한 효율적인 변환 구현을 제공합니다. CUDA 가속을 활용하여 대규모 데이터셋에서도 빠른 연산이 가능합니다.
 
+
+```bash
+pip cache purge && python setup.py build_ext --inplace && pip install -e .
+```
+
+```csharp
+
+hyper_butterfly/
+├─ csrc/
+│  ├─ include/
+│  │  └─ hyper_butterfly/
+│  │     ├─ manifolds/               # manifold별 헤더
+│  │     │  ├─ base.h                # 공통 추상 인터페이스
+│  │     │  ├─ poincare.h
+│  │     │  ├─ lorentz.h
+│  │     │  └─ sphere.h
+│  │     ├─ maps/                     # map 연산들 (로그, 익스펜 등)
+│  │     │  ├─ base.h
+│  │     │  ├─ poincare_maps.h
+│  │     │  ├─ lorentz_maps.h
+│  │     │  └─ sphere_maps.h
+│  │     └─ extension.h              # 바인딩 노출부
+│  └─ src/
+│     ├─ manifolds/
+│     │  ├─ poincare.cpp
+│     │  ├─ lorentz.cpp
+│     │  └─ sphere.cpp
+│     ├─ maps/
+│     │  ├─ poincare_maps_cpu.cpp
+│     │  ├─ poincare_maps_cuda.cu
+│     │  ├─ lorentz_maps_cpu.cpp
+│     │  └─ sphere_maps_cpu.cpp
+│     └─ extension.cpp
+└─ python/
+   ├─ manifold/                       # Python 레이어별 구현
+   │  ├─ base.py                      # 인터페이스, 팩토리
+   │  ├─ poincare.py
+   │  ├─ lorentz.py
+   │  └─ sphere.py
+   ├─ layers.py                       # 하이퍼-버터플라이 레이어
+   └─ utils.py
+
+```
+
+
 ## ✨ 주요 기능
 
 - 🚀 **포인카레 볼 모델**: 하이퍼볼릭 공간의 지수 맵, 로그 맵, 측지 거리 계산을 위한 최적화된 C++/CUDA 구현
@@ -67,6 +112,95 @@ y &= \exp_0^c(v)
 
 4. **효율적 차원 축소**: Nash 임베딩을 통해 리만 다양체를 정보 손실 없이 $O(N\log N)$ 파라미터로 표현합니다.
 
+## 순전파 (Forward) 과정:
+
+### 1. 로그 맵 (Log Map) - 하이퍼볼릭 → 유클리드 접공간
+$$u = \log_{\mathbf{0}}^c(x) = \frac{2}{\sqrt{c}} \tanh^{-1}(\sqrt{c}||x||) \frac{x}{||x||}$$
+
+여기서:
+- $x$: 하이퍼볼릭 공간의 입력 벡터
+- $c$: 하이퍼볼릭 공간의 곡률
+- $u$: 접공간 벡터
+
+### 2. 버터플라이 변환 - 유클리드 접공간에서 선형 변환
+$$v = B(u, \Theta) = \prod_{l=0}^{L-1} B_l(u, \theta_l)$$
+
+각 레이어 $l$에서 버터플라이 연산:
+$$B_l(u, \theta_l)[i] = \begin{cases}
+a \cdot u[i] + b \cdot u[i+2^l], & \text{if } i \bmod 2^{l+1} < 2^l \\
+c \cdot u[i-2^l] + d \cdot u[i], & \text{if } i \bmod 2^{l+1} \geq 2^l
+\end{cases}$$
+
+여기서:
+- $\Theta = \{\theta_0, \theta_1, ..., \theta_{L-1}\}$: 버터플라이 네트워크의 파라미터
+- $\theta_l = \{a, b, c, d\}$: 각 $2 \times 2$ 블록의 파라미터
+- $L$: 레이어 수
+
+### 3. 지수 맵 (Exp Map) - 유클리드 접공간 → 하이퍼볼릭
+$$y = \exp_{\mathbf{0}}^c(v) = \tanh\left(\sqrt{c}\frac{||v||}{2}\right) \frac{v}{\sqrt{c}||v||}$$
+
+여기서:
+- $v$: 변환된 접공간 벡터
+- $y$: 하이퍼볼릭 공간의 출력 벡터
+
+## 역전파 (Backward) 과정:
+
+역전파는 각 단계의 야코비안 행렬을 계산하고 체인룰을 적용하여 구합니다.
+
+### 1. 지수 맵 역전파
+$$\frac{\partial \mathcal{L}}{\partial v} = \frac{\partial \mathcal{L}}{\partial y} \cdot \frac{\partial y}{\partial v}$$
+
+여기서 지수 맵의 야코비안은:
+$$\frac{\partial y}{\partial v} = \frac{\partial \exp_{\mathbf{0}}^c(v)}{\partial v}$$
+
+이를 명시적으로 전개하면:
+$$
+\frac{\partial y_i}{\partial v_j} = \begin{cases}
+\frac{\tanh(\sqrt{c}||v||)}{\sqrt{c}||v||} \delta_{ij} + \frac{v_i v_j}{||v||^2}\left(\frac{\sqrt{c}(1-\tanh^2(\sqrt{c}||v||))}{||v||} - \frac{\tanh(\sqrt{c}||v||)}{\sqrt{c}||v||^2}\right), & i \neq j \\
+\frac{\tanh(\sqrt{c}||v||)}{\sqrt{c}||v||} + \frac{v_i^2}{||v||^2}\left(\frac{\sqrt{c}(1-\tanh^2(\sqrt{c}||v||))}{||v||} - \frac{\tanh(\sqrt{c}||v||)}{\sqrt{c}||v||^2}\right), & i = j
+\end{cases}
+$$
+
+### 2. 버터플라이 변환 역전파
+버터플라이 변환의 역전파는 각 레이어를 역순으로 통과하면서 계산됩니다:
+
+$$\frac{\partial \mathcal{L}}{\partial u} = \frac{\partial \mathcal{L}}{\partial v} \cdot \frac{\partial v}{\partial u} = \frac{\partial \mathcal{L}}{\partial v} \cdot \prod_{l=L-1}^{0} \frac{\partial B_l}{\partial u_l}$$
+
+각 레이어 $l$의 야코비안은:
+$$\frac{\partial B_l(u_l, \theta_l)[i]}{\partial u_l[j]} = \begin{cases}
+a, & \text{if } i = j \text{ and } i \bmod 2^{l+1} < 2^l \\
+b, & \text{if } j = i+2^l \text{ and } i \bmod 2^{l+1} < 2^l \\
+c, & \text{if } j = i-2^l \text{ and } i \bmod 2^{l+1} \geq 2^l \\
+d, & \text{if } i = j \text{ and } i \bmod 2^{l+1} \geq 2^l \\
+0, & \text{otherwise}
+\end{cases}$$
+
+파라미터에 대한 그래디언트는:
+$$\frac{\partial \mathcal{L}}{\partial \theta_l} = \frac{\partial \mathcal{L}}{\partial v} \cdot \frac{\partial v}{\partial \theta_l}$$
+
+### 3. 로그 맵 역전파
+$$\frac{\partial \mathcal{L}}{\partial x} = \frac{\partial \mathcal{L}}{\partial u} \cdot \frac{\partial u}{\partial x}$$
+
+로그 맵의 야코비안은:
+$$\frac{\partial u}{\partial x} = \frac{\partial \log_{\mathbf{0}}^c(x)}{\partial x}$$
+
+이를 명시적으로 전개하면:
+$$\frac{\partial u_i}{\partial x_j} = \begin{cases}
+\frac{2\tanh^{-1}(\sqrt{c}||x||)}{\sqrt{c}||x||} \delta_{ij} + \frac{x_i x_j}{||x||^2}\left(\frac{2\sqrt{c}}{1-c||x||^2} - \frac{2\tanh^{-1}(\sqrt{c}||x||)}{\sqrt{c}||x||^2}\right), & i \neq j \\
+\frac{2\tanh^{-1}(\sqrt{c}||x||)}{\sqrt{c}||x||} + \frac{x_i^2}{||x||^2}\left(\frac{2\sqrt{c}}{1-c||x||^2} - \frac{2\tanh^{-1}(\sqrt{c}||x||)}{\sqrt{c}||x||^2}\right), & i = j
+\end{cases}$$
+
+## 체인룰을 통한 전체 역전파
+
+전체 하이퍼 버터플라이 연산의 역전파는 위 세 단계의 야코비안을 연쇄적으로 적용하여 계산합니다:
+
+$$\frac{\partial \mathcal{L}}{\partial x} = \frac{\partial \mathcal{L}}{\partial y} \cdot \frac{\partial y}{\partial v} \cdot \frac{\partial v}{\partial u} \cdot \frac{\partial u}{\partial x}$$
+
+$$\frac{\partial \mathcal{L}}{\partial \Theta} = \frac{\partial \mathcal{L}}{\partial y} \cdot \frac{\partial y}{\partial v} \cdot \frac{\partial v}{\partial \Theta}$$
+
+이러한 수식이 CUDA 커널 내에서 효율적으로 구현되어 역전파를 계산합니다.
+
+
 ## 📦 설치 방법
 
 ```bash
@@ -79,22 +213,22 @@ pip install -e .
 
 ```python
 import torch
-import riemutils
+import hyper_butterfly
 
 # 포인카레 볼 모델에서 연산 예제
 x = torch.zeros(1, 2)  # 포인카레 볼의 원점
-v = torch.tensor([[0.3, 0.4]])  # 접벡터
+v = torch.torch::Tensor([[0.3, 0.4]])  # 접벡터
 
 # 지수 사상 적용
-y = riemutils.exp_map(x, v)
+y = hyper_butterfly.exp_map(x, v)
 print("원점으로부터의 지수 맵 결과:", y)
 
 # 거리 계산
-dist = riemutils.distance(x, y)
+dist = hyper_butterfly.distance(x, y)
 print(f"리만 거리: {dist.item():.4f}")
 
 # Hyper-Butterfly 레이어 사용
-layer = riemutils.HyperButterflyLayer(dim=8, num_layers=3, curvature=0.5)
+layer = hyper_butterfly.HyperButterflyLayer(dim=8, num_layers=3, curvature=0.5)
 input_data = torch.randn(8) * 0.3  # 반지름이 작은 점들
 output = layer(input_data)
 ```
@@ -116,18 +250,18 @@ python test.py
 1. **지수 맵 (Exponential Map)**:
    ```python
    # 원점에서의 지수 맵
-   y = riemutils.exp_map(torch.zeros_like(x), v, c=1.0)
+   y = hyper_butterfly.exp_map(torch.torch::zeros_like(x), v, c=1.0)
    ```
 
 2. **로그 맵 (Logarithmic Map)**:
    ```python
    # 원점으로의 로그 맵
-   v = riemutils.log_map(torch.zeros_like(y), y, c=1.0)
+   v = hyper_butterfly.log_map(torch.torch::zeros_like(y), y, c=1.0)
    ```
 
 3. **측지 거리 (Geodesic Distance)**:
    ```python
-   dist = riemutils.distance(x, y, c=1.0)
+   dist = hyper_butterfly.distance(x, y, c=1.0)
    ```
 
 ### Butterfly 팩터
@@ -136,7 +270,7 @@ Butterfly 팩터는 행렬을 효율적으로 표현하기 위한 방법으로, 
 
 ```python
 # 버터플라이 변환 레이어 적용
-output = riemutils.butterfly_transform(input_data, params, layer=0)
+output = hyper_butterfly.butterfly_transform(input_data, params, layer=0)
 ```
 
 ### Hyper-Butterfly 레이어
@@ -144,7 +278,7 @@ output = riemutils.butterfly_transform(input_data, params, layer=0)
 Hyper-Butterfly 레이어는 하이퍼볼릭 공간에서 효율적인 신경망 레이어를 구현합니다:
 
 ```python
-layer = riemutils.HyperButterflyLayer(dim=8, num_layers=3, curvature=0.5)
+layer = hyper_butterfly.HyperButterflyLayer(dim=8, num_layers=3, curvature=0.5)
 output = layer(input_data)
 ```
 

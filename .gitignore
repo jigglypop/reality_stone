@@ -1,14 +1,48 @@
-# Python
+# Python bytecode
 __pycache__/
 *.py[cod]
+
+# Java bytecode
 *.class
+
+# C/C++ shared libs, Python C extensions
 *.so
 *.pyd
+*.dll
+*.dylib
+
+# Build/dist
 build/
 dist/
 *.egg-info/
 .eggs/
+*.eggs
+*.egg
+
+# Wheels
+pip-wheel-metadata/
+
+# Packaging
+__pypackages__/
+
+# Virtual environments
 venv/
 .venv/
 env/
 .env/
+
+# IDEs / editors
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile

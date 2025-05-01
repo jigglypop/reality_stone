@@ -5,9 +5,8 @@ import torch.optim as optim
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 import hyper_butterfly as hb
-
-# 확인: hyper_butterfly 바인딩
-print("hyper_butterfly binding:", hb.hyper_butterfly)
+# 테스트 코드
+print("hyper_butterfly 모듈 임포트 성공!")
 
 # 1) Euclid MLP
 class EuclidMLP(nn.Module):
@@ -30,10 +29,10 @@ class HyperMLP(nn.Module):
         # 입력→hidden 변환
         self.fc1 = nn.Linear(in_dim, hid)
         # hid 기반 파라미터 수 계산 및 작은 스케일 초기화
-        log2_hid = int(torch.log2(torch.tensor(hid)).item())
+        log2_h = int(torch.log2(torch.tensor(float(hid))).item())
         total_params = 0
         for l in range(L):
-            bs = 1 << (l % log2_hid)
+            bs = 1 << (l % log2_h)
             nb = hid // (2 * bs)
             total_params += nb * 2
         print(f"[Hyper] hid={hid}, total_params={total_params}")

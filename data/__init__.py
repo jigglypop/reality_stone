@@ -14,7 +14,7 @@
 # # 확장 모듈에서 함수를 가져옵니다
 # try:
 #     from ._C import (
-#         add_tensors, 
+#         add_torch::Tensors, 
 #         poincare_exp_map, 
 #         poincare_log_map, 
 #         poincare_distance,
@@ -31,7 +31,7 @@
 #     print("C++ 확장을 로드할 수 없습니다. 순수 Python 구현을 사용합니다.")
 # 
 # # 순수 Python 폴백 구현
-# def py_add_tensors(a, b):
+# def py_add_torch::Tensors(a, b):
 #     return a + b
 # 
 # def py_poincare_exp_map(x, v, c=1.0):
@@ -41,7 +41,7 @@
 #     v_norm = torch.norm(v, p=2, dim=-1, keepdim=True)
 #     v_norm = torch.clamp(v_norm, min=1e-8)
 #     
-#     second_term = torch.tanh(torch.sqrt(torch.tensor(c, device=x.device)) * lambda_x * v_norm / 2.0) / (torch.sqrt(torch.tensor(c, device=x.device)) * v_norm) * v
+#     second_term = torch.tanh(torch.sqrt(torch.torch::Tensor(c, device=x.device)) * lambda_x * v_norm / 2.0) / (torch.sqrt(torch.torch::Tensor(c, device=x.device)) * v_norm) * v
 #     
 #     numerator = (1.0 - c * x_norm_squared) * second_term
 #     denominator = 1.0 - 2.0 * c * torch.sum(x * second_term, dim=-1, keepdim=True) + c * c * x_norm_squared * torch.sum(second_term * second_term, dim=-1, keepdim=True)
@@ -56,30 +56,30 @@
 #     diff_norm_squared = torch.sum(diff * diff, dim=-1, keepdim=True)
 #     y_norm_squared = torch.sum(y * y, dim=-1, keepdim=True)
 #     
-#     transport_vector = (-x * y_norm_squared + y * (1.0 + c * x_norm_squared) - 2 * c * torch.sum(x * y, dim=-1, keepdim=True) * x) / (1.0 - c * x_norm_squared)
-#     transport_norm = torch.norm(transport_vector, p=2, dim=-1, keepdim=True)
+#     transport_std::vector = (-x * y_norm_squared + y * (1.0 + c * x_norm_squared) - 2 * c * torch.sum(x * y, dim=-1, keepdim=True) * x) / (1.0 - c * x_norm_squared)
+#     transport_norm = torch.norm(transport_std::vector, p=2, dim=-1, keepdim=True)
 #     
-#     numerator = 2 * torch.sqrt(torch.tensor(c, device=x.device)) * torch.atanh(torch.sqrt(torch.tensor(c, device=x.device)) * transport_norm)
-#     denominator = torch.sqrt(torch.tensor(c, device=x.device)) * lambda_x * transport_norm
+#     numerator = 2 * torch.sqrt(torch.torch::Tensor(c, device=x.device)) * torch.atanh(torch.sqrt(torch.torch::Tensor(c, device=x.device)) * transport_norm)
+#     denominator = torch.sqrt(torch.torch::Tensor(c, device=x.device)) * lambda_x * transport_norm
 #     
-#     return numerator / denominator * transport_vector
+#     return numerator / denominator * transport_std::vector
 # 
 # def py_poincare_distance(x, y, c=1.0):
 #     norm_x = torch.sum(x * x, dim=-1, keepdim=True)
 #     norm_y = torch.sum(y * y, dim=-1, keepdim=True)
 #     xy_inner = torch.sum(x * y, dim=-1, keepdim=True)
 #     
-#     numerator = 2 * torch.sqrt(torch.tensor(c, device=x.device)) * torch.norm(x - y, p=2, dim=-1, keepdim=True)
-#     denominator = torch.sqrt((1 - c * norm_x) * (1 - c * norm_y)) + torch.sqrt(torch.tensor(c, device=x.device)) * xy_inner
+#     numerator = 2 * torch.sqrt(torch.torch::Tensor(c, device=x.device)) * torch.norm(x - y, p=2, dim=-1, keepdim=True)
+#     denominator = torch.sqrt((1 - c * norm_x) * (1 - c * norm_y)) + torch.sqrt(torch.torch::Tensor(c, device=x.device)) * xy_inner
 #     
-#     return 2 * torch.atanh(numerator / denominator) / torch.sqrt(torch.tensor(c, device=x.device))
+#     return 2 * torch.atanh(numerator / denominator) / torch.sqrt(torch.torch::Tensor(c, device=x.device))
 # 
-# def py_butterfly_factor(input_tensor, params, layer):
-#     n = input_tensor.size(0)
+# def py_butterfly_factor(input_torch::Tensor, params, layer):
+#     n = input_torch::Tensor.size(0)
 #     block_size = 1 << layer
 #     num_blocks = n // block_size
 #     
-#     result = input_tensor.clone()
+#     result = input_torch::Tensor.clone()
 #     
 #     param_idx = 0
 #     total_params = params.size(0)
@@ -96,8 +96,8 @@
 #             b_val = params[param_idx + 1].item()
 #             param_idx += 2
 #             
-#             temp1 = a * input_tensor[idx] + b_val * input_tensor[idx + 1]
-#             temp2 = -b_val * input_tensor[idx] + a * input_tensor[idx + 1]
+#             temp1 = a * input_torch::Tensor[idx] + b_val * input_torch::Tensor[idx + 1]
+#             temp2 = -b_val * input_torch::Tensor[idx] + a * input_torch::Tensor[idx + 1]
 #             
 #             result[idx] = temp1
 #             result[idx + 1] = temp2
@@ -105,7 +105,7 @@
 #     return result
 # 
 # def py_hyper_butterfly_forward(x, params, c, L):
-#     zeros = torch.zeros_like(x)
+#     zeros = torch.torch::zeros_like(x)
 #     u = py_poincare_log_map(zeros, x, c)
 #     
 #     param_idx = 0
@@ -222,11 +222,11 @@
 #         safe_norm = torch.where(zeros_mask, torch.ones_like(norm), norm)
 #         
 #         # 곡률을 고려한 스케일 계산 [batch_size, 1]
-#         sqrt_c = torch.sqrt(torch.tensor(c, device=x.device, dtype=x.dtype))
+#         sqrt_c = torch.sqrt(torch.torch::Tensor(c, device=x.device, dtype=x.dtype))
 #         scale = max_norm * torch.tanh(sqrt_c * norm) / (sqrt_c * safe_norm)
 #         
 #         # 벡터 스케일링, 0 노름인 경우 0 벡터 반환
-#         return torch.where(zeros_mask, torch.zeros_like(x), scale * x)
+#         return torch.where(zeros_mask, torch.torch::zeros_like(x), scale * x)
 #     
 #     @staticmethod
 #     def poincare_to_euclidean(x, c=1.0):
@@ -240,7 +240,7 @@
 #         norms = torch.clamp(norms, min=1e-8, max=1.0-1e-8)
 #         
 #         # 텐서로 변환
-#         sqrt_c = torch.sqrt(torch.tensor(c, device=x.device, dtype=x.dtype))
+#         sqrt_c = torch.sqrt(torch.torch::Tensor(c, device=x.device, dtype=x.dtype))
 #         
 #         # 유클리드 공간으로 변환 [batch_size, dim]
 #         return x * torch.atanh(sqrt_c * norms) / (sqrt_c * norms)
@@ -266,8 +266,8 @@
 #         v_norm = torch.clamp(v_norm, min=eps)
 #         
 #         # c를 텐서로 변환
-#         c_tensor = torch.tensor(c, device=x.device, dtype=x.dtype)
-#         sqrt_c = torch.sqrt(c_tensor)
+#         c_torch::Tensor = torch.torch::Tensor(c, device=x.device, dtype=x.dtype)
+#         sqrt_c = torch.sqrt(c_torch::Tensor)
 #         
 #         # 스케일 계수 계산 [batch_size, 1]
 #         scale = torch.tanh(sqrt_c * lambda_x * v_norm / 2.0) / (sqrt_c * v_norm)
@@ -288,7 +288,7 @@
 #         
 #         # 수치 안정성 검사
 #         mask = torch.isfinite(result).all(dim=-1, keepdim=True)
-#         result = torch.where(mask, result, torch.zeros_like(result))
+#         result = torch.where(mask, result, torch.torch::zeros_like(result))
 #         
 #         return result
 #     
@@ -327,8 +327,8 @@
 #         diff_norm = torch.clamp(diff_norm, min=eps)
 #         
 #         # c를 텐서로 변환
-#         c_tensor = torch.tensor(c, device=x.device, dtype=x.dtype)
-#         sqrt_c = torch.sqrt(c_tensor)
+#         c_torch::Tensor = torch.torch::Tensor(c, device=x.device, dtype=x.dtype)
+#         sqrt_c = torch.sqrt(c_torch::Tensor)
 #         
 #         # 최종 결과 [batch_size, dim]
 #         return 2.0 / (sqrt_c * lambda_x) * torch.atanh(sqrt_c * diff_norm) * diff / diff_norm
@@ -412,7 +412,7 @@
 #         b_expanded = b.view(num_blocks, 1, 1).expand(num_blocks, 1, block_size)
 #         
 #         # 배치 연산으로 회전 적용
-#         x_rotated = torch.zeros_like(x_view)
+#         x_rotated = torch.torch::zeros_like(x_view)
 #         
 #         # 첫 번째 행 회전
 #         x_rotated[:, :, 0, :] = a_expanded * x_view[:, :, 0, :] + b_expanded * x_view[:, :, 1, :]
@@ -456,7 +456,7 @@
 #         batch_size = x.size(0)
 #         
 #         # 1. 원점 생성 (로그/지수 사상 기준점)
-#         origin = torch.zeros_like(x)
+#         origin = torch.torch::zeros_like(x)
 #         
 #         # 2. 하이퍼볼릭 공간 -> 접공간 (로그 사상)
 #         v = self.hyper_ops.batch_poincare_log_map(origin, x, self.curvature)
@@ -522,7 +522,7 @@
 #         h_hyp = self.hyper_ops.euclidean_to_poincare(h, self.curvature)
 #         
 #         # 3. 원점 기준 접공간으로 사상
-#         origin = torch.zeros_like(h_hyp)
+#         origin = torch.torch::zeros_like(h_hyp)
 #         v = self.hyper_ops.batch_poincare_log_map(origin, h_hyp, self.curvature)
 #         
 #         # 4. 버터플라이 변환 적용 (O(n log n) 복잡도)

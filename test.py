@@ -1,13 +1,18 @@
+import sys
+import os
 import time
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
-import hyper_butterfly as hb
 
-# 확인: hyper_butterfly 바인딩
-print("hyper_butterfly binding:", hb.hyper_butterfly)
+# 현재 디렉토리에서 hyper_butterfly 모듈 임포트
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+import hyper_butterfly as hb
+# 테스트 코드
+print("hyper_butterfly 모듈 임포트 성공!")
+
 
 # 1) Euclid MLP
 class EuclidMLP(nn.Module):

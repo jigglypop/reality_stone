@@ -1,10 +1,13 @@
 import os
-import sys
-from setuptools import setup, find_packages
+from setuptools import setup
+from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
-# ① CUDA 탐지 함수 (환경변수나 표준 경로를 확인해 CUDA_HOME 설정)
+os.environ['VS_NO_MANIFEST_CREATION'] = '1'
+
+# CUDA 탐지 함수
 def detect_cuda():
     if 'CUDA_HOME' in os.environ:
+        print(f"CUDA_HOME 환경 변수: {os.environ['CUDA_HOME']}")
         return True
     for path in (
         r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8",
@@ -12,48 +15,51 @@ def detect_cuda():
     ):
         if os.path.isdir(path):
             os.environ['CUDA_HOME'] = path
+            print(f"CUDA 경로 감지: {path}")
             return True
+    print("CUDA를 찾을 수 없습니다.")
     return False
 
-# ② 기본값: CPU 전용
+# 기본값: CPU 전용
 ext_modules = []
-cmdclass    = {}
+cmdclass = {'build_ext': BuildExtension}
 
-# ③ 빌드 시점에만 torch C++ 확장 모듈 import
-if any(arg in sys.argv for arg in ('build', 'bdist_wheel')):
-    try:
-        from torch.utils.cpp_extension import BuildExtension, CUDAExtension
-        use_cuda = detect_cuda()
-    except ImportError:
-        use_cuda = False
-
+# 항상 C++ 확장 모듈 빌드
+try:
+    use_cuda = detect_cuda()
     if use_cuda:
         ext_modules = [
             CUDAExtension(
+                # 모듈 이름을 hyper_butterfly._C로 설정
                 name="hyper_butterfly._C",
                 sources=[
+                    # 메인 확장 파일
                     "hyper_butterfly/csrc/extension.cpp",
-                    "hyper_butterfly/csrc/hyper_butterfly_cpu.cpp",
-                    "hyper_butterfly/csrc/hyper_butterfly_cuda.cu",
+                    # 포앵카레 기하학 구현
+                    "hyper_butterfly/csrc/geometry/poincare/forward_poincare_cpu.cpp",
+                    "hyper_butterfly/csrc/geometry/poincare/forward_poincare_gpu.cu",
+                    "hyper_butterfly/csrc/geometry/poincare/poincare_backward_gpu.cu",
+                    # 버터플라이 변환 구현
+                    "hyper_butterfly/csrc/ops/butterfly/forward_butterfly_cpu.cpp",
+                    "hyper_butterfly/csrc/ops/butterfly/forward_butterfly_gpu.cu",
+                    "hyper_butterfly/csrc/ops/butterfly/backward_butterfly_gpu.cu",
                 ],
-                # ────────────────────────────────────
                 # 헤더(.h) 검색 경로
                 include_dirs=[
                     # 프로젝트 내 헤더
                     "hyper_butterfly/csrc",
+                    "hyper_butterfly/csrc/utils",
+                    "hyper_butterfly/csrc/geometry",
+                    "hyper_butterfly/csrc/ops",
                     # Windows SDK 헤더
                     r"C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um",
                     r"C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\ucrt",
                     r"C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\shared",
-                    # MSVC 표준 헤더
-                    r"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.43.34808\include",
                 ],
-                # ────────────────────────────────────
                 # 라이브러리(.lib) 검색 경로
                 library_dirs=[
                     r"C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\um\x64",
                     r"C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\ucrt\x64",
-                    r"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.43.34808\lib\x64",
                 ],
                 define_macros=[("WITH_CUDA", None)],
                 extra_compile_args={
@@ -62,25 +68,65 @@ if any(arg in sys.argv for arg in ('build', 'bdist_wheel')):
                     # NVCC 최적화 플래그
                     "nvcc": ["-O3", "--extended-lambda", "-Xcompiler", "/MD"],
                 },
+                extra_link_args=["/MANIFEST:NO"],  # 매니페스트 생성 비활성화
             )
         ]
-        cmdclass = {'build_ext': BuildExtension}
+    else:
+        # CPU 전용 확장 모듈
+        from torch.utils.cpp_extension import CppExtension
+        ext_modules = [
+            CppExtension(
+                name="hyper_butterfly._C",
+                sources=[
+                    "hyper_butterfly/csrc/extension.cpp",
+                    "hyper_butterfly/csrc/geometry/poincare/forward_poincare_cpu.cpp",
+                    "hyper_butterfly/csrc/ops/butterfly/forward_butterfly_cpu.cpp",
+                    "hyper_butterfly/csrc/geometry/poincare/poincare_backward_cpu.cpp",
+                ],
+                include_dirs=[
+                    "hyper_butterfly/csrc",
+                    "hyper_butterfly/csrc/utils",
+                    "hyper_butterfly/csrc/geometry",
+                    "hyper_butterfly/csrc/ops",
+                    # Windows SDK 헤더
+                    r"C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um",
+                    r"C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\ucrt",
+                    r"C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\shared",
+                ],
+                library_dirs=[
+                    r"C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\um\x64",
+                    r"C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\ucrt\x64",
+                ],
+                extra_compile_args={"cxx": ["/O2"]},
+                extra_link_args=["/MANIFEST:NO"],  # 매니페스트 생성 비활성화
+            )
+        ]
+except Exception as e:
+    print(f"확장 모듈 설정 중 오류 발생: {e}")
+    print("순수 Python 모듈로 설치합니다.")
+    ext_modules = []
 
-# ④ setup() 호출
+# setup() 호출
 setup(
-    name="hyper_butterfly",
+    name="hyper_butterfly_fft",
     version="0.1.0",
     description="하이퍼볼릭 기하학을 위한 효율적인 PyTorch 라이브러리",
-    author="Your Name",
-    author_email="you@example.com",
-    url="https://github.com/username/hyper_butterfly",
-    packages=find_packages(),
+    author="jigglypop",
+    author_email="donghwanyeom@gmail.com",
+    url="https://github.com/jigglypop/hyper_butterfly",
+    packages=['hyper_butterfly'], 
     ext_modules=ext_modules,
     cmdclass=cmdclass,
     include_package_data=True,
     package_data={
-        # csrc/*.h 를 배포패키지에 포함
-        "hyper_butterfly": ["csrc/*.h"],
+        # hyper_butterfly 패키지에 헤더 파일 포함
+        "hyper_butterfly": [
+            "csrc/*.h",
+            "csrc/utils/*.h",
+            "csrc/geometry/*.h",
+            "csrc/geometry/poincare/*.h",
+            "csrc/ops/butterfly/*.h",
+        ],
     },
     install_requires=["torch>=2.0.0"],
     python_requires=">=3.7",
@@ -92,3 +138,4 @@ setup(
         "Programming Language :: Python :: 3",
     ],
 )
+

@@ -9,6 +9,52 @@
 
 **HyperButterfly**는 하이퍼볼릭 공간에서의 기하학적 딥러닝을 위한 고성능 PyTorch 확장 라이브러리입니다. 리만 다양체, 특히 하이퍼볼릭 공간에서의 효율적인 연산과 Butterfly 팩터를 통한 효율적인 변환 구현을 제공합니다. CUDA 가속을 활용하여 대규모 데이터셋에서도 빠른 연산이 가능합니다.
 
+
+```bash
+pip cache purge && python setup.py build_ext --inplace && pip install -e .
+
+```
+
+```csharp
+
+hyper_butterfly/
+├─ csrc/
+│  ├─ include/
+│  │  └─ hyper_butterfly/
+│  │     ├─ manifolds/               # manifold별 헤더
+│  │     │  ├─ base.h                # 공통 추상 인터페이스
+│  │     │  ├─ poincare.h
+│  │     │  ├─ lorentz.h
+│  │     │  └─ sphere.h
+│  │     ├─ maps/                     # map 연산들 (로그, 익스펜 등)
+│  │     │  ├─ base.h
+│  │     │  ├─ poincare_maps.h
+│  │     │  ├─ lorentz_maps.h
+│  │     │  └─ sphere_maps.h
+│  │     └─ extension.h              # 바인딩 노출부
+│  └─ src/
+│     ├─ manifolds/
+│     │  ├─ poincare.cpp
+│     │  ├─ lorentz.cpp
+│     │  └─ sphere.cpp
+│     ├─ maps/
+│     │  ├─ poincare_maps_cpu.cpp
+│     │  ├─ poincare_maps_cuda.cu
+│     │  ├─ lorentz_maps_cpu.cpp
+│     │  └─ sphere_maps_cpu.cpp
+│     └─ extension.cpp
+└─ python/
+   ├─ manifold/                       # Python 레이어별 구현
+   │  ├─ base.py                      # 인터페이스, 팩토리
+   │  ├─ poincare.py
+   │  ├─ lorentz.py
+   │  └─ sphere.py
+   ├─ layers.py                       # 하이퍼-버터플라이 레이어
+   └─ utils.py
+
+```
+
+
 ## ✨ 주요 기능
 
 - 🚀 **포인카레 볼 모델**: 하이퍼볼릭 공간의 지수 맵, 로그 맵, 측지 거리 계산을 위한 최적화된 C++/CUDA 구현
@@ -168,22 +214,22 @@ pip install -e .
 
 ```python
 import torch
-import riemutils
+import hyper_butterfly
 
 # 포인카레 볼 모델에서 연산 예제
 x = torch.zeros(1, 2)  # 포인카레 볼의 원점
 v = torch.torch::Tensor([[0.3, 0.4]])  # 접벡터
 
 # 지수 사상 적용
-y = riemutils.exp_map(x, v)
+y = hyper_butterfly.exp_map(x, v)
 print("원점으로부터의 지수 맵 결과:", y)
 
 # 거리 계산
-dist = riemutils.distance(x, y)
+dist = hyper_butterfly.distance(x, y)
 print(f"리만 거리: {dist.item():.4f}")
 
 # Hyper-Butterfly 레이어 사용
-layer = riemutils.HyperButterflyLayer(dim=8, num_layers=3, curvature=0.5)
+layer = hyper_butterfly.HyperButterflyLayer(dim=8, num_layers=3, curvature=0.5)
 input_data = torch.randn(8) * 0.3  # 반지름이 작은 점들
 output = layer(input_data)
 ```
@@ -205,18 +251,18 @@ python test.py
 1. **지수 맵 (Exponential Map)**:
    ```python
    # 원점에서의 지수 맵
-   y = riemutils.exp_map(torch.torch::zeros_like(x), v, c=1.0)
+   y = hyper_butterfly.exp_map(torch.torch::zeros_like(x), v, c=1.0)
    ```
 
 2. **로그 맵 (Logarithmic Map)**:
    ```python
    # 원점으로의 로그 맵
-   v = riemutils.log_map(torch.torch::zeros_like(y), y, c=1.0)
+   v = hyper_butterfly.log_map(torch.torch::zeros_like(y), y, c=1.0)
    ```
 
 3. **측지 거리 (Geodesic Distance)**:
    ```python
-   dist = riemutils.distance(x, y, c=1.0)
+   dist = hyper_butterfly.distance(x, y, c=1.0)
    ```
 
 ### Butterfly 팩터
@@ -225,7 +271,7 @@ Butterfly 팩터는 행렬을 효율적으로 표현하기 위한 방법으로, 
 
 ```python
 # 버터플라이 변환 레이어 적용
-output = riemutils.butterfly_transform(input_data, params, layer=0)
+output = hyper_butterfly.butterfly_transform(input_data, params, layer=0)
 ```
 
 ### Hyper-Butterfly 레이어
@@ -233,7 +279,7 @@ output = riemutils.butterfly_transform(input_data, params, layer=0)
 Hyper-Butterfly 레이어는 하이퍼볼릭 공간에서 효율적인 신경망 레이어를 구현합니다:
 
 ```python
-layer = riemutils.HyperButterflyLayer(dim=8, num_layers=3, curvature=0.5)
+layer = hyper_butterfly.HyperButterflyLayer(dim=8, num_layers=3, curvature=0.5)
 output = layer(input_data)
 ```
 

@@ -17,13 +17,14 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("exp_map_cpu", &maps::exp_map_cpu, "Exp map origin (CPU)");
     // 순전파
     m.def("poincare_forward_cpu", &manifolds::poincare_forward_cpu, "poincare_forward_cpu (CPU)");
-
 #ifdef WITH_CUDA
     // CUDA exports - 포인터 형식으로 함수 참조
-    m.def("log_map_cuda", &maps::log_map_cuda, "Log map origin (CUDA)");
-    m.def("exp_map_cuda", &maps::exp_map_cuda, "Exp map origin (CUDA)");
+    m.def("log_map_forward_cuda", &maps::log_map_forward_cuda, "Log map origin (CUDA)");
+    m.def("log_map_backward_cuda", &maps::log_map_backward_cuda, "Log map origin (CUDA)");
+    m.def("exp_map_forward_cuda", &maps::exp_map_forward_cuda, "Exp map origin (CUDA)");
+    m.def("exp_map_backward_cuda", &maps::exp_map_backward_cuda, "Exp map origin (CUDA)");
     // CUDA forward
     m.def("poincare_forward_cuda", &manifolds::poincare_forward_cuda, "poincare_forward_cuda (CUDA)");
-    // m.def("hyper_butterfly_backward_cuda", &hyper_butterfly_backward_cuda, "Hyper-Butterfly backward (CUDA)");
+    m.def("poincare_backward_cuda", &manifolds::poincare_backward_cuda, "poincare_backward_cuda (CUDA)");
 #endif
 }

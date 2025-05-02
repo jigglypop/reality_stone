@@ -6,7 +6,8 @@
 #include <hyper_butterfly/utils/common_defs.h>
 #include <hyper_butterfly/utils/cuda_utils.h>
 #include <hyper_butterfly/utils/numeric.h>
-#include <hyper_butterfly/maps/exp_map.h>
+#include <hyper_butterfly/maps/log_map_cuda.cuh>
+#include <hyper_butterfly/maps/log_map.h>
 
 namespace utils = hyper_butterfly::utils;
 
@@ -108,13 +109,13 @@ __global__ void log_map_backward_kernel(
     }
 }
 
-torch::Tensor log_map_cuda(torch::Tensor x, float c) {
+torch::Tensor log_map_forward_cuda(torch::Tensor x, float c) {
     utils::check_cuda_tensor(x);
     int B = x.size(0), D = x.size(1);
     auto out = torch::empty_like(x);
     int threads = std::min(D, 1024);
     int shbytes = sizeof(float);
-    AT_DISPATCH_FLOATING_TYPES(x.scalar_type(), "log_map_cuda", [&] {
+    AT_DISPATCH_FLOATING_TYPES(x.scalar_type(), "log_map_forward_cuda", [&] {
         log_map_forward_kernel<scalar_t> << <B, threads, shbytes >> > (
             x.data_ptr<scalar_t>(),
             out.data_ptr<scalar_t>(),
@@ -122,6 +123,27 @@ torch::Tensor log_map_cuda(torch::Tensor x, float c) {
         });
     utils::check_cuda_error();
     return out;
+}
+
+torch::Tensor log_map_backward_cuda(
+    torch::Tensor x,
+    torch::Tensor grad_u,
+    float c) {
+    utils::check_cuda_tensor(x);
+    utils::check_cuda_tensor(grad_u);
+    int B = x.size(0), D = x.size(1);
+    auto grad_x = torch::zeros_like(x);
+    int threads = std::min(D, 1024);
+    int shbytes = 2 * sizeof(float);  // s_x2 + s_xu
+    AT_DISPATCH_FLOATING_TYPES(x.scalar_type(), "log_map_backward_cuda", [&] {
+        log_map_backward_kernel<scalar_t> << <B, threads, shbytes >> > (
+            x.data_ptr<scalar_t>(),
+            grad_u.data_ptr<scalar_t>(),
+            grad_x.data_ptr<scalar_t>(),
+            c, B, D);
+        });
+    utils::check_cuda_error();
+    return grad_x;
 }
 }
 }

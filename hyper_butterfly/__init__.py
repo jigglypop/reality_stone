@@ -14,6 +14,7 @@ if torch.cuda.is_available():
             log_map_cuda,
             exp_map_cuda,
             poincare_forward_cuda,
+            poincare_backward_cuda
         )
         _has_cuda = True
     except ImportError:
@@ -67,7 +68,7 @@ class HyperButterflyFunction(Function):
             y, _, __ = poincare_forward_cuda(x, params, torch.empty(0,device=x.device), c, L)
         else:
             if not x.is_cuda and 'poincare_forward_cpu,' in globals():
-                y, _, __ = poincare_forward_cpu,(x, params, c, L)
+                y, _, __ = poincare_forward_cpu(x, params, c, L)
             else:
                 y = hyper_butterfly_py(x, params, c, L)
         return y
@@ -76,6 +77,11 @@ class HyperButterflyFunction(Function):
     def backward(ctx, grad_out):
         x, params = ctx.saved_tensors
         c, L = ctx.c, ctx.L
+        if x.is_cuda and _has_cuda:
+            grad_x, grad_p = poincare_backward_cuda(
+                grad_out.contiguous(), x, params, c, L
+            )
+            return grad_x, grad_p, None, None
         with torch.enable_grad():
             x_req = x.detach().requires_grad_()
             p_req = params.detach().requires_grad_()

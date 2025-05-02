@@ -19,6 +19,13 @@ std::vector<torch::Tensor> poincare_forward_cuda(
     float c,
     int L
 );
+std::vector<torch::Tensor> poincare_backward_cuda(
+    torch::Tensor grad_y,
+    torch::Tensor x,
+    torch::Tensor params,
+    float c,
+    int L
+);
 #endif
 }
 }

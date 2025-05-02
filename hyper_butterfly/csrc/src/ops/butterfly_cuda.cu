@@ -8,10 +8,15 @@
 #include <hyper_butterfly/maps/exp_map.h>
 #include <hyper_butterfly/maps/log_map.h>
 #include <hyper_butterfly/ops/butterfly.h>
+#include <hyper_butterfly/ops/butterfly_cuda.cuh>
+#include <hyper_butterfly/maps/exp_map_cuda.cuh>
+#include <hyper_butterfly/maps/log_map_cuda.cuh>
 
 namespace utils = hyper_butterfly::utils;
 namespace maps = hyper_butterfly::maps;
 
+namespace hyper_butterfly {
+namespace ops {
 template <typename scalar_t>
 __global__ void butterfly_backward_kernel(
   const scalar_t* __restrict__ grad_out,
@@ -83,8 +88,6 @@ __global__ void butterfly_forward_kernel(
   }
 }
 
-namespace hyper_butterfly {
-namespace ops {
 torch::Tensor butterfly_forward_cuda(
   torch::Tensor input,
   torch::Tensor params,
@@ -96,7 +99,7 @@ torch::Tensor butterfly_forward_cuda(
   dim3 grid(std::min((batch_size * dim + 511) / 512, 1024));
   dim3 block(512);
   AT_DISPATCH_FLOATING_TYPES(input.scalar_type(), "butterfly_forward_cuda", ([&] {
-    butterfly_forward_kernel<scalar_t> << <grid, block >> > (
+    ops::butterfly_forward_kernel<scalar_t> << <grid, block >> > (
       input.data_ptr<scalar_t>(),
       output.data_ptr<scalar_t>(),
       params.data_ptr<scalar_t>(),
@@ -118,7 +121,7 @@ std::vector<torch::Tensor> butterfly_backward_cuda(
   dim3 grid(std::min((batch_size * dim + 511) / 512, 1024));
   dim3 block(512);
   AT_DISPATCH_FLOATING_TYPES(input.scalar_type(), "butterfly_backward_cuda", ([&] {
-    butterfly_backward_kernel<scalar_t> << <grid, block >> > (
+    ops::butterfly_backward_kernel<scalar_t> << <grid, block >> > (
       grad_out.data_ptr<scalar_t>(),
       input.data_ptr<scalar_t>(),
       grad_input.data_ptr<scalar_t>(),

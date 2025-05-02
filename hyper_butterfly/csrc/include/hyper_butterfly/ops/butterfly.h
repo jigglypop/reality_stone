@@ -24,21 +24,6 @@ std::vector<torch::Tensor> butterfly_backward_cuda(
     torch::Tensor input,
     torch::Tensor params,
     int layer_idx);
-
-std::vector<torch::Tensor> hyper_butterfly_cuda(
-    torch::Tensor x,
-    torch::Tensor params,
-    torch::Tensor unused,
-    float c,
-    int L
-);
-std::vector<torch::Tensor> hyper_butterfly_backward_cuda(
-    torch::Tensor grad_y,
-    torch::Tensor x,
-    torch::Tensor params,
-    float c,
-    int L
-);
 #endif
 }
 }

@@ -7,6 +7,7 @@
 #include <hyper_butterfly/utils/cuda_utils.h>
 #include <hyper_butterfly/utils/numeric.h>
 #include <hyper_butterfly/maps/exp_map.h>
+#include <hyper_butterfly/maps/exp_map_cuda.cuh>
 
 namespace utils = hyper_butterfly::utils;
 
@@ -110,13 +111,13 @@ __global__ void exp_map_backward_kernel(
     }
 }
 
-torch::Tensor exp_map_cuda(torch::Tensor v, float c) {
+torch::Tensor exp_map_forward_cuda(torch::Tensor v, float c) {
     utils::check_cuda_tensor(v);
     int B = v.size(0), D = v.size(1);
     auto out = torch::empty_like(v);
     int threads = std::min(D, 1024);
     int shbytes = sizeof(float);
-    AT_DISPATCH_FLOATING_TYPES(v.scalar_type(), "exp_map_cuda", [&] {
+    AT_DISPATCH_FLOATING_TYPES(v.scalar_type(), "exp_map_forward_cuda", [&] {
         exp_map_forward_kernel<scalar_t> << <B, threads, shbytes >> > (
             v.data_ptr<scalar_t>(),
             out.data_ptr<scalar_t>(),
@@ -125,5 +126,32 @@ torch::Tensor exp_map_cuda(torch::Tensor v, float c) {
     utils::check_cuda_error();
     return out;
 }
+// exp_map_backward_cuda: (v, grad_y, c) → grad_v 반환
+torch::Tensor exp_map_backward_cuda(
+    torch::Tensor v,
+    torch::Tensor grad_y,
+    float c) {
+    // 1) 입력 검사
+    utils::check_cuda_tensor(v);
+    utils::check_cuda_tensor(grad_y);
+    // 2) shape 뽑기
+    int B = v.size(0), D = v.size(1);
+    // 3) 출력 tensor 할당
+    auto grad_v = torch::zeros_like(v);
+    // 4) 커널 런칭 파라미터
+    int threads = std::min(D, 1024);
+    int shbytes = 2 * sizeof(float);  // s_v2 + s_vg
+    // 5) 타입별 디스패치
+    AT_DISPATCH_FLOATING_TYPES(v.scalar_type(), "exp_map_backward_cuda", [&] {
+        exp_map_backward_kernel<scalar_t> << <B, threads, shbytes >> > (
+            v.data_ptr<scalar_t>(),
+            grad_y.data_ptr<scalar_t>(),
+            grad_v.data_ptr<scalar_t>(),
+            c, B, D);
+        });
+    utils::check_cuda_error();
+    return grad_v;
+}
+
 }
 }

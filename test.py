@@ -5,6 +5,8 @@ import torch.optim as optim
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 import hyper_butterfly as hb
+import faulthandler; faulthandler.enable()
+
 # 테스트 코드
 print("hyper_butterfly 모듈 임포트 성공!")
 

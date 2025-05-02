@@ -24,8 +24,8 @@ def detect_cuda():
 def build_cuda_extension():
     try:
         from torch.utils.cpp_extension import BuildExtension, CUDAExtension
-        cuda_sources = glob.glob("hyper_butterfly/csrc/*.cu")
-        cpu_sources = glob.glob("hyper_butterfly/csrc/src/*.cpp") + glob.glob("hyper_butterfly/csrc/src/**/*.cpp", recursive=True)
+        cuda_sources = glob.glob(os.path.join("hyper_butterfly", "csrc", "**", "*.cu"), recursive=True)
+        cpu_sources = glob.glob("hyper_butterfly/csrc/extension.cpp") + glob.glob("hyper_butterfly/csrc/src/**/*.cpp", recursive=True)
         extra_compile_args = {}
         if sys.platform == 'win32':
             extra_compile_args = {
@@ -72,8 +72,7 @@ def build_cuda_extension():
         ext_modules = [
             CUDAExtension(
                 name="hyper_butterfly._C",
-                sources=["hyper_butterfly/csrc/extension.cpp", 
-                         "hyper_butterfly/csrc/hyper_butterfly_cpu.cpp"] + cpu_sources + cuda_sources,
+                sources=cpu_sources + cuda_sources,
                 include_dirs=include_dirs,
                 library_dirs=library_dirs,
                 define_macros=[("WITH_CUDA", None)],

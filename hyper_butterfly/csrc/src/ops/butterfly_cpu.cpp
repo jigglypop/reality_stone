@@ -3,33 +3,23 @@
 #include <vector>
 #include <hyper_butterfly/utils/common_defs.h>
 #include <hyper_butterfly/utils/cuda_utils.h>
-#include <hyper_butterfly/maps/log_map.h>
 #include <hyper_butterfly/maps/exp_map.h>
-#include "hyper_butterfly.h"
-#include "maps.h"
-#include "butterfly.h"
+#include <hyper_butterfly/maps/log_map.h>
+#include <hyper_butterfly/ops/butterfly.h>
 
-using namespace hyper_butterfly::maps;
+namespace utils = hyper_butterfly::utils;
+namespace maps = hyper_butterfly::maps;
 
-// CPU에서의 로그 맵 구현 (클램핑 적용)
-torch::Tensor log_map_origin_cpu_export(torch::Tensor x, float c) {
-    return log_map_cpu(x, c);
-}
-
-// CPU에서의 지수 맵 구현 (클램핑 적용)
-torch::Tensor exp_map_origin_cpu_export(torch::Tensor v, float c) {
-    return exp_map_cpu(v, c);
-}
-
-// 단일 Butterfly 레이어 적용
-torch::Tensor butterfly_layer_cpu(
+namespace hyper_butterfly {
+namespace ops {
+torch::Tensor butterfly_forward_cpu(
     torch::Tensor input,
     torch::Tensor params,
     int layer_idx,
     int batch_size,
     int dim) {
     auto output = torch::empty_like(input);
-    AT_DISPATCH_FLOATING_TYPES(input.scalar_type(), "butterfly_layer_cpu", ([&] {
+    AT_DISPATCH_FLOATING_TYPES(input.scalar_type(), "butterfly_forward_cpu", ([&] {
         const scalar_t* x_ptr = input.data_ptr<scalar_t>();
         scalar_t* y_ptr = output.data_ptr<scalar_t>();
         const scalar_t* p_ptr = params.data_ptr<scalar_t>();
@@ -52,28 +42,5 @@ torch::Tensor butterfly_layer_cpu(
         } }));
         return output;
 }
-
-// 전체 Hyper-Butterfly CPU 구현
-std::vector<torch::Tensor> hyper_butterfly_cpu_export(
-    torch::Tensor x,
-    torch::Tensor params,
-    torch::Tensor /*args*/,
-    float c,
-    int L) {
-    // 1) 로그 맵 적용
-    auto u = log_map_origin_cpu_export(x, c);
-
-    // 2) Butterfly 변환 적용
-    auto v = u;
-    int batch_size = x.size(0);
-    int dim = x.size(1);
-    for (int l = 0; l < L; ++l) {
-        int layer_idx = l % int(std::log2(dim));
-        v = hyper_butterfly::butterfly_layer_cpu(v, params, layer_idx, batch_size, dim);
-    }
-
-    // 3) 지수 맵 적용
-    auto y = exp_map_origin_cpu_export(v, c);
-
-    return { y, u, v };
+}
 }

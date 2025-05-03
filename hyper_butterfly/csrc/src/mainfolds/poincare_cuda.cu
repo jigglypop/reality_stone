@@ -93,14 +93,6 @@ std::vector<torch::Tensor> poincare_backward_cuda(
   // torch::Tensor grad_v = torch::zeros_like(v);
   int threads = std::min(D_padded, 1024);
   int shbytes = 2 * sizeof(float);
-  // Backward through exp_map
-  // AT_DISPATCH_FLOATING_TYPES(v.scalar_type(), "exp_map_backward_cuda", [&] {
-  //   maps::exp_map_backward_kernel<scalar_t> << <B, threads, shbytes >> > (
-  //     v.data_ptr<scalar_t>(),
-  //     grad_y_padded.data_ptr<scalar_t>(),
-  //     grad_v.data_ptr<scalar_t>(),
-  //     c, B, D_padded);
-  //   });
   auto grad_v = maps::exp_map_backward_cuda(v, grad_y_padded, c);
   // Backward through butterfly layers
   auto grad_params = torch::zeros_like(params);
@@ -129,13 +121,6 @@ std::vector<torch::Tensor> poincare_backward_cuda(
   }
   grad_u = grad_curr;
   torch::Tensor grad_x_padded = torch::zeros_like(x_padded);
-  // AT_DISPATCH_FLOATING_TYPES(x_padded.scalar_type(), "log_map_backward_cuda", [&] {
-  //   maps::log_map_backward_kernel<scalar_t> << <B, threads, shbytes >> > (
-  //     x_padded.data_ptr<scalar_t>(),
-  //     grad_u.data_ptr<scalar_t>(),
-  //     grad_x_padded.data_ptr<scalar_t>(),
-  //     c, B, D_padded);
-  //   });
   grad_x_padded = maps::log_map_backward_cuda(x_padded, grad_u, c);
   torch::Tensor grad_x = (D_padded > D) ? grad_x_padded.narrow(1, 0, D) : grad_x_padded;
   return { grad_x, grad_params };

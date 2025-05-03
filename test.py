@@ -46,21 +46,17 @@ class HyperMLP(nn.Module):
     def forward(self, x):
         x = x.view(x.size(0), -1)
         h = torch.relu(self.fc1(x))
-
         # Hyper-Butterfly 적용
         u = hb.hyper_butterfly(h, self.params, self.c, self.L)
-
         # NaN 감지 및 대체
         if torch.isnan(u).any():
             mn = torch.nanmin(u).item()
             mx = torch.nanmax(u).item()
             print(f"[WARN] NaN in hyper output: min={mn:.3e}, max={mx:.3e} -> using ReLU fallback")
             u = torch.relu(h)
-
         return self.fc2(u)
 
 # 학습/평가 함수
-
 def train_epoch(model, loader, optimizer, device):
     model.train()
     total_loss = 0.0

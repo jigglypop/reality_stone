@@ -10,6 +10,7 @@
 #include <hyper_butterfly/maps/exp_map_cuda.cuh>
 
 namespace utils = hyper_butterfly::utils;
+namespace config = hyper_butterfly::config;
 
 namespace hyper_butterfly {
 namespace maps {
@@ -42,7 +43,7 @@ __global__ void exp_map_forward_kernel(
     }
     __syncthreads();
     if (tid == 0) {
-        s_norm2[0] = fmaxf(s_norm2[0], utils::Constants::EPS);
+        s_norm2[0] = fmaxf(s_norm2[0], config::Constants::EPS);
     }
     __syncthreads();
     float norm = sqrtf(s_norm2[0]);
@@ -91,7 +92,7 @@ __global__ void exp_map_backward_kernel(
     }
     __syncthreads();
     if (threadIdx.x == 0) {
-        s_v2[0] = fmaxf(s_v2[0], utils::Constants::EPS);
+        s_v2[0] = fmaxf(s_v2[0], config::Constants::EPS);
     }
     __syncthreads();
     float norm = sqrtf(s_v2[0]);

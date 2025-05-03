@@ -1,4 +1,3 @@
-// hyper_butterfly/ops/butterfly_cuda.cuh
 #pragma once
 
 #include <cuda_runtime.h>

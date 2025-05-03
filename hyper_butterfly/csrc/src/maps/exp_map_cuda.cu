@@ -7,13 +7,13 @@
 #include <hyper_butterfly/utils/cuda_utils.h>
 #include <hyper_butterfly/utils/numeric.h>
 #include <hyper_butterfly/maps/exp_map.h>
-#include <hyper_butterfly/maps/exp_map_cuda.cuh>
 
 namespace utils = hyper_butterfly::utils;
+namespace config = hyper_butterfly::config;
 
 namespace hyper_butterfly {
 namespace maps {
-// exp 맵 forward 커널 y = tanh(√c‖v‖)/(√c‖v‖) * v
+// exp  y = tanh(√c‖v‖)/(√c‖v‖) * v
 template <typename scalar_t>
 __global__ void exp_map_forward_kernel(
     const scalar_t* __restrict__ v,
@@ -24,8 +24,10 @@ __global__ void exp_map_forward_kernel(
     if (threadIdx.x == 0) {
         s_norm2[0] = 0.f;
     }
+    const int bid = blockIdx.x;
+    const int tid = threadIdx.x;
+    const int stride = blockDim.x;
     __syncthreads();
-    int bid = blockIdx.x, tid = threadIdx.x, stride = blockDim.x;
     const scalar_t* vb = v + bid * D;
     scalar_t* yb = out + bid * D;
     // 1) ||v||^2 reduction
@@ -42,21 +44,18 @@ __global__ void exp_map_forward_kernel(
     }
     __syncthreads();
     if (tid == 0) {
-        s_norm2[0] = fmaxf(s_norm2[0], utils::Constants::EPS);
+        s_norm2[0] = fmaxf(s_norm2[0], config::Constants::EPS);
     }
     __syncthreads();
-    float norm = sqrtf(s_norm2[0]);
-    float u = sqrtf(c) * norm;
-    u = fminf(fmaxf(u, 1e-6f), 10.0f);
-    float tanhu = tanhf(u);
-    float factor = tanhu / (u + 1e-3f);
+    float u = fminf(fmaxf(sqrtf(c) * sqrtf(s_norm2[0]), 1e-6f), 10.0f);
+    float factor = tanhf(u) / (u + 1e-3f);
     // 2) output
     for (int i = tid; i < D; i += stride) {
         yb[i] = factor * vb[i];
     }
 }
 
-// exp_map backward 커널
+// exp_map backward
 template <typename scalar_t>
 __global__ void exp_map_backward_kernel(
     const scalar_t* __restrict__ v,
@@ -91,7 +90,7 @@ __global__ void exp_map_backward_kernel(
     }
     __syncthreads();
     if (threadIdx.x == 0) {
-        s_v2[0] = fmaxf(s_v2[0], utils::Constants::EPS);
+        s_v2[0] = fmaxf(s_v2[0], config::Constants::EPS);
     }
     __syncthreads();
     float norm = sqrtf(s_v2[0]);

@@ -6,9 +6,10 @@
 #include <hyper_butterfly/utils/common_defs.h>
 #include <hyper_butterfly/utils/cuda_utils.h>
 #include <hyper_butterfly/utils/numeric.h>
-#include <hyper_butterfly/maps/log_map_cuda.cuh>
 #include <hyper_butterfly/maps/log_map.h>
+#include <hyper_butterfly/config/constant.h>
 
+namespace config = hyper_butterfly::config;
 namespace utils = hyper_butterfly::utils;
 
 namespace hyper_butterfly {
@@ -41,7 +42,7 @@ __global__ void log_map_forward_kernel(
     __syncthreads();
     // 2) clamp & factor
     if (tid == 0) {
-        s_norm2[0] = fmaxf(s_norm2[0], utils::Constants::EPS);
+        s_norm2[0] = fmaxf(s_norm2[0], config::Constants::EPS);
     }
     __syncthreads();
     float norm = sqrtf(s_norm2[0]);
@@ -89,7 +90,7 @@ __global__ void log_map_backward_kernel(
     }
     __syncthreads();
     if (threadIdx.x == 0) {
-        s_x2[0] = fmaxf(s_x2[0], utils::Constants::EPS);
+        s_x2[0] = fmaxf(s_x2[0], config::Constants::EPS);
     }
     __syncthreads();
     float norm = sqrtf(s_x2[0]);

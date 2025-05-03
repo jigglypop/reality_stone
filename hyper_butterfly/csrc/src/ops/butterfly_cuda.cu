@@ -8,9 +8,6 @@
 #include <hyper_butterfly/maps/exp_map.h>
 #include <hyper_butterfly/maps/log_map.h>
 #include <hyper_butterfly/ops/butterfly.h>
-#include <hyper_butterfly/ops/butterfly_cuda.cuh>
-#include <hyper_butterfly/maps/exp_map_cuda.cuh>
-#include <hyper_butterfly/maps/log_map_cuda.cuh>
 
 namespace utils = hyper_butterfly::utils;
 namespace maps = hyper_butterfly::maps;

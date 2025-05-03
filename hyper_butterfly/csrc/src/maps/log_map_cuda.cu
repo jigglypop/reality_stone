@@ -6,7 +6,6 @@
 #include <hyper_butterfly/utils/common_defs.h>
 #include <hyper_butterfly/utils/cuda_utils.h>
 #include <hyper_butterfly/utils/numeric.h>
-#include <hyper_butterfly/maps/log_map_cuda.cuh>
 #include <hyper_butterfly/maps/log_map.h>
 #include <hyper_butterfly/config/constant.h>
 

@@ -7,8 +7,6 @@
 #include <hyper_butterfly/utils/cuda_utils.h>
 #include <hyper_butterfly/maps/exp_map.h>
 #include <hyper_butterfly/maps/log_map.h>
-#include <hyper_butterfly/maps/exp_map_cuda.cuh>
-#include <hyper_butterfly/maps/log_map_cuda.cuh>
 #include <hyper_butterfly/ops/butterfly.h>
 #include <hyper_butterfly/manifolds/poincare.h>
 

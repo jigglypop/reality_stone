@@ -2,7 +2,7 @@
 #include <torch/extension.h>
 
 namespace hyper_butterfly {
-namespace ops {
+namespace manifolds {
 
 /**
  * Möbius subtraction: u ⊖₍c₎ v = u ⊕₍c₎ (−1 ⊗₍c₎ v)

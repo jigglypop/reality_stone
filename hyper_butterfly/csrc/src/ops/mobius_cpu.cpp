@@ -1,5 +1,6 @@
 #include <torch/extension.h>
 #include <cmath>
+#include <hyper_butterfly/ops/mobius.h>
 
 namespace hyper_butterfly {
 namespace ops {

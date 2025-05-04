@@ -4,13 +4,54 @@ import torch.nn as nn
 import torch.optim as optim
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
-import hyper_butterfly as hb
 import faulthandler; faulthandler.enable()
 
-# 테스트 코드
-print("hyper_butterfly 모듈 임포트 성공!")
+# hyper_butterfly 패키지에서 레이어와 함수 import
+import hyper_butterfly as hb
+from hyper_butterfly import GeodesicButterflyLayer
 
-# 1) Euclid MLP
+#
+# 1) Geodesic-Butterfly MLP
+#
+class GeodesicMLP(nn.Module):
+    def __init__(self, in_dim=784, hid=128, out_dim=10, c=1e-3, L=2, t=0.7):
+        super().__init__()
+        self.fc1 = nn.Linear(in_dim, hid)
+        self.geo_layer = GeodesicButterflyLayer(hid, c, L, t)
+        self.fc2 = nn.Linear(hid, out_dim)
+        self.t = t
+
+    def forward(self, x):
+        x = x.view(x.size(0), -1)
+        h = torch.relu(self.fc1(x))
+        z = self.geo_layer(h)
+        return self.fc2(z)
+#
+# 2) Hyper-Butterfly MLP
+#
+class HyperMLP(nn.Module):
+    def __init__(self, in_dim=784, hid=128, out_dim=10, c=1e-3, L=1):
+        super().__init__()
+        self.c = c
+        self.L = L
+        self.fc1 = nn.Linear(in_dim, hid)
+        # butterfly params 개수 계산
+        log2_h = int(torch.log2(torch.tensor(float(hid))).item())
+        total_params = sum((hid // (2 * (1 << (l % log2_h)))) * 2 for l in range(L))
+        print(f"[Hyper] hid={hid}, total_params={total_params}")
+        self.params = nn.Parameter(torch.randn(total_params) * 1e-3)
+        self.fc2 = nn.Linear(hid, out_dim)
+
+    def forward(self, x):
+        x = x.view(x.size(0), -1)
+        h = torch.relu(self.fc1(x))
+        u = hb.hyper_butterfly(h, self.params, self.c, self.L)
+        if torch.isnan(u).any():
+            u = torch.relu(h)
+        return self.fc2(u)
+#
+# 3) Euclid MLP
+#
 class EuclidMLP(nn.Module):
     def __init__(self, in_dim=784, hid=128, out_dim=10):
         super().__init__()
@@ -19,48 +60,15 @@ class EuclidMLP(nn.Module):
 
     def forward(self, x):
         x = x.view(x.size(0), -1)
-        x = torch.relu(self.fc1(x))
-        return self.fc2(x)
-
-# 2) Hyper-Butterfly MLP
-class HyperMLP(nn.Module):
-    def __init__(self, in_dim=784, hid=128, out_dim=10, c=1e-3, L=1):
-        super().__init__()
-        self.c = c
-        self.L = L
-        # 입력→hidden 변환
-        self.fc1 = nn.Linear(in_dim, hid)
-        # hid 기반 파라미터 수 계산 및 작은 스케일 초기화
-        log2_h = int(torch.log2(torch.tensor(float(hid))).item())
-        total_params = 0
-        for l in range(L):
-            bs = 1 << (l % log2_h)
-            nb = hid // (2 * bs)
-            total_params += nb * 2
-        print(f"[Hyper] hid={hid}, total_params={total_params}")
-        self.params = nn.Parameter(torch.randn(total_params) * 1e-3)
-
-        # hidden→output 변환
-        self.fc2 = nn.Linear(hid, out_dim)
-
-    def forward(self, x):
-        x = x.view(x.size(0), -1)
         h = torch.relu(self.fc1(x))
-        # Hyper-Butterfly 적용
-        u = hb.hyper_butterfly(h, self.params, self.c, self.L)
-        # NaN 감지 및 대체
-        if torch.isnan(u).any():
-            mn = torch.nanmin(u).item()
-            mx = torch.nanmax(u).item()
-            print(f"[WARN] NaN in hyper output: min={mn:.3e}, max={mx:.3e} -> using ReLU fallback")
-            u = torch.relu(h)
-        return self.fc2(u)
+        return self.fc2(h)
+
 
 # 학습/평가 함수
 def train_epoch(model, loader, optimizer, device):
     model.train()
     total_loss = 0.0
-    start = time.time()
+    t0 = time.time()
     for imgs, labels in loader:
         imgs, labels = imgs.to(device), labels.to(device)
         optimizer.zero_grad()
@@ -69,51 +77,87 @@ def train_epoch(model, loader, optimizer, device):
         loss.backward()
         optimizer.step()
         total_loss += loss.item() * imgs.size(0)
-    return total_loss / len(loader.dataset), time.time() - start
-
+    return total_loss / len(loader.dataset), time.time() - t0
 
 def test_epoch(model, loader, device):
     model.eval()
     correct = 0
-    total = 0
     with torch.no_grad():
         for imgs, labels in loader:
             imgs, labels = imgs.to(device), labels.to(device)
             pred = model(imgs).argmax(dim=1)
             correct += (pred == labels).sum().item()
-            total += imgs.size(0)
-    return correct / total
+    return correct / len(loader.dataset)
 
-# 메인 실행
+# 모델 훈련 함수
+def train_model(model_name, model, loader_train, loader_test, epochs=10, lr=1e-3, device="cuda"):
+    optimizer = optim.Adam(model.parameters(), lr=lr)
+    
+    # t값을 모델 이름에 추가 (GeodesicMLP인 경우)
+    display_name = model_name
+    if hasattr(model, 't'):
+        display_name = f"{model_name} (t={model.t})"
+    
+    print(f"\n--- {display_name} Training ---")
+    test_accs = []  # 테스트 정확도 기록
+    
+    for ep in range(1, epochs+1):
+        loss, t = train_epoch(model, loader_train, optimizer, device)
+        acc = test_epoch(model, loader_test, device)
+        test_accs.append(acc)
+        print(f"[{display_name}] Epoch {ep}/{epochs} loss={loss:.4f} time={t:.2f}s acc={acc*100:.2f}%")
+    
+    # 최종 성능 출력
+    best_acc = max(test_accs) * 100
+    print(f"[{display_name}] Best accuracy: {best_acc:.2f}%")
+    return best_acc
+
+
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    batch_size = 256
-    lr = 1e-3
-    epochs = 10
-
+    batch_size, lr, epochs = 256, 1e-3, 10
+    # 데이터 로딩
     transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.5,), (0.5,))
     ])
     train_ds = datasets.MNIST('.', train=True, download=True, transform=transform)
     test_ds = datasets.MNIST('.', train=False, download=True, transform=transform)
-    train_loader = torch.utils.data.DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0)
-    test_loader = torch.utils.data.DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=0)
+    train_loader = torch.utils.data.DataLoader(train_ds, batch_size=batch_size, shuffle=True)
+    test_loader = torch.utils.data.DataLoader(test_ds, batch_size=batch_size, shuffle=False)
 
-    # Hyper-Butterfly MLP
+    # 다양한 t값으로 GeodesicMLP 테스트
+    t_values = [0.5, 0.7, 1.0, 10.0, 100.0, 1000.0, 10000.0]
+    geodesic_results = {}
+    
+    for t in t_values:
+        model = GeodesicMLP(c=1e-3, L=2, t=t).to(device)
+        acc = train_model(f"GeodesicMLP", model, train_loader, test_loader, epochs=epochs, lr=lr, device=device)
+        geodesic_results[t] = acc
+    
+    # HyperMLP 테스트
     hy = HyperMLP(c=1e-3, L=1).to(device)
-    opt_hy = optim.Adam(hy.parameters(), lr=lr)
-    print("\n--- Hyper-Butterfly MLP Training ---")
-    for ep in range(1, epochs+1):
-        loss, t = train_epoch(hy, train_loader, opt_hy, device)
-        acc = test_epoch(hy, test_loader, device)
-        print(f"[Hyper] Epoch {ep}/{epochs} loss={loss:.4f} time={t:.2f}s acc={acc*100:.2f}%")
-
-    # Euclid MLP
+    hyper_acc = train_model("HyperMLP", hy, train_loader, test_loader, epochs=epochs, lr=lr, device=device)
+    
+    # EuclidMLP 테스트
     eu = EuclidMLP().to(device)
-    opt_eu = optim.Adam(eu.parameters(), lr=lr)
-    print("\n--- Euclid MLP Training ---")
-    for ep in range(1, epochs+1):
-        loss, t = train_epoch(eu, train_loader, opt_eu, device)
-        acc = test_epoch(eu, test_loader, device)
-        print(f"[Euclid] Epoch {ep}/{epochs} loss={loss:.4f} time={t:.2f}s acc={acc*100:.2f}%")
+    euclid_acc = train_model("EuclidMLP", eu, train_loader, test_loader, epochs=epochs, lr=lr, device=device)
+    
+    # 결과 요약
+    print("\n=== 결과 요약 ===")
+    print(f"HyperMLP 최고 정확도: {hyper_acc:.2f}%")
+    print(f"EuclidMLP 최고 정확도: {euclid_acc:.2f}%")
+    print("\nGeodesicMLP 정확도 (t값에 따른 비교):")
+    for t, acc in sorted(geodesic_results.items()):
+        print(f"t = {t}: {acc:.2f}%")
+
+    # 최적의 t값 찾기
+    best_t = max(geodesic_results.items(), key=lambda x: x[1])[0]
+    print(f"\n최적의 t값: {best_t} (정확도: {geodesic_results[best_t]:.2f}%)")
+    
+    # 모델 간 비교
+    best_geodesic_acc = max(geodesic_results.values())
+    print("\n모델 성능 순위:")
+    models = [("HyperMLP", hyper_acc), ("최적 GeodesicMLP", best_geodesic_acc), ("EuclidMLP", euclid_acc)]
+    for i, (name, acc) in enumerate(sorted(models, key=lambda x: x[1], reverse=True), 1):
+        print(f"{i}위: {name} - {acc:.2f}%")

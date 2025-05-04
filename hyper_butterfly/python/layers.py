@@ -71,36 +71,21 @@ class HyperButterflyFunction(Function):
     
 
 class GeodesicButterflyLayer(nn.Module):
-    """
-    Möbius‐Butterfly를 거친 후, 입력 h와 출력 u 사이를
-    Riemannian geodesic 상에서 t 비율 만큼 보간합니다.
-    """
-    def __init__(self,
-                 dim: int,
-                 c: float,
-                 L: int,
-                 t: float = 0.5) -> None:
+    def __init__(self, dim: int, c: float, L: int, t: float = 0.5) -> None:
         super().__init__()
         self.c = c
         self.L = L
         self.t = t
-        # Butterfly 파라미터 수 계산
         log2_d = int(math.log2(dim))
         total = 0
         for l in range(L):
             bs = 1 << (l % log2_d)
             nb = dim // (2 * bs)
             total += nb * 2
-
         self.params = nn.Parameter(torch.randn(total) * 1e-3)
 
     def forward(self, h: torch.Tensor) -> torch.Tensor:
-        # 1) Möbius‐Butterfly via custom autograd
         u = HyperButterflyFunction.apply(h, self.params, self.c, self.L)
-        # 2) Riemannian geodesic interpolation: h ↔ u at t
-        #    geodesic(x, y, c, t) 는 x에서 y로 t 비율 만큼 이동
         z = geodesic(h, u, self.c, self.t)
-        # NaN 방어: 혹시 geodesic에서 수치 불안정 발생 시 ReLU fallback
-        if torch.isnan(z).any():
-            z = torch.relu(h)
+        if torch.isnan(z).any():z = torch.relu(h)
         return z

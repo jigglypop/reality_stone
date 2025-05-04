@@ -8,11 +8,6 @@ namespace ops = hyper_butterfly::ops;
 namespace hyper_butterfly {
 namespace manifolds {
 
-torch::Tensor mobius_sub_cuda(torch::Tensor u, torch::Tensor v, float c) {
-    auto nv = ops::mobius_scalar_cuda(v, c, -1.0f);
-    return ops::mobius_add_cuda(u, nv, c);
-}
-
 torch::Tensor geodesic_cuda(torch::Tensor u, torch::Tensor v, float c, float t) {
     auto minus_u = ops::mobius_scalar_cuda(u, c, -1.0f);
     auto delta = ops::mobius_add_cuda(minus_u, v, c);
@@ -20,5 +15,5 @@ torch::Tensor geodesic_cuda(torch::Tensor u, torch::Tensor v, float c, float t) 
     return ops::mobius_add_cuda(u, delta_t, c);
 }
 
-} // namespace ops
-} // namespace hyper_butterfly
+}
+}

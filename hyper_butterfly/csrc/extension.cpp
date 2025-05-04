@@ -21,7 +21,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("poincare_forward_cpu", &manifolds::poincare_forward_cpu, "poincare_forward_cpu (CPU)");
     m.def("mobius_add_cpu", &ops::mobius_add_cpu, "Möbius addition (CPU)");
     m.def("mobius_scalar_cpu", &ops::mobius_scalar_cpu, "Möbius scalar multiplication (CPU)");
-    m.def("mobius_sub_cpu", &manifolds::mobius_sub_cpu, "Möbius subtraction (CPU)");
     m.def("geodesic_cpu", &manifolds::geodesic_cpu, "Geodesic interpolation (CPU)");
 #ifdef WITH_CUDA
     // CUDA exports - 포인터 형식으로 함수 참조
@@ -34,7 +33,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("poincare_backward_cuda", &manifolds::poincare_backward_cuda, "poincare_backward_cuda (CUDA)");
     m.def("mobius_add_cuda", &ops::mobius_add_cuda, "Möbius addition (CUDA)");
     m.def("mobius_scalar_cuda", &ops::mobius_scalar_cuda, "Möbius subtraction (CUDA)");
-    m.def("mobius_sub_cuda", &manifolds::mobius_sub_cuda, "Möbius subtraction (CUDA)");
     m.def("geodesic_cuda", &manifolds::geodesic_cuda, "Geodesic interpolation (CUDA)");
 #endif
 }

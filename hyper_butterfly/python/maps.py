@@ -1,8 +1,6 @@
 import math
 import torch
 from .._C import (
-    mobius_sub_cuda,
-    mobius_sub_cpu,
     geodesic_cuda,
     geodesic_cpu,
     log_map_forward_cuda,
@@ -25,10 +23,6 @@ def exp_map(x: torch.Tensor, c: float) -> torch.Tensor:
     scn = (math.sqrt(c) * norm).clamp(min=1e-6, max=10.0)
     factor = torch.tanh(scn) / (scn + 1e-3)
     return factor * x
-
-def mobius_sub(u: torch.Tensor, v: torch.Tensor, c: float) -> torch.Tensor:
-    fn = mobius_sub_cuda if u.is_cuda else mobius_sub_cpu
-    return fn(u, v, c)
 
 def geodesic(u: torch.Tensor, v: torch.Tensor, c: float, t: float) -> torch.Tensor:
     fn = geodesic_cuda if u.is_cuda else geodesic_cpu

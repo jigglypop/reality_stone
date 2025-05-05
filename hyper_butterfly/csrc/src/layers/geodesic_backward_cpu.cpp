@@ -2,6 +2,7 @@
 #include <hyper_butterfly/ops/mobius.h>
 #include <hyper_butterfly/utils/numeric.h>
 #include <hyper_butterfly/config/constant.h>
+#include <hyper_butterfly/layers/geodesic.h>
 
 namespace ops = hyper_butterfly::ops;
 namespace utils = hyper_butterfly::utils;

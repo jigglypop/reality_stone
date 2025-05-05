@@ -4,6 +4,7 @@
 #include <hyper_butterfly/utils/cuda_utils.h>
 #include <hyper_butterfly/utils/numeric.h>
 #include <hyper_butterfly/config/constant.h>
+#include <hyper_butterfly/layers/geodesic.h>
 
 namespace utils = hyper_butterfly::utils;
 namespace config = hyper_butterfly::config;

@@ -5,11 +5,8 @@ import torch.optim as optim
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 import faulthandler; faulthandler.enable()
-
-# hyper_butterfly 패키지에서 레이어와 함수 import
 import hyper_butterfly as hb
 from hyper_butterfly import GeodesicButterflyLayer
-
 #
 # 1) Geodesic-Butterfly MLP
 #

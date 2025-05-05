@@ -10,7 +10,7 @@ from .._C import (
     poincare_backward_cuda,
 )
 from .. import _has_cuda
-from .maps import log_map, exp_map, mobius_sub, geodesic
+from .maps import log_map, exp_map, geodesic
 
 def butterfly_transform(x: torch.Tensor, params: torch.Tensor, L: int) -> torch.Tensor:
     batch, dim = x.shape

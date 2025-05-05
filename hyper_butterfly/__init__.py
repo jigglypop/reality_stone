@@ -7,6 +7,8 @@ from ._C import (
     exp_map_cpu,
     poincare_forward_cpu,
     geodesic_cpu,
+    geodesic_forward_cpu,
+    geodesic_backward_cpu,
 )
 _has_cuda = False
 if torch.cuda.is_available():
@@ -19,6 +21,8 @@ if torch.cuda.is_available():
             poincare_forward_cuda,
             poincare_backward_cuda,
             geodesic_cuda,
+            geodesic_forward_cuda,
+            geodesic_backward_cuda,
         )
         _has_cuda = True
     except ImportError:
@@ -34,18 +38,14 @@ def geodesic_butterfly(x: torch.Tensor,params: torch.Tensor,c: float,L: int,t: f
     layer = GeodesicButterflyLayer(x.size(1), c, L, t)
     return layer(x) 
 
-import torch
-from torch.autograd import Function
-from .._C import geodesic_cpu, geodesic_cuda, geodesic_backward_cpu, geodesic_backward_cuda
-from .. import _has_cuda
 
 class GeodesicFunction(Function):
     @staticmethod
     def forward(ctx, u, v, c, t):
         if u.is_cuda and _has_cuda:
-            result = geodesic_cuda(u, v, c, t)
+            result = geodesic_forward_cuda(u, v, c, t)
         else:
-            result = geodesic_cpu(u, v, c, t)
+            result = geodesic_forward_cpu(u, v, c, t)
         ctx.save_for_backward(u, v)
         ctx.c = c
         ctx.t = t
@@ -55,12 +55,11 @@ class GeodesicFunction(Function):
     def backward(ctx, grad_output):
         u, v = ctx.saved_tensors
         c, t = ctx.c, ctx.t
-        
         if u.is_cuda and _has_cuda:
             grad_u, grad_v = geodesic_backward_cuda(grad_output, u, v, c, t)
         else:
             grad_u, grad_v = geodesic_backward_cpu(grad_output, u, v, c, t)
-        
+    
         return grad_u, grad_v, None, None
 
 def geodesic_layer(u, v, c, t):

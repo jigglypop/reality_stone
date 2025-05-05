@@ -1,7 +1,6 @@
 #include <torch/extension.h>
 #include <hyper_butterfly/ops/mobius.h>
-#include <hyper_butterfly/manifolds/layers.h>
-#include <hyper_butterfly/utils/cuda_utils.h>
+#include <hyper_butterfly/layers/geodesic.h>
 
 namespace ops = hyper_butterfly::ops;
 

@@ -13,31 +13,59 @@ import hyper_butterfly as hb
 class GeodesicMLP(nn.Module):
     def __init__(self, in_dim=784, hid=128, out_dim=10, c=1e-3, L=2, t=0.7):
         super().__init__()
-        self.fc1 = nn.Linear(in_dim, hid)
-        self.fc2 = nn.Linear(hid, out_dim)
         self.c = c
-        self.L = L
+        self.L = L  # 호환성 유지
         self.t = t
-        
-        # butterfly params 계산 (GeodesicButterflyLayer와 동일)
-        log2_h = int(torch.log2(torch.tensor(float(hid))).item())
-        total_params = sum((hid // (2 * (1 << (l % log2_h)))) * 2 for l in range(L))
-        self.params = nn.Parameter(torch.randn(total_params) * 1e-3)
+        # 학습 가능한 파라미터 직접 정의
+        self.weights1 = nn.Parameter(torch.randn(in_dim, hid) * 0.01)
+        self.bias1 = nn.Parameter(torch.zeros(hid))
+        # 두 번째 변환 경로용 파라미터
+        self.weights2 = nn.Parameter(torch.randn(hid, hid) * 0.01)
+        self.bias2 = nn.Parameter(torch.zeros(hid))
+        # 출력용 파라미터
+        self.out_weights = nn.Parameter(torch.randn(hid, out_dim) * 0.01)
+        self.out_bias = nn.Parameter(torch.zeros(out_dim))
 
     def forward(self, x):
         x = x.view(x.size(0), -1)
-        h = torch.relu(self.fc1(x))
-        
-        # 1) butterfly transform 적용하여 u 생성
-        u = hb.hyper_butterfly(h, self.params, self.c, self.L)
-        
-        # 2) geodesic_layer 적용
+        h = x @ self.weights1 + self.bias1
+        h = torch.tanh(h)  
+        u = h @ self.weights2 + self.bias2
+        u = torch.sigmoid(u) 
         z = hb.geodesic_layer(h, u, self.c, self.t)
-        
         if torch.isnan(z).any():
-            z = torch.relu(h)
-            
-        return self.fc2(z)
+            z = h
+        output = z @ self.out_weights + self.out_bias
+        return output
+
+# class GeodesicMLP(nn.Module):
+#     def __init__(self, in_dim=784, hid=128, out_dim=10, c=1e-3, L=2, t=0.7):
+#         super().__init__()
+#         self.fc1 = nn.Linear(in_dim, hid)
+#         self.fc2 = nn.Linear(hid, out_dim)
+#         self.c = c
+#         self.L = L
+#         self.t = t
+#         
+#         # butterfly params 계산 (GeodesicButterflyLayer와 동일)
+#         log2_h = int(torch.log2(torch.tensor(float(hid))).item())
+#         total_params = sum((hid // (2 * (1 << (l % log2_h)))) * 2 for l in range(L))
+#         self.params = nn.Parameter(torch.randn(total_params) * 1e-3)
+# 
+#     def forward(self, x):
+#         x = x.view(x.size(0), -1)
+#         h = torch.relu(self.fc1(x))
+#         
+#         # 1) butterfly transform 적용하여 u 생성
+#         u = hb.hyper_butterfly(h, self.params, self.c, self.L)
+#         
+#         # 2) geodesic_layer 적용
+#         z = hb.geodesic_layer(h, u, self.c, self.t)
+#         
+#         if torch.isnan(z).any():
+#             z = torch.relu(h)
+#             
+#         return self.fc2(z)
 
 #
 # 2) Hyper-Butterfly MLP

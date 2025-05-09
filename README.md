@@ -127,7 +127,7 @@ $$v = B(u, \Theta) = \prod_{l=0}^{L-1} B_l(u, \theta_l)$$
 
 각 레이어 $l$에서 버터플라이 연산:
 $$B_l(u, \theta_l)[i] = \begin{cases}
-a \cdot u[i] + b \cdot u[i+2^l], & \text{if } i \bmod 2^{l+1} < 2^l \\
+a \cdot u[i] + b \cdot u[i+2^l], & \text{if } i \bmod 2^{l+1} < 2^l 
 c \cdot u[i-2^l] + d \cdot u[i], & \text{if } i \bmod 2^{l+1} \geq 2^l
 \end{cases}$$
 

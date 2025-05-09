@@ -154,12 +154,9 @@ $$\frac{\partial \mathcal{L}}{\partial v} = \frac{\partial \mathcal{L}}{\partial
 $$\frac{\partial y}{\partial v} = \frac{\partial \exp_{\mathbf{0}}^c(v)}{\partial v}$$
 
 이를 명시적으로 전개하면:
-$$
-\frac{\partial y_i}{\partial v_j} = \begin{cases}
-\frac{\tanh(\sqrt{c}||v||)}{\sqrt{c}||v||} \delta_{ij} + \frac{v_i v_j}{||v||^2}\left(\frac{\sqrt{c}(1-\tanh^2(\sqrt{c}||v||))}{||v||} - \frac{\tanh(\sqrt{c}||v||)}{\sqrt{c}||v||^2}\right), & i \neq j \\
-\frac{\tanh(\sqrt{c}||v||)}{\sqrt{c}||v||} + \frac{v_i^2}{||v||^2}\left(\frac{\sqrt{c}(1-\tanh^2(\sqrt{c}||v||))}{||v||} - \frac{\tanh(\sqrt{c}||v||)}{\sqrt{c}||v||^2}\right), & i = j
-\end{cases}
-$$
+$$\frac{\partial y_i}{\partial v_j} = \begin{cases}$$
+$$\frac{\tanh(\sqrt{c}||v||)}{\sqrt{c}||v||} \delta_{ij} + \frac{v_i v_j}{||v||^2}\left(\frac{\sqrt{c}(1-\tanh^2(\sqrt{c}||v||))}{||v||} - \frac{\tanh(\sqrt{c}||v||)}{\sqrt{c}||v||^2}\right), & i \neq j \\$$
+$$\frac{\tanh(\sqrt{c}||v||)}{\sqrt{c}||v||} + \frac{v_i^2}{||v||^2}\left(\frac{\sqrt{c}(1-\tanh^2(\sqrt{c}||v||))}{||v||} - \frac{\tanh(\sqrt{c}||v||)}{\sqrt{c}||v||^2}\right), & i = j$$
 
 ### 2. 버터플라이 변환 역전파
 버터플라이 변환의 역전파는 각 레이어를 역순으로 통과하면서 계산됩니다:

@@ -125,9 +125,6 @@ $$u = \log_{\mathbf{0}}^c(x) = \frac{2}{\sqrt{c}} \tanh^{-1}(\sqrt{c}||x||) \fra
 ### 2. 버터플라이 변환 - 유클리드 접공간에서 선형 변환
 $$v = B(u, \Theta) = \prod_{l=0}^{L-1} B_l(u, \theta_l)$$
 
-각 레이어 $l$에서 버터플라이 연산:
-$$B_l(u, \theta_l)[i] = a \cdot u[i] + b \cdot u[i+2^l], & \text{if } i \bmod 2^{l+1} < 2^l c \cdot u[i-2^l] + d \cdot u[i], & \text{if } i \bmod 2^{l+1} \geq 2^l$$
-
 여기서:
 - $\Theta = \{\theta_0, \theta_1, ..., \theta_{L-1}\}$: 버터플라이 네트워크의 파라미터
 - $\theta_l = \{a, b, c, d\}$: 각 $2 \times 2$ 블록의 파라미터

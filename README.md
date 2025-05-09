@@ -167,36 +167,50 @@ $$
 $$\frac{\partial \mathcal{L}}{\partial u} = \frac{\partial \mathcal{L}}{\partial v} \cdot \frac{\partial v}{\partial u} = \frac{\partial \mathcal{L}}{\partial v} \cdot \prod_{l=L-1}^{0} \frac{\partial B_l}{\partial u_l}$$
 
 각 레이어 $l$의 야코비안은:
-$$\frac{\partial B_l(u_l, \theta_l)[i]}{\partial u_l[j]} = \begin{cases}
+$$
+\frac{\partial B_l(u_l, \theta_l)[i]}{\partial u_l[j]} = \begin{cases}
 a, & \text{if } i = j \text{ and } i \bmod 2^{l+1} < 2^l \\
 b, & \text{if } j = i+2^l \text{ and } i \bmod 2^{l+1} < 2^l \\
 c, & \text{if } j = i-2^l \text{ and } i \bmod 2^{l+1} \geq 2^l \\
 d, & \text{if } i = j \text{ and } i \bmod 2^{l+1} \geq 2^l \\
 0, & \text{otherwise}
-\end{cases}$$
+\end{cases}
+$$
 
 파라미터에 대한 그래디언트는:
-$$\frac{\partial \mathcal{L}}{\partial \theta_l} = \frac{\partial \mathcal{L}}{\partial v} \cdot \frac{\partial v}{\partial \theta_l}$$
+$$
+\frac{\partial \mathcal{L}}{\partial \theta_l} = \frac{\partial \mathcal{L}}{\partial v} \cdot \frac{\partial v}{\partial \theta_l}
+$$
 
 ### 3. 로그 맵 역전파
-$$\frac{\partial \mathcal{L}}{\partial x} = \frac{\partial \mathcal{L}}{\partial u} \cdot \frac{\partial u}{\partial x}$$
+$$
+\frac{\partial \mathcal{L}}{\partial x} = \frac{\partial \mathcal{L}}{\partial u} \cdot \frac{\partial u}{\partial x}
+$$
 
 로그 맵의 야코비안은:
-$$\frac{\partial u}{\partial x} = \frac{\partial \log_{\mathbf{0}}^c(x)}{\partial x}$$
+$$
+\frac{\partial u}{\partial x} = \frac{\partial \log_{\mathbf{0}}^c(x)}{\partial x}
+$$
 
 이를 명시적으로 전개하면:
-$$\frac{\partial u_i}{\partial x_j} = \begin{cases}
+$$
+\frac{\partial u_i}{\partial x_j} = \begin{cases}
 \frac{2\tanh^{-1}(\sqrt{c}||x||)}{\sqrt{c}||x||} \delta_{ij} + \frac{x_i x_j}{||x||^2}\left(\frac{2\sqrt{c}}{1-c||x||^2} - \frac{2\tanh^{-1}(\sqrt{c}||x||)}{\sqrt{c}||x||^2}\right), & i \neq j \\
 \frac{2\tanh^{-1}(\sqrt{c}||x||)}{\sqrt{c}||x||} + \frac{x_i^2}{||x||^2}\left(\frac{2\sqrt{c}}{1-c||x||^2} - \frac{2\tanh^{-1}(\sqrt{c}||x||)}{\sqrt{c}||x||^2}\right), & i = j
-\end{cases}$$
+\end{cases}
+$$
 
 ## 체인룰을 통한 전체 역전파
 
 전체 하이퍼 버터플라이 연산의 역전파는 위 세 단계의 야코비안을 연쇄적으로 적용하여 계산합니다:
 
-$$\frac{\partial \mathcal{L}}{\partial x} = \frac{\partial \mathcal{L}}{\partial y} \cdot \frac{\partial y}{\partial v} \cdot \frac{\partial v}{\partial u} \cdot \frac{\partial u}{\partial x}$$
+$$
+\frac{\partial \mathcal{L}}{\partial x} = \frac{\partial \mathcal{L}}{\partial y} \cdot \frac{\partial y}{\partial v} \cdot \frac{\partial v}{\partial u} \cdot \frac{\partial u}{\partial x}
+$$
 
-$$\frac{\partial \mathcal{L}}{\partial \Theta} = \frac{\partial \mathcal{L}}{\partial y} \cdot \frac{\partial y}{\partial v} \cdot \frac{\partial v}{\partial \Theta}$$
+$$
+\frac{\partial \mathcal{L}}{\partial \Theta} = \frac{\partial \mathcal{L}}{\partial y} \cdot \frac{\partial y}{\partial v} \cdot \frac{\partial v}{\partial \Theta}
+$$
 
 이러한 수식이 CUDA 커널 내에서 효율적으로 구현되어 역전파를 계산합니다.
 

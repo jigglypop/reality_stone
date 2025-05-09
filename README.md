@@ -1,4 +1,6 @@
-# RealityStone PyTorch를 위한 효율적인 하이퍼볼릭 기하학 라이브러리
+# RealityStone 
+
+- PyTorch를 위한 효율적인 하이퍼볼릭 기하학 라이브러리
 
 [![PyPI version](https://img.shields.io/pypi/v/hyper-butterfly.svg)](https://pypi.org/project/hyper-butterfly/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-1.7+-ee4c2c.svg)](https://pytorch.org/)

@@ -126,10 +126,10 @@ $$u = \log_{\mathbf{0}}^c(x) = \frac{2}{\sqrt{c}} \tanh^{-1}(\sqrt{c}||x||) \fra
 $$v = B(u, \Theta) = \prod_{l=0}^{L-1} B_l(u, \theta_l)$$
 
 각 레이어 $l$에서 버터플라이 연산:
-$$B_l(u, \theta_l)[i] = \begin{cases}
-a \cdot u[i] + b \cdot u[i+2^l], & \text{if } i \bmod 2^{l+1} < 2^l 
-c \cdot u[i-2^l] + d \cdot u[i], & \text{if } i \bmod 2^{l+1} \geq 2^l
-\end{cases}$$
+$$B_l(u, \theta_l)[i] = \begin{cases}$$
+$$a \cdot u[i] + b \cdot u[i+2^l], & \text{if } i \bmod 2^{l+1} < 2^l$$
+$$c \cdot u[i-2^l] + d \cdot u[i], & \text{if } i \bmod 2^{l+1} \geq 2^l$$
+$$\end{cases}$$
 
 여기서:
 - $\Theta = \{\theta_0, \theta_1, ..., \theta_{L-1}\}$: 버터플라이 네트워크의 파라미터

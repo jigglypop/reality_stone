@@ -1,4 +1,4 @@
-# HyperButterfly: PyTorch를 위한 효율적인 하이퍼볼릭 기하학 라이브러리
+# RealityStone PyTorch를 위한 효율적인 하이퍼볼릭 기하학 라이브러리
 
 [![PyPI version](https://img.shields.io/pypi/v/hyper-butterfly.svg)](https://pypi.org/project/hyper-butterfly/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-1.7+-ee4c2c.svg)](https://pytorch.org/)
@@ -7,7 +7,7 @@
 
 ## 🌟 개요
 
-**HyperButterfly**는 하이퍼볼릭 공간에서의 기하학적 딥러닝을 위한 고성능 PyTorch 확장 라이브러리입니다. 리만 다양체, 특히 하이퍼볼릭 공간에서의 효율적인 연산과 Butterfly 팩터를 통한 효율적인 변환 구현을 제공합니다. CUDA 가속을 활용하여 대규모 데이터셋에서도 빠른 연산이 가능합니다.
+**RealityStone**은 하이퍼볼릭 공간에서의 기하학적 딥러닝을 위한 고성능 PyTorch 확장 라이브러리입니다. 리만 다양체, 특히 하이퍼볼릭 공간에서의 효율적인 연산 변환 구현을 제공하며, CUDA 가속을 활용하여 대규모 데이터셋에서도 빠른 연산이 가능합니다.
 
 
 ```bash

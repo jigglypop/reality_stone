@@ -1,7 +1,7 @@
 #pragma once
 #include <torch/extension.h>
 
-namespace hyper_butterfly::ops {
+namespace reality_stone::ops {
     torch::Tensor mobius_add_cpu(
         torch::Tensor u,
         torch::Tensor v,

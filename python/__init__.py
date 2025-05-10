@@ -33,7 +33,7 @@ if torch.cuda.is_available():
 from .maps import log_map, exp_map, geodesic
 from .layers import HyperButterflyFunction, GeodesicButterflyLayer
 
-def hyper_butterfly(x: torch.Tensor, params: torch.Tensor, c: float, L: int):
+def reality_stone(x: torch.Tensor, params: torch.Tensor, c: float, L: int):
     return HyperButterflyFunction.apply(x, params, c, L)
 
 def geodesic_butterfly(x: torch.Tensor,params: torch.Tensor,c: float,L: int,t: float) -> torch.Tensor:

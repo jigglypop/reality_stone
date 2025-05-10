@@ -3,9 +3,9 @@
 #include <tensor.h>
 #include <tensor.h>
 
-namespace config = hyper_butterfly::config;
+namespace config = reality_stone::config;
 
-namespace hyper_butterfly::maps {
+namespace reality_stone::maps {
     torch::Tensor exp_map_cpu(torch::Tensor v, float c) {
         auto norm = torch::norm(v, 2, 1, true).clamp(config::Constants::EPS);
         float sqrt_c = std::sqrt(c);

@@ -1,7 +1,7 @@
 #pragma once
 #include <torch/torch.h>
 
-namespace hyper_butterfly::manifolds {
+namespace reality_stone::manifolds {
     class ManifoldInterface {
         public:
         virtual ~ManifoldInterface() = default;

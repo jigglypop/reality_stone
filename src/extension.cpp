@@ -9,14 +9,13 @@
 #include <ops/mobius.h>
 #include <layers/geodesic.h>
 
-namespace utils = hyper_butterfly::utils;
-namespace maps = hyper_butterfly::maps;
-namespace ops = hyper_butterfly::ops;
-namespace manifolds = hyper_butterfly::manifolds;
-namespace layers = hyper_butterfly::layers;
+namespace utils = reality_stone::utils;
+namespace maps = reality_stone::maps;
+namespace ops = reality_stone::ops;
+namespace manifolds = reality_stone::manifolds;
+namespace layers = reality_stone::layers;
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    // CPU exports - 포인터 형식으로 함수 참조
     m.def("log_map_cpu", &maps::log_map_cpu, "Log map origin (CPU)");
     m.def("exp_map_cpu", &maps::exp_map_cpu, "Exp map origin (CPU)");
     // 순전파

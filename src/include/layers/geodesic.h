@@ -1,7 +1,7 @@
 #pragma once
 #include <torch/extension.h>
 
-namespace hyper_butterfly::layers {
+namespace reality_stone::layers {
     torch::Tensor geodesic_forward_cpu(
         torch::Tensor u,
         torch::Tensor v,

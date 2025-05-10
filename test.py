@@ -57,7 +57,7 @@ class GeodesicMLP(nn.Module):
 #         h = torch.relu(self.fc1(x))
 #         
 #         # 1) butterfly transform 적용하여 u 생성
-#         u = rs.hyper_butterfly(h, self.params, self.c, self.L)
+#         u = rs.reality_stone(h, self.params, self.c, self.L)
 #         
 #         # 2) geodesic_layer 적용
 #         z = rs.geodesic_layer(h, u, self.c, self.t)
@@ -86,7 +86,7 @@ class HyperMLP(nn.Module):
     def forward(self, x):
         x = x.view(x.size(0), -1)
         h = torch.relu(self.fc1(x))
-        u = rs.hyper_butterfly(h, self.params, self.c, self.L)
+        u = rs.reality_stone(h, self.params, self.c, self.L)
         if torch.isnan(u).any():
             u = torch.relu(h)
         return self.fc2(u)

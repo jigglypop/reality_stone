@@ -2,7 +2,7 @@
 #include <torch/extension.h>
 #include <utils/common_defs.h>
 
-namespace hyper_butterfly::manifolds {
+namespace reality_stone::manifolds {
     std::vector<torch::Tensor> poincare_forward_cpu(
         torch::Tensor x,
         torch::Tensor params,

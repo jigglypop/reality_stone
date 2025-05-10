@@ -2,7 +2,7 @@
 #include <torch/extension.h>
 #include <cuda.h>
 
-namespace hyper_butterfly::maps {
+namespace reality_stone::maps {
     torch::Tensor log_map_cpu(torch::Tensor x, float c);
 #if defined(WITH_CUDA)
     torch::Tensor log_map_forward_cuda(torch::Tensor x, float c);

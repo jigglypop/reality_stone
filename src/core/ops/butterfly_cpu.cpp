@@ -7,10 +7,10 @@
 #include <maps/log_map.h>
 #include <ops/butterfly.h>
 
-namespace utils = hyper_butterfly::utils;
-namespace maps = hyper_butterfly::maps;
+namespace utils = reality_stone::utils;
+namespace maps = reality_stone::maps;
 
-namespace hyper_butterfly::ops {
+namespace reality_stone::ops {
     torch::Tensor butterfly_forward_cpu(
         torch::Tensor input,
         torch::Tensor params,

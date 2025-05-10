@@ -3,9 +3,9 @@
 #include <algorithm>
 #include <config/constant.h>
 
-namespace config = hyper_butterfly::config;
+namespace config = reality_stone::config;
 
-namespace hyper_butterfly::utils {
+namespace reality_stone::utils {
 inline float atanh(float x) {
     x = std::max(-1.0f + config::Constants::BOUNDARY_EPS,
         std::min(x, 1.0f - config::Constants::BOUNDARY_EPS));

@@ -33,7 +33,7 @@ def butterfly_transform(x: torch.Tensor, params: torch.Tensor, L: int) -> torch.
         out = torch.stack([y1, y2], dim=2).reshape(batch, dim)
     return out
 
-def hyper_butterfly_py(x: torch.Tensor, params: torch.Tensor, c: float, L: int) -> torch.Tensor:
+def reality_stone_py(x: torch.Tensor, params: torch.Tensor, c: float, L: int) -> torch.Tensor:
     u = log_map(x, c)
     v = butterfly_transform(u, params, L)
     y = exp_map(v, c)
@@ -50,7 +50,7 @@ class HyperButterflyFunction(Function):
             if not x.is_cuda and 'poincare_forward_cpu,' in globals():
                 y, _, __ = poincare_forward_cpu(x, params, c, L)
             else:
-                y = hyper_butterfly_py(x, params, c, L)
+                y = reality_stone_py(x, params, c, L)
         return y
 
     @staticmethod
@@ -65,7 +65,7 @@ class HyperButterflyFunction(Function):
         with torch.enable_grad():
             x_req = x.detach().requires_grad_()
             p_req = params.detach().requires_grad_()
-            y = hyper_butterfly_py(x_req, p_req, c, L)
+            y = reality_stone_py(x_req, p_req, c, L)
             gx, gp = torch.autograd.grad(y, (x_req, p_req), grad_out)
         return gx, gp, None, None
     

@@ -4,7 +4,7 @@ import torch.optim as optim
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 import time
-import hyper_butterfly as hb
+import reality_stone as hb
 
 class EnhancedSpectralFilter(nn.Module):
     def __init__(self, dim, curvature=1e-3):
@@ -85,7 +85,7 @@ class DeepHyperButterfly(nn.Module):
         h = self.relu1(h)
         original_h = h
         for i, params in enumerate(self.params_list):
-            h_next = hb.hyper_butterfly(h, params, self.c, 1)
+            h_next = hb.reality_stone(h, params, self.c, 1)
             if (i+1) % 10 == 0:
                 h = h_next + original_h
                 original_h = h

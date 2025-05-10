@@ -2,7 +2,7 @@
 #include <torch/extension.h>
 #include <cmath>
 #include <vector>
-namespace hyper_butterfly::utils {
+namespace reality_stone::utils {
   inline int next_pow2(int v) {
     v--;
     v |= v >> 1;

@@ -2,9 +2,9 @@
 #include <ops/mobius.h>
 #include <layers/geodesic.h>
 
-namespace ops = hyper_butterfly::ops;
+namespace ops = reality_stone::ops;
 
-namespace hyper_butterfly::layers {
+namespace reality_stone::layers {
     torch::Tensor geodesic_forward_cuda(torch::Tensor u, torch::Tensor v, float c, float t) {
         auto minus_u = ops::mobius_scalar_cuda(u, c, -1.0f);
         auto delta = ops::mobius_add_cuda(minus_u, v, c);

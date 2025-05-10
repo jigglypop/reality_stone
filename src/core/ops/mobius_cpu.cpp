@@ -3,9 +3,9 @@
 #include <ops/mobius.h>
 #include <config/constant.h>
 
-namespace config = hyper_butterfly::config;
+namespace config = reality_stone::config;
 
-namespace hyper_butterfly::ops {
+namespace reality_stone::ops {
     torch::Tensor mobius_add_cpu(
         torch::Tensor u,
         torch::Tensor v,

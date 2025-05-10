@@ -2,7 +2,7 @@
 #include <cmath>
 #include <algorithm>
 
-namespace hyper_butterfly::config {
+namespace reality_stone::config {
     struct Constants {
         static constexpr float EPS = 1e-6f;
         static constexpr float BOUNDARY_EPS = 1e-6f;

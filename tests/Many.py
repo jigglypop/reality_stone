@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.optim as optim
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
-from hyper_butterfly import hyper_butterfly
+from reality_stone import reality_stone
 
 # ─────────────────────────────────────────────
 #  모델 정의
@@ -32,7 +32,7 @@ class HyperMLP(nn.Module):
     def forward(self, x):
         x = x.view(x.size(0), -1)
         h = torch.relu(self.fc1(x))
-        u = hyper_butterfly(h, self.params, self.c, self.L)
+        u = reality_stone(h, self.params, self.c, self.L)
         if torch.isnan(u).any(): u = torch.relu(h)
         return self.fc2(u)
 

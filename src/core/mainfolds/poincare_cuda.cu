@@ -10,11 +10,11 @@
 #include <ops/butterfly.h>
 #include <manifolds/poincare.h>
 
-namespace utils = hyper_butterfly::utils;
-namespace maps = hyper_butterfly::maps;
-namespace manifolds = hyper_butterfly::manifolds;
+namespace utils = reality_stone::utils;
+namespace maps = reality_stone::maps;
+namespace manifolds = reality_stone::manifolds;
 
-namespace hyper_butterfly::manifolds {
+namespace reality_stone::manifolds {
   std::vector<torch::Tensor> poincare_forward_cuda(
     torch::Tensor x,
     torch::Tensor params,

@@ -9,10 +9,10 @@
 #include <maps/exp_map.h>
 #include <config/constant.h>
 
-namespace utils = hyper_butterfly::utils;
-namespace config = hyper_butterfly::config;
+namespace utils = reality_stone::utils;
+namespace config = reality_stone::config;
 
-namespace hyper_butterfly::maps {
+namespace reality_stone::maps {
     template <typename scalar_t>
     __global__ void exp_map_forward_kernel(
         const scalar_t* __restrict__ v,

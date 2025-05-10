@@ -9,10 +9,10 @@
 #include <maps/log_map.h>
 #include <config/constant.h>
 
-namespace config = hyper_butterfly::config;
-namespace utils = hyper_butterfly::utils;
+namespace config = reality_stone::config;
+namespace utils = reality_stone::utils;
 
-namespace hyper_butterfly::maps {
+namespace reality_stone::maps {
     template <typename scalar_t>
     __global__ void log_map_forward_kernel(
         const scalar_t* __restrict__ x,

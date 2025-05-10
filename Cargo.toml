@@ -1,14 +1,14 @@
 [package]
-name = "RealityStone"
+name = "reality_stone"
 version = "0.1.0"
 authors = ["donghwanyeom <donghwanyeom@gmail.com>"]
 edition = "2021"
 description = "하이퍼볼릭 신경망을 위한 고성능 라이브러리"
 license = "MIT"
-repository = "https://github.com/jigglypop/RealityStone"
+repository = "https://github.com/jigglypop/reality_stone"
 
 [lib]
-name = "RealityStone"
+name = "reality_stone"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]

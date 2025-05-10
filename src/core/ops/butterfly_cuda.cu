@@ -9,10 +9,10 @@
 #include <maps/log_map.h>
 #include <ops/butterfly.h>
 
-namespace utils = hyper_butterfly::utils;
-namespace maps = hyper_butterfly::maps;
+namespace utils = reality_stone::utils;
+namespace maps = reality_stone::maps;
 
-namespace hyper_butterfly::ops {
+namespace reality_stone::ops {
   template <typename scalar_t>
   __global__ void butterfly_backward_kernel(
     const scalar_t* __restrict__ grad_out,

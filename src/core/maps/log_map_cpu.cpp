@@ -5,9 +5,9 @@
 #include <utils/numeric.h>
 #include <config/constant.h>
 
-namespace config = hyper_butterfly::config;
+namespace config = reality_stone::config;
 
-namespace hyper_butterfly::maps {
+namespace reality_stone::maps {
 
     torch::Tensor log_map_cpu(torch::Tensor x, float c) {
         auto norm = torch::norm(x, 2, 1, true).clamp(config::Constants::EPS);

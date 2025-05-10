@@ -3,9 +3,9 @@
 #include <manifolds/geodesic.h>
 #include <utils/cuda_utils.h>
 
-namespace ops = hyper_butterfly::ops;
+namespace ops = reality_stone::ops;
 
-namespace hyper_butterfly::manifolds {
+namespace reality_stone::manifolds {
     torch::Tensor geodesic_cuda(torch::Tensor u, torch::Tensor v, float c, float t) {
         auto minus_u = ops::mobius_scalar_cuda(u, c, -1.0f);
         auto delta = ops::mobius_add_cuda(minus_u, v, c);

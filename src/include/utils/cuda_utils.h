@@ -4,7 +4,7 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #endif
-namespace hyper_butterfly::utils {
+namespace reality_stone::utils {
   inline void check_cuda_error() {
 #ifdef WITH_CUDA
     cudaError_t err = cudaGetLastError();

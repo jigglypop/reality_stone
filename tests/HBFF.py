@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.optim as optim
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
-import hyper_butterfly as hb
+import reality_stone as hb
 
 class FFTStackedHB_SegRes(nn.Module):
     def __init__(self,

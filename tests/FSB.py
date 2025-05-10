@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.optim as optim
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
-import hyper_butterfly as hb
+import reality_stone as hb
 import torch.fft as fft
 
 # ———————— 비선형 사인·코사인 사영 ————————

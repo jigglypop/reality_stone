@@ -7,11 +7,11 @@
 #include <maps/exp_map.h>
 #include <ops/butterfly.h>
 
-namespace utils = hyper_butterfly::utils;
-namespace maps = hyper_butterfly::maps;
-namespace ops = hyper_butterfly::ops;
+namespace utils = reality_stone::utils;
+namespace maps = reality_stone::maps;
+namespace ops = reality_stone::ops;
 
-namespace hyper_butterfly::manifolds {
+namespace reality_stone::manifolds {
     std::vector<torch::Tensor> poincare_forward_cpu(
         torch::Tensor x,
         torch::Tensor params,

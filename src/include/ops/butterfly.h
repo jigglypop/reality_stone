@@ -2,7 +2,7 @@
 #include <torch/extension.h>
 #include <utils/common_defs.h>
 
-namespace hyper_butterfly::ops {
+namespace reality_stone::ops {
     torch::Tensor butterfly_forward_cpu(
         torch::Tensor input,
         torch::Tensor params,

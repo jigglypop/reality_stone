@@ -14,10 +14,10 @@
 
 ```csharp
 
-hyper_butterfly/
+reality_stone/
 ├─ csrc/
 │  ├─ include/
-│  │  └─ hyper_butterfly/
+│  │  └─ reality_stone/
 │  │     ├─ manifolds/               # manifold별 헤더
 │  │     │  ├─ base.h                # 공통 추상 인터페이스
 │  │     │  ├─ poincare.h
@@ -140,8 +140,8 @@ $$y = \exp_{\mathbf{0}}^c(v) = \tanh\left(\sqrt{c}\frac{||v||}{2}\right) \frac{v
 ## 설치 방법
 
 ```bash
-git clone https://github.com/username/hyper_butterfly.git
-cd hyper_butterfly
+git clone https://github.com/username/reality_stone.git
+cd reality_stone
 pip install -e .
 ```
 
@@ -149,22 +149,22 @@ pip install -e .
 
 ```python
 import torch
-import hyper_butterfly
+import reality_stone
 
 # 포인카레 볼 모델에서 연산 예제
 x = torch.zeros(1, 2)  # 포인카레 볼의 원점
 v = torch.torch::Tensor([[0.3, 0.4]])  # 접벡터
 
 # 지수 사상 적용
-y = hyper_butterfly.exp_map(x, v)
+y = reality_stone.exp_map(x, v)
 print("원점으로부터의 지수 맵 결과:", y)
 
 # 거리 계산
-dist = hyper_butterfly.distance(x, y)
+dist = reality_stone.distance(x, y)
 print(f"리만 거리: {dist.item():.4f}")
 
 # Hyper-Butterfly 레이어 사용
-layer = hyper_butterfly.HyperButterflyLayer(dim=8, num_layers=3, curvature=0.5)
+layer = reality_stone.HyperButterflyLayer(dim=8, num_layers=3, curvature=0.5)
 input_data = torch.randn(8) * 0.3  # 반지름이 작은 점들
 output = layer(input_data)
 ```
@@ -186,18 +186,18 @@ python test.py
 1. **지수 맵 (Exponential Map)**:
    ```python
    # 원점에서의 지수 맵
-   y = hyper_butterfly.exp_map(torch.torch::zeros_like(x), v, c=1.0)
+   y = reality_stone.exp_map(torch.torch::zeros_like(x), v, c=1.0)
    ```
 
 2. **로그 맵 (Logarithmic Map)**:
    ```python
    # 원점으로의 로그 맵
-   v = hyper_butterfly.log_map(torch.torch::zeros_like(y), y, c=1.0)
+   v = reality_stone.log_map(torch.torch::zeros_like(y), y, c=1.0)
    ```
 
 3. **측지 거리 (Geodesic Distance)**:
    ```python
-   dist = hyper_butterfly.distance(x, y, c=1.0)
+   dist = reality_stone.distance(x, y, c=1.0)
    ```
 
 ### Butterfly 팩터
@@ -206,7 +206,7 @@ Butterfly 팩터는 행렬을 효율적으로 표현하기 위한 방법으로, 
 
 ```python
 # 버터플라이 변환 레이어 적용
-output = hyper_butterfly.butterfly_transform(input_data, params, layer=0)
+output = reality_stone.butterfly_transform(input_data, params, layer=0)
 ```
 
 ### Hyper-Butterfly 레이어
@@ -214,13 +214,13 @@ output = hyper_butterfly.butterfly_transform(input_data, params, layer=0)
 Hyper-Butterfly 레이어는 하이퍼볼릭 공간에서 효율적인 신경망 레이어를 구현합니다:
 
 ```python
-layer = hyper_butterfly.HyperButterflyLayer(dim=8, num_layers=3, curvature=0.5)
+layer = reality_stone.HyperButterflyLayer(dim=8, num_layers=3, curvature=0.5)
 output = layer(input_data)
 ```
 
 ## 논문 참조
 
-이 구현은 "Hyper-Butterfly 네트워크: 계산적 하이퍼볼릭 기하학의 수학적 분석" 논문을 기반으로 합니다. 자세한 수학적 이론과 증명은 `hyper_butterfly.md` 문서를 참조하세요.
+이 구현은 "Hyper-Butterfly 네트워크: 계산적 하이퍼볼릭 기하학의 수학적 분석" 논문을 기반으로 합니다. 자세한 수학적 이론과 증명은 `reality_stone.md` 문서를 참조하세요.
 
 ## 기여하기
 

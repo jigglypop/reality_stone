@@ -1,7 +1,7 @@
 #pragma once
 #include <torch/extension.h>
 
-namespace hyper_butterfly::manifolds {
+namespace reality_stone::manifolds {
     torch::Tensor geodesic_cpu(
         torch::Tensor u,
         torch::Tensor v,

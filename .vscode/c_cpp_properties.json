@@ -4,13 +4,17 @@
             "name": "windows-gcc-x64",
             "includePath": [
                 "${workspaceFolder}/**",
-                "${workspaceFolder}/venv/Lib/site-packages/torch/include"
+                "${workspaceFolder}/venv/Lib/site-packages/**"
             ],
             "defines": [],
-            "compilerPath": "gcc",
             "cStandard": "${default}",
             "cppStandard": "${default}",
-            "intelliSenseMode": "windows-gcc-x64"
+            "intelliSenseMode": "windows-gcc-x86",
+            "compilerPath": "C:/MinGW/bin/gcc.exe",
+            "compilerArgs": [
+                "${workspaceFolder}/**",
+                "${workspaceFolder}/venv/Lib/site-packages/**"
+            ]
         }
     ],
     "version": 4

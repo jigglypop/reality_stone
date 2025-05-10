@@ -1,7 +1,7 @@
 #include <torch/extension.h>
 #include <cmath>
-#include <hyper_butterfly/ops/mobius.h>
-#include <hyper_butterfly/config/constant.h>
+#include <ops/mobius.h>
+#include <config/constant.h>
 
 namespace config = hyper_butterfly::config;
 

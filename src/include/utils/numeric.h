@@ -1,7 +1,7 @@
 #pragma once
 #include <cmath>
 #include <algorithm>
-#include <hyper_butterfly/config/constant.h>
+#include <config/constant.h>
 
 namespace config = hyper_butterfly::config;
 

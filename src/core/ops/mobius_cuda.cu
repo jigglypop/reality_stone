@@ -1,9 +1,9 @@
 #include <torch/extension.h>
 #include <cuda_runtime.h>
 #include <cmath>
-#include <hyper_butterfly/utils/cuda_utils.h>
-#include <hyper_butterfly/ops/mobius.h>
-#include <hyper_butterfly/config/constant.h>
+#include <utils/cuda_utils.h>
+#include <ops/mobius.h>
+#include <config/constant.h>
 #include <c10/util/Half.h> 
 
 namespace config = hyper_butterfly::config;

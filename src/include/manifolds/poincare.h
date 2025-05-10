@@ -1,6 +1,6 @@
 #pragma once
 #include <torch/extension.h>
-#include <hyper_butterfly/utils/common_defs.h>
+#include <utils/common_defs.h>
 
 namespace hyper_butterfly::manifolds {
     std::vector<torch::Tensor> poincare_forward_cpu(

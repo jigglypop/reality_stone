@@ -1,9 +1,9 @@
 #include <torch/extension.h>
 #include <cmath>
-#include <hyper_butterfly/utils/common_defs.h>
-#include <hyper_butterfly/maps/exp_map.h>
-#include <hyper_butterfly/utils/numeric.h>
-#include <hyper_butterfly/config/constant.h>
+#include <utils/common_defs.h>
+#include <maps/exp_map.h>
+#include <utils/numeric.h>
+#include <config/constant.h>
 
 namespace config = hyper_butterfly::config;
 

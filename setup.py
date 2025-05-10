@@ -24,8 +24,8 @@ def detect_cuda():
 def build_cuda_extension():
     try:
         from torch.utils.cpp_extension import BuildExtension, CUDAExtension
-        cuda_sources = glob.glob(os.path.join("hyper_butterfly", "csrc", "**", "*.cu"), recursive=True)
-        cpu_sources = glob.glob("hyper_butterfly/csrc/extension.cpp") + glob.glob("hyper_butterfly/csrc/src/**/*.cpp", recursive=True)
+        cuda_sources = glob.glob(os.path.join("src", "**", "*.cu"), recursive=True)
+        cpu_sources = glob.glob("src/extension.cpp") + glob.glob("src/core/**/*.cpp", recursive=True)
         extra_compile_args = {}
         if sys.platform == 'win32':
             extra_compile_args = {
@@ -38,8 +38,7 @@ def build_cuda_extension():
                 "nvcc": ["-O3"]
             }
         include_dirs = [
-            os.path.join(PROJECT_ROOT, "hyper_butterfly", "csrc", "include"),
-            os.path.join(PROJECT_ROOT, "hyper_butterfly", "csrc"),
+            os.path.join(PROJECT_ROOT, "src", "include"),
         ]
         library_dirs = []
         if sys.platform == 'win32':
@@ -71,7 +70,7 @@ def build_cuda_extension():
         
         ext_modules = [
             CUDAExtension(
-                name="hyper_butterfly._C",
+                name="src._C",
                 sources=cpu_sources + cuda_sources,
                 include_dirs=include_dirs,
                 library_dirs=library_dirs,
@@ -98,18 +97,18 @@ if __name__ == "__main__":
             print("PyTorch를 찾을 수 없어 CPU 전용 버전으로 빌드합니다.")
     # setup 호출
     setup(
-        name="hyper_butterfly",
+        name="RealityStone",
         version="0.1.0",
         description="하이퍼볼릭 기하학을 위한 효율적인 PyTorch 라이브러리",
         author="jigglypop",
         author_email="donghwanyeom@gmail.com",
-        url="https://github.com/jigglypop/hyper_butterfly",
+        url="https://github.com/jigglypop/RealityStone",
         packages=find_packages(),
         ext_modules=ext_modules,
         cmdclass=cmdclass,
         include_package_data=True,
         package_data={
-            "hyper_butterfly": ["csrc/*.h"],
+            "RealityStone": ["src/*.h"],
         },
         install_requires=["torch>=2.0.0"],
         python_requires=">=3.7",

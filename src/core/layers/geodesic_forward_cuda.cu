@@ -1,6 +1,6 @@
 #include <torch/extension.h>
-#include <hyper_butterfly/ops/mobius.h>
-#include <hyper_butterfly/layers/geodesic.h>
+#include <ops/mobius.h>
+#include <layers/geodesic.h>
 
 namespace ops = hyper_butterfly::ops;
 

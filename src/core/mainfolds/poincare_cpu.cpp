@@ -1,11 +1,11 @@
 #include <torch/extension.h>
 #include <cmath>
 #include <vector>
-#include <hyper_butterfly/utils/common_defs.h>
-#include <hyper_butterfly/utils/cuda_utils.h>
-#include <hyper_butterfly/maps/log_map.h>
-#include <hyper_butterfly/maps/exp_map.h>
-#include <hyper_butterfly/ops/butterfly.h>
+#include <utils/common_defs.h>
+#include <utils/cuda_utils.h>
+#include <maps/log_map.h>
+#include <maps/exp_map.h>
+#include <ops/butterfly.h>
 
 namespace utils = hyper_butterfly::utils;
 namespace maps = hyper_butterfly::maps;

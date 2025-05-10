@@ -1,13 +1,13 @@
 #include <torch/extension.h>
-#include <hyper_butterfly/utils/common_defs.h>
-#include <hyper_butterfly/utils/cuda_utils.h>
-#include <hyper_butterfly/maps/log_map.h>
-#include <hyper_butterfly/maps/exp_map.h>
-#include <hyper_butterfly/ops/butterfly.h>
-#include <hyper_butterfly/manifolds/poincare.h>
-#include <hyper_butterfly/manifolds/geodesic.h>
-#include <hyper_butterfly/ops/mobius.h>
-#include <hyper_butterfly/layers/geodesic.h>
+#include <utils/common_defs.h>
+#include <utils/cuda_utils.h>
+#include <maps/log_map.h>
+#include <maps/exp_map.h>
+#include <ops/butterfly.h>
+#include <manifolds/poincare.h>
+#include <manifolds/geodesic.h>
+#include <ops/mobius.h>
+#include <layers/geodesic.h>
 
 namespace utils = hyper_butterfly::utils;
 namespace maps = hyper_butterfly::maps;

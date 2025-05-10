@@ -3,12 +3,12 @@
 #include <torch/extension.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
-#include <hyper_butterfly/utils/common_defs.h>
-#include <hyper_butterfly/utils/cuda_utils.h>
-#include <hyper_butterfly/maps/exp_map.h>
-#include <hyper_butterfly/maps/log_map.h>
-#include <hyper_butterfly/ops/butterfly.h>
-#include <hyper_butterfly/manifolds/poincare.h>
+#include <utils/common_defs.h>
+#include <utils/cuda_utils.h>
+#include <maps/exp_map.h>
+#include <maps/log_map.h>
+#include <ops/butterfly.h>
+#include <manifolds/poincare.h>
 
 namespace utils = hyper_butterfly::utils;
 namespace maps = hyper_butterfly::maps;

@@ -1,6 +1,6 @@
 #pragma once
 #include <torch/extension.h>
-#include <hyper_butterfly/utils/common_defs.h>
+#include <utils/common_defs.h>
 
 namespace hyper_butterfly::ops {
     torch::Tensor butterfly_forward_cpu(

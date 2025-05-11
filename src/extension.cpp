@@ -25,7 +25,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("geodesic_cpu", &manifolds::geodesic_cpu, "Geodesic interpolation (CPU)");
     // 레이어
     m.def("geodesic_forward_cpu", &layers::geodesic_forward_cpu, "Geodesic forward (CPU)");
-    m.def("geodesic_backward_cpu", &layers::geodesic_backward_cpu, "Geodesic backward (CPU)");
 #ifdef WITH_CUDA
     // CUDA exports - 포인터 형식으로 함수 참조
     m.def("log_map_forward_cuda", &maps::log_map_forward_cuda, "Log map origin (CUDA)");
@@ -40,6 +39,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("geodesic_cuda", &manifolds::geodesic_cuda, "Geodesic interpolation (CUDA)");
     // 레이어
     m.def("geodesic_forward_cuda", &layers::geodesic_forward_cuda, "Geodesic forward (CUDA)");
-    m.def("geodesic_backward_cuda", &layers::geodesic_backward_cuda, "Geodesic backward (CUDA)");
 #endif
 }

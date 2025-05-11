@@ -1,7 +1,6 @@
 #include <torch/extension.h>
 #include <cmath>
-#include <tensor.h>
-#include <tensor.h>
+#include <config/constant.h> 
 
 namespace config = reality_stone::config;
 

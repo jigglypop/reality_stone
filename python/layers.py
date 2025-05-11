@@ -4,12 +4,12 @@ import math
 import torch
 from torch import nn
 from torch.autograd import Function
-from .._C import (
+from ._C import (
     poincare_forward_cpu,
     poincare_forward_cuda,
     poincare_backward_cuda,
 )
-from .. import _has_cuda
+from . import _has_cuda
 from .maps import log_map, exp_map, geodesic
 
 def butterfly_transform(x: torch.Tensor, params: torch.Tensor, L: int) -> torch.Tensor:

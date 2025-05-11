@@ -1,48 +1,14 @@
-import os
-import sys
-from sympy import Function
 import torch
-import ctypes
+from torch.autograd import Function
+import math
 
-# Windows DLL 로딩 문제 해결
-if sys.platform == 'win32':
-    # PyTorch lib 디렉토리
-    torch_lib_path = os.path.join(os.path.dirname(torch.__file__), "lib")
-    
-    # Python 3.8+ DLL 디렉토리 추가
-    if hasattr(os, 'add_dll_directory'):
-        with os.add_dll_directory(torch_lib_path):
-            # CUDA DLL 사전 로딩
-            cuda_dlls = ["cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll"]
-            for dll_name in cuda_dlls:
-                dll_path = os.path.join(torch_lib_path, dll_name)
-                if os.path.exists(dll_path):
-                    try:
-                        ctypes.CDLL(dll_path)
-                    except Exception as e:
-                        print(f"Warning: Failed to load {dll_name}: {e}")
-    else:
-        # Python 3.7 이하
-        os.environ['PATH'] = torch_lib_path + ';' + os.environ.get('PATH', '')
-
-# 디버그 정보
-print(f"Attempting to import _C from: {os.path.dirname(__file__)}")
-
-try:
-    from ._C import (
-        log_map_cpu,
-        exp_map_cpu,
-        poincare_forward_cpu,
-        geodesic_cpu,
-        geodesic_forward_cpu,
-        geodesic_backward_cpu,
-    )
-    print("CPU functions imported successfully")
-except ImportError as e:
-    print(f"Failed to import CPU functions: {e}")
-    raise
-
-# CUDA 함수들은 별도로 import
+from ._C import (
+    log_map_cpu,
+    exp_map_cpu,
+    poincare_forward_cpu,
+    geodesic_cpu,
+    geodesic_forward_cpu,
+)
 _has_cuda = False
 if torch.cuda.is_available():
     print("CUDA is available")
@@ -56,19 +22,15 @@ if torch.cuda.is_available():
             poincare_backward_cuda,
             geodesic_cuda,
             geodesic_forward_cuda,
-            geodesic_backward_cuda,
         )
         _has_cuda = True
-        print("CUDA functions imported successfully")
-    except ImportError as e:
-        print(f"Failed to import CUDA functions: {e}")
+    except ImportError:
         _has_cuda = False
 
-# 나머지 import들...
 from .maps import log_map, exp_map, geodesic
 from .layers import HyperButterflyFunction, GeodesicButterflyLayer
 
-def reality_stone(x: torch.Tensor, params: torch.Tensor, c: float, L: int):
+def hyper_butterfly(x: torch.Tensor, params: torch.Tensor, c: float, L: int):
     return HyperButterflyFunction.apply(x, params, c, L)
 
 def geodesic_butterfly(x: torch.Tensor,params: torch.Tensor,c: float,L: int,t: float) -> torch.Tensor:
@@ -116,6 +78,7 @@ class GeodesicFunction(Function):
 
 def geodesic_layer(u, v, c, t):
     return GeodesicFunction.apply(u, v, c, t)
+
 # class GeodesicFunction(Function):
 #     @staticmethod
 #     def forward(ctx, u, v, c, t):

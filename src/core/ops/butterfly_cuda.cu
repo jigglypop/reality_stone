@@ -1,7 +1,8 @@
-#include <torch/extension.h>
+#ifdef WITH_CUDA
 #include <cuda.h>
+#include <cuda_runtime.h>
+#endif
 #include <torch/extension.h>
-#include <cuda.h>
 #include <cuda_runtime.h>
 #include <utils/common_defs.h>
 #include <utils/cuda_utils.h>

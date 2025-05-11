@@ -1,6 +1,4 @@
 #include <torch/extension.h>
-#include <cuda.h>
-#include <cuda_runtime.h>
 #include <cmath>
 #include <vector>
 #include <utils/common_defs.h>
@@ -8,7 +6,10 @@
 #include <utils/numeric.h>
 #include <maps/exp_map.h>
 #include <config/constant.h>
-
+#ifdef WITH_CUDA
+#include <cuda.h>
+#include <cuda_runtime.h>
+#endif
 namespace utils = reality_stone::utils;
 namespace config = reality_stone::config;
 

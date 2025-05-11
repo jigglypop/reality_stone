@@ -1,6 +1,8 @@
 #pragma once
-#include <torch/extension.h>
+#ifdef WITH_CUDA
 #include <cuda.h>
+#endif
+#include <torch/extension.h>
 
 namespace reality_stone::maps {
     torch::Tensor log_map_cpu(torch::Tensor x, float c);

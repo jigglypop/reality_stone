@@ -1,5 +1,8 @@
-#include <torch/extension.h>
+#ifdef WITH_CUDA
+#include <cuda.h>
 #include <cuda_runtime.h>
+#endif
+#include <torch/extension.h>
 #include <cmath>
 #include <utils/cuda_utils.h>
 #include <ops/mobius.h>

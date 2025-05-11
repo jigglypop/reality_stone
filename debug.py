@@ -1,14 +1,19 @@
-# debug.py
 import os
 import subprocess
 import sys
 
-print("=== 현재 환경변수 ===")
-print(f"CUDA_HOME: {os.environ.get('CUDA_HOME', 'Not Set')}")
-print(f"CUDA_PATH: {os.environ.get('CUDA_PATH', 'Not Set')}")
-print(f"DISTUTILS_USE_SDK: {os.environ.get('DISTUTILS_USE_SDK', 'Not Set')}")
-
-print("\n=== 서브프로세스에서 환경변수 ===")
-result = subprocess.run([sys.executable, "-c", "import os; print(os.environ.get('CUDA_HOME', 'Not Found'))"], 
-                       capture_output=True, text=True)
-print(f"Subprocess CUDA_HOME: {result.stdout.strip()}")
+# _C.pyd 파일 찾기
+for root, dirs, files in os.walk('.'):
+    for file in files:
+        if file == '_C.pyd':
+            pyd_path = os.path.join(root, file)
+            print(f"Found _C.pyd at: {pyd_path}")
+            
+            # dumpbin으로 의존성 확인 (Visual Studio 도구)
+            try:
+                result = subprocess.run(['dumpbin', '/dependents', pyd_path], 
+                                      capture_output=True, text=True)
+                print("Dependencies:")
+                print(result.stdout)
+            except FileNotFoundError:
+                print("dumpbin not found. Install Visual Studio tools.")

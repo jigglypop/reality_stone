@@ -1,12 +1,12 @@
 import math
 import torch
-from .._C import (
+from ._C import (
     geodesic_cuda,
     geodesic_cpu,
     log_map_forward_cuda,
     exp_map_forward_cuda,
 )
-from .. import _has_cuda
+from . import _has_cuda
 
 def log_map(x: torch.Tensor, c: float) -> torch.Tensor:
     if x.is_cuda and _has_cuda:

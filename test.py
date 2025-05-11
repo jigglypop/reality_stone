@@ -5,7 +5,7 @@ import torch.optim as optim
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 import faulthandler; faulthandler.enable()
-import RealityStone as rs
+import reality_stone as rs
 
 #
 # 1) Geodesic-Butterfly MLP (새로운 geodesic_layer 사용)

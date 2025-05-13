@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.optim as optim
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
-import hyper_butterfly as hb  # our HB module
+import reality_stone as hb  # our HB module
 
 class HyperButterflyConv2d(nn.Module):
     """
@@ -32,7 +32,7 @@ class HyperButterflyConv2d(nn.Module):
         # 채널 믹싱 위해 reshape
         y = y.permute(0,2,3,1).contiguous().view(-1, C)
         # Hyper-Butterfly
-        u = hb.hyper_butterfly(y, self.params, self.c, self.L)
+        u = hb.reality_stone(y, self.params, self.c, self.L)
         # 다시 원상복구
         u = u.view(B, H, W, C).permute(0,3,1,2).contiguous()
         return u
@@ -75,7 +75,7 @@ class HBCNN_Full(nn.Module):
         x = x.view(B, -1)           # (B, flat_dim)
 
         h = self.fc1(x)             # (B, hid)
-        u = hb.hyper_butterfly(h, self.params1, self.c, self.L)
+        u = hb.reality_stone(h, self.params1, self.c, self.L)
         return self.classifier(u)
 
 # ───────────────────────────────────

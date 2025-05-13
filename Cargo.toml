@@ -1,0 +1,30 @@
+[package]
+name = "reality_stone"
+version = "0.1.0"
+authors = ["donghwanyeom <donghwanyeom@gmail.com>"]
+edition = "2021"
+description = "하이퍼볼릭 신경망을 위한 고성능 라이브러리"
+license = "MIT"
+repository = "https://github.com/jigglypop/reality_stone"
+
+[lib]
+name = "reality_stone"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ndarray = "0.15"
+num = "0.4"
+rayon = { version = "1.7", optional = true }
+half = "2.3"
+pyo3 = { version = "0.19", features = ["extension-module"], optional = true }
+numpy = { version = "0.19", optional = true }
+
+[dependencies.cuda-rust]
+version = "0.3"
+optional = true
+
+[features]
+default = ["python"]
+python = ["pyo3", "numpy"]
+cuda = ["cuda-rust"]
+parallel = ["rayon"]

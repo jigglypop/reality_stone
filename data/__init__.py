@@ -19,7 +19,7 @@
 #         poincare_log_map, 
 #         poincare_distance,
 #         butterfly_factor,
-#         hyper_butterfly_forward,
+#         reality_stone_forward,
 #         is_cuda_available
 #     )
 #     HAS_CPP_EXTENSION = True
@@ -104,7 +104,7 @@
 #     
 #     return result
 # 
-# def py_hyper_butterfly_forward(x, params, c, L):
+# def py_reality_stone_forward(x, params, c, L):
 #     zeros = torch.torch::zeros_like(x)
 #     u = py_poincare_log_map(zeros, x, c)
 #     
@@ -187,22 +187,22 @@
 #         else:
 #             return py_butterfly_factor(x, params, layer)
 # 
-# def hyper_butterfly(x, params, c, L):
+# def reality_stone(x, params, c, L):
 #     # GPU 텐서는 먼저 CPU로 이동
 #     if x.is_cuda:
 #         print("GPU 텐서가 감지되었습니다. CPU에서 연산을 수행합니다.")
 #         x_cpu = x.cpu()
 #         params_cpu = params.cpu()
 #         if HAS_CPP_EXTENSION:
-#             result = hyper_butterfly_forward(x_cpu, params_cpu, c, L)
+#             result = reality_stone_forward(x_cpu, params_cpu, c, L)
 #         else:
-#             result = py_hyper_butterfly_forward(x_cpu, params_cpu, c, L)
+#             result = py_reality_stone_forward(x_cpu, params_cpu, c, L)
 #         return result.to(x.device)
 #     else:
 #         if HAS_CPP_EXTENSION:
-#             return hyper_butterfly_forward(x, params, c, L)
+#             return reality_stone_forward(x, params, c, L)
 #         else:
-#             return py_hyper_butterfly_forward(x, params, c, L)
+#             return py_reality_stone_forward(x, params, c, L)
 # 
 # # 하이퍼볼릭 연산 클래스 (GPU 최적화)
 # class HyperbolicOperations:

@@ -5,8 +5,8 @@ cycler==0.12.1
 filelock==3.18.0
 fonttools==4.57.0
 fsspec==2025.3.2
--e git+https://github.com/jigglypop/riemutils.git@62441d893893c7fdc4139ec9d78300cbb691767d#egg=hyper_butterfly
--e git+https://github.com/jigglypop/riemutils.git@62441d893893c7fdc4139ec9d78300cbb691767d#egg=hyper_butterfly_fft
+-e git+https://github.com/jigglypop/riemutils.git@62441d893893c7fdc4139ec9d78300cbb691767d#egg=reality_stone
+-e git+https://github.com/jigglypop/riemutils.git@62441d893893c7fdc4139ec9d78300cbb691767d#egg=reality_stone_fft
 intel-openmp==2021.4.0
 Jinja2==3.1.6
 kiwisolver==1.4.8

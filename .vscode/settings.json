@@ -63,6 +63,8 @@
     "*.cpp": "cpp",
     "random": "cpp",
     "queue": "cpp",
-    "stack": "cpp"
+    "stack": "cpp",
+    "cmath": "cpp",
+    "complex": "cpp"
   }
 }

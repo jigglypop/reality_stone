@@ -62,12 +62,10 @@ namespace reality_stone::layers {
         int B = u.size(0), D = u.size(1);
         auto grad_u = torch::zeros_like(u);
         auto grad_v = torch::zeros_like(v);
-
         int threads = 256;
         int blocks = B;
-
         AT_DISPATCH_FLOATING_TYPES(u.scalar_type(), "poincare_ball_backward_cuda", [&] {
-            poincare_ball_backward_kernel<scalar_t> << <blocks, threads >> > (
+            poincare_ball_backward_kernel<scalar_t><<<blocks, threads>>> (
                 grad_output.data_ptr<scalar_t>(),
                 u.data_ptr<scalar_t>(),
                 v.data_ptr<scalar_t>(),

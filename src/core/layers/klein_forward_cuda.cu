@@ -73,17 +73,4 @@ namespace reality_stone::layers {
         utils::check_cuda_error();
         return result;
     }
-
-    std::tuple<torch::Tensor, torch::Tensor> klein_backward_cuda(
-        torch::Tensor grad_output,
-        torch::Tensor u,
-        torch::Tensor v,
-        float c,
-        float t
-    ) {
-        auto grad_u = grad_output * (1.0f - t);
-        auto grad_v = grad_output * t;
-        return std::make_tuple(grad_u, grad_v);
-    }
-
 }

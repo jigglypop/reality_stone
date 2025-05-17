@@ -67,20 +67,4 @@ namespace reality_stone::layers {
         utils::check_cuda_error();
         return result;
     }
-
-    std::tuple<torch::Tensor, torch::Tensor> lorentz_backward_cuda(
-        torch::Tensor grad_output,
-        torch::Tensor u,
-        torch::Tensor v,
-        float c,
-        float t
-    ) {
-        int B = u.size(0);
-        auto grad_u = torch::zeros_like(u);
-        auto grad_v = torch::zeros_like(v);
-        grad_u = grad_output * (1.0f - t);
-        grad_v = grad_output * t;
-        return std::make_tuple(grad_u, grad_v);
-    }
-
 }

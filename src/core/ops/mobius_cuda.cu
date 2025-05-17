@@ -85,7 +85,7 @@ namespace reality_stone::ops {
         int threads = 256;
         int blocks = (B + threads - 1) / threads;
         AT_DISPATCH_FLOATING_TYPES(u.scalar_type(), "mobius_add_cuda", [&] {
-            mobius_add_kernel<scalar_t> << <blocks, threads >> > (
+            mobius_add_kernel<scalar_t><<<blocks, threads>>> (
                 u.data_ptr<scalar_t>(),
                 v.data_ptr<scalar_t>(),
                 out.data_ptr<scalar_t>(),
@@ -107,7 +107,7 @@ namespace reality_stone::ops {
         int threads = 256;
         int blocks = (B + threads - 1) / threads;
         AT_DISPATCH_FLOATING_TYPES(u.scalar_type(), "mobius_scalar_cuda", [&] {
-            mobius_scalar_kernel<scalar_t> << <blocks, threads >> > (
+            mobius_scalar_kernel<scalar_t><<<blocks, threads>>> (
                 u.data_ptr<scalar_t>(),
                 out.data_ptr<scalar_t>(),
                 B, D, c, r

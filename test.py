@@ -59,22 +59,16 @@ def test_epoch(model, loader, device):
 # 모델 훈련 함수
 def train_model(model_name, model, loader_train, loader_test, epochs=10, lr=1e-3, device="cuda"):
     optimizer = optim.Adam(model.parameters(), lr=lr)
-    
-    # t값을 모델 이름에 추가 (GeodesicMLP인 경우)
     display_name = model_name
     if hasattr(model, 't'):
         display_name = f"{model_name} (t={model.t})"
-    
     print(f"\n--- {display_name} Training ---")
     test_accs = []  # 테스트 정확도 기록
-    
     for ep in range(1, epochs+1):
         loss, t = train_epoch(model, loader_train, optimizer, device)
         acc = test_epoch(model, loader_test, device)
         test_accs.append(acc)
         print(f"[{display_name}] Epoch {ep}/{epochs} loss={loss:.4f} time={t:.2f}s acc={acc*100:.2f}%")
-    
-    # 최종 성능 출력
     best_acc = max(test_accs) * 100
     print(f"[{display_name}] Best accuracy: {best_acc:.2f}%")
     return best_acc
@@ -83,7 +77,6 @@ def train_model(model_name, model, loader_train, loader_test, epochs=10, lr=1e-3
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     batch_size, lr, epochs = 256, 1e-3, 10
-    # 데이터 로딩
     transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.5,), (0.5,))
@@ -92,18 +85,15 @@ if __name__ == "__main__":
     test_ds = datasets.MNIST('.', train=False, download=True, transform=transform)
     train_loader = torch.utils.data.DataLoader(train_ds, batch_size=batch_size, shuffle=True)
     test_loader = torch.utils.data.DataLoader(test_ds, batch_size=batch_size, shuffle=False)
-    # 다양한 t값으로 GeodesicMLP 테스트
     t_values = [0.5, 0.7, 1.0, 10.0, 100.0, 1000.0, 10000.0]
     geodesic_results = {}
     for t in t_values:
         model = GeodesicMLP(c=1e-3, L=2, t=t).to(device)
         acc = train_model(f"GeodesicMLP", model, train_loader, test_loader, epochs=epochs, lr=lr, device=device)
         geodesic_results[t] = acc
-    # 결과 요약
     print("\n=== 결과 요약 ===")
     print("\nGeodesicMLP 정확도 (t값에 따른 비교):")
     for t, acc in sorted(geodesic_results.items()):
         print(f"t = {t}: {acc:.2f}%")
-    # 최적의 t값 찾기
     best_t = max(geodesic_results.items(), key=lambda x: x[1])[0]
     print(f"\n최적의 t값: {best_t} (정확도: {geodesic_results[best_t]:.2f}%)")

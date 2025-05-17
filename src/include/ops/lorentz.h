@@ -50,12 +50,10 @@ namespace reality_stone::ops {
         torch::Tensor v,
         float c
     );
-
     torch::Tensor poincare_to_lorentz_cuda(
         torch::Tensor x,
         float c
     );
-
     torch::Tensor lorentz_to_poincare_cuda(
         torch::Tensor x,
         float c

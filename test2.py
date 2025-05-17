@@ -33,56 +33,28 @@ class GeodesicMLP(nn.Module):
         return output
 
 class LorentzMLP(nn.Module):
-    """
-    로렌츠 모델을 사용한 다층 퍼셉트론
-    
-    로렌츠 모델은 (n+1)차원 민코프스키 공간에서 초곡면 상의 점들을 사용합니다.
-    특징:
-    - 수치적으로 안정적
-    - 곡률 계산이 정확함
-    - 차원이 n+1로 증가함 (시간 성분 추가)
-    """
     def __init__(self, in_dim=784, hid=128, out_dim=10, c=1e-3, t=0.7):
         super().__init__()
         self.c = c
         self.t = t
-        
-        # 입력 차원 -> 은닉 차원 투영
         self.weights1 = nn.Parameter(torch.randn(in_dim, hid) * 0.01)
         self.bias1 = nn.Parameter(torch.zeros(hid))
-        
-        # 로렌츠 공간 내부의 변환
         self.weights2 = nn.Parameter(torch.randn(hid, hid) * 0.01)
         self.bias2 = nn.Parameter(torch.zeros(hid))
-        
-        # 출력 차원으로 투영 (로렌츠 모델은 차원이 하나 더 큼)
         self.out_weights = nn.Parameter(torch.randn(hid+1, out_dim) * 0.01)
         self.out_bias = nn.Parameter(torch.zeros(out_dim))
 
     def forward(self, x):
-        # 입력 형태 변환
         x = x.view(x.size(0), -1)
-        
-        # 첫 번째 레이어 (일반 선형 변환)
         h = x @ self.weights1 + self.bias1
         h = torch.tanh(h)
-        
-        # 두 번째 레이어 (다시 일반 선형 변환)
         u = h @ self.weights2 + self.bias2
         u = torch.sigmoid(u)
-        
-        # 로렌츠 공간으로 변환 (푸앵카레 → 로렌츠 좌표계 변환)
         lorentz_h = rs.poincare_to_lorentz(h, self.c)
         lorentz_u = rs.poincare_to_lorentz(u, self.c)
-        
-        # 로렌츠 측지선 연산
         lorentz_z = rs.lorentz_layer(lorentz_h, lorentz_u, self.c, self.t)
-        
-        # NaN 처리
         if torch.isnan(lorentz_z).any():
             lorentz_z = lorentz_h
-        
-        # 출력 레이어
         output = lorentz_z @ self.out_weights + self.out_bias
         return output
 

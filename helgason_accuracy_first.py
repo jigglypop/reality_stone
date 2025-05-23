@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import traceback
+import time  # 추론 속도 측정용 추가
 from typing import Dict, Optional, Tuple, List
 from dataclasses import dataclass
 
@@ -449,6 +450,104 @@ def test_accuracy_first():
         except Exception as e:
             print(f"압축 모델 실행 실패: {e}")
             traceback.print_exc()
+    
+    # 🚀 추론 속도 비교 테스트
+    print("\n🚀 추론 속도 비교 테스트")
+    print("=" * 40)
+    
+    def benchmark_model(model, input_data, model_name, warmup_runs=10, test_runs=100):
+        """모델 추론 속도 벤치마크"""
+        
+        model.eval()
+        
+        # GPU가 있으면 GPU로 이동
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        model = model.to(device)
+        input_data = input_data.to(device)
+        
+        print(f"📊 {model_name} 벤치마크 (device: {device})")
+        
+        # Warmup 실행 (GPU 캐시 준비)
+        with torch.no_grad():
+            for _ in range(warmup_runs):
+                _ = model(input_data)
+        
+        # 실제 측정
+        torch.cuda.synchronize() if torch.cuda.is_available() else None
+        
+        start_time = time.time()
+        with torch.no_grad():
+            for _ in range(test_runs):
+                output = model(input_data)
+        
+        torch.cuda.synchronize() if torch.cuda.is_available() else None
+        end_time = time.time()
+        
+        total_time = end_time - start_time
+        avg_time = total_time / test_runs
+        fps = 1.0 / avg_time
+        
+        print(f"   평균 추론 시간: {avg_time*1000:.3f}ms")
+        print(f"   처리량: {fps:.1f} FPS")
+        print(f"   총 시간 ({test_runs}회): {total_time:.3f}s")
+        
+        # 메모리 사용량 (GPU에서만)
+        if torch.cuda.is_available():
+            memory_used = torch.cuda.max_memory_allocated() / 1024**2  # MB
+            print(f"   GPU 메모리: {memory_used:.1f}MB")
+            torch.cuda.reset_peak_memory_stats()
+        
+        return avg_time, fps
+    
+    # 다양한 배치 크기로 테스트
+    batch_sizes = [1, 8, 16, 32]
+    speed_results = {}
+    
+    for batch_size in batch_sizes:
+        print(f"\n🔍 배치 크기 {batch_size} 테스트:")
+        test_batch = torch.randn(batch_size, 128)
+        
+        # 원본 모델 속도
+        original_time, original_fps = benchmark_model(
+            model, test_batch, f"원본 모델 (batch={batch_size})"
+        )
+        
+        # 압축 모델 속도  
+        compressed_time, compressed_fps = benchmark_model(
+            compressed_model, test_batch, f"압축 모델 (batch={batch_size})"
+        )
+        
+        # 속도 개선률 계산
+        speedup = original_time / compressed_time
+        throughput_gain = compressed_fps / original_fps
+        
+        print(f"   ⚡ 속도 개선: {speedup:.2f}x 빠름")
+        print(f"   📈 처리량 증가: {throughput_gain:.2f}x")
+        
+        speed_results[batch_size] = {
+            'original_time': original_time,
+            'compressed_time': compressed_time,
+            'speedup': speedup,
+            'throughput_gain': throughput_gain
+        }
+    
+    # 종합 속도 분석
+    print(f"\n📊 종합 속도 분석:")
+    avg_speedup = np.mean([result['speedup'] for result in speed_results.values()])
+    avg_throughput_gain = np.mean([result['throughput_gain'] for result in speed_results.values()])
+    
+    print(f"   평균 속도 개선: {avg_speedup:.2f}x")
+    print(f"   평균 처리량 증가: {avg_throughput_gain:.2f}x")
+    
+    # 파라미터 수 감소와 속도 개선 비교
+    param_reduction = (1 - stats.compression_ratio) * 100
+    print(f"   파라미터 감소: {param_reduction:.1f}%")
+    print(f"   속도 개선: {(avg_speedup-1)*100:.1f}%")
+    
+    if avg_speedup > 1.0:
+        print("   ✅ 압축으로 인한 속도 향상 확인!")
+    else:
+        print("   ⚠️ 압축 후 속도 저하 발생")
     
     print(f"\n📊 최종 정확도 최우선 결과:")
     print(f"   압축률: {100*stats.compression_ratio:.1f}%")

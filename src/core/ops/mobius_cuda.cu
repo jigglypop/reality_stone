@@ -18,10 +18,10 @@ namespace reality_stone::ops {
         const scalar_t* __restrict__ u,
         const scalar_t* __restrict__ v,
         scalar_t* __restrict__ out,
-        int B, int D, float c
+        int total_elements, int D, float c
     ) {
         int idx = blockIdx.x * blockDim.x + threadIdx.x;
-        if (idx >= B) return;
+        if (idx >= total_elements) return;
 
         const scalar_t* up = u + idx * D;
         const scalar_t* vp = v + idx * D;
@@ -49,10 +49,10 @@ namespace reality_stone::ops {
     __global__ void mobius_scalar_kernel(
         const scalar_t* __restrict__ up,
         scalar_t* __restrict__ out,
-        int B, int D, float c, float r
+        int total_elements, int D, float c, float r
     ) {
         int idx = blockIdx.x * blockDim.x + threadIdx.x;
-        if (idx >= B) return;
+        if (idx >= total_elements) return;
         const scalar_t* u0 = up + idx * D;
         float norm2 = 0;
         for (int j = 0; j < D; ++j) {
@@ -80,16 +80,21 @@ namespace reality_stone::ops {
     ) {
         utils::check_cuda_tensor(u);
         utils::check_cuda_tensor(v);
-        int B = u.size(0), D = u.size(1);
+        
+        // 동적 차원 처리: 마지막 차원을 feature dimension으로 사용
+        int total_elements = u.numel() / u.size(-1);  // 배치 요소 총 개수
+        int D = u.size(-1);  // feature dimension
+        
         auto out = torch::empty_like(u);
         int threads = 256;
-        int blocks = (B + threads - 1) / threads;
+        int blocks = (total_elements + threads - 1) / threads;
+        
         AT_DISPATCH_FLOATING_TYPES(u.scalar_type(), "mobius_add_cuda", [&] {
             mobius_add_kernel<scalar_t><<<blocks, threads>>> (
                 u.data_ptr<scalar_t>(),
                 v.data_ptr<scalar_t>(),
                 out.data_ptr<scalar_t>(),
-                B, D, c
+                total_elements, D, c
                 );
             });
         utils::check_cuda_error();
@@ -102,15 +107,20 @@ namespace reality_stone::ops {
         float r
     ) {
         utils::check_cuda_tensor(u);
-        int B = u.size(0), D = u.size(1);
+        
+        // 동적 차원 처리: 마지막 차원을 feature dimension으로 사용
+        int total_elements = u.numel() / u.size(-1);  // 배치 요소 총 개수
+        int D = u.size(-1);  // feature dimension
+        
         auto out = torch::empty_like(u);
         int threads = 256;
-        int blocks = (B + threads - 1) / threads;
+        int blocks = (total_elements + threads - 1) / threads;
+        
         AT_DISPATCH_FLOATING_TYPES(u.scalar_type(), "mobius_scalar_cuda", [&] {
             mobius_scalar_kernel<scalar_t><<<blocks, threads>>> (
                 u.data_ptr<scalar_t>(),
                 out.data_ptr<scalar_t>(),
-                B, D, c, r
+                total_elements, D, c, r
                 );
             });
         utils::check_cuda_error();

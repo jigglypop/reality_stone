@@ -46,3 +46,6 @@ CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
 Makefile
+
+# 빌드 캐시
+.build_cache

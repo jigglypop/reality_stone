@@ -143,215 +143,237 @@ def mobius_scalar(x, r, c):
     fn = mobius_scalar_cuda if (x.is_cuda and _has_cuda) else mobius_scalar_cpu
     return fn(x, r, c)
 
-# import torch
-# from torch.autograd import Function
-# 
-# from ._C import (
-#     poincare_ball_forward_cpu,
-#     lorentz_forward_cpu,
-#     klein_forward_cpu,
-#     mobius_add_cpu,
-#     mobius_scalar_cpu,
-# )
-# 
-# _has_cuda = False
-# if torch.cuda.is_available():
-#     print("CUDA is available")
-#     try:
-#         from ._C import (
-#             poincare_ball_forward_cuda,
-#             lorentz_forward_cuda,
-#             klein_forward_cuda,
-#             mobius_add_cuda,
-#             mobius_scalar_cuda,
-#         )
-#         _has_cuda = True
-#     except ImportError:
-#         _has_cuda = False
-# 
-# class PoincareBall(Function):
-#     @staticmethod
-#     def forward(ctx, u, v, c, t):
-#         ctx.save_for_backward(u, v)
-#         ctx.c = c
-#         ctx.t = t
-#         
-#         # forward만 수행하고 requires_grad 처리
-#         with torch.enable_grad():
-#             if u.is_cuda and _has_cuda:
-#                 result = poincare_ball_forward_cuda(u, v, c, t)
-#             else:
-#                 result = poincare_ball_forward_cpu(u, v, c, t)
-#         return result
-# 
-#     @staticmethod
-#     def backward(ctx, grad_output):
-#         u, v = ctx.saved_tensors
-#         c, t = ctx.c, ctx.t
-#         
-#         # autograd를 사용하여 backprop 계산
-#         with torch.enable_grad():
-#             u_new = u.detach().requires_grad_(True)
-#             v_new = v.detach().requires_grad_(True)
-#             
-#             if u_new.is_cuda and _has_cuda:
-#                 output = poincare_ball_forward_cuda(u_new, v_new, c, t)
-#             else:
-#                 output = poincare_ball_forward_cpu(u_new, v_new, c, t)
-#             
-#             grad_u, grad_v = torch.autograd.grad(
-#                 output, 
-#                 [u_new, v_new], 
-#                 grad_outputs=grad_output,
-#                 retain_graph=True
-#             )
-#         return grad_u, grad_v, None, None
-# 
-# class LorentzModel(Function):
-#     @staticmethod
-#     def forward(ctx, u, v, c, t):
-#         ctx.save_for_backward(u, v)
-#         ctx.c = c
-#         ctx.t = t
-#         
-#         # forward만 수행하고 requires_grad 처리
-#         with torch.enable_grad():
-#             if u.is_cuda and _has_cuda:
-#                 result = lorentz_forward_cuda(u, v, c, t)
-#             else:
-#                 result = lorentz_forward_cpu(u, v, c, t)
-#         return result
-# 
-#     @staticmethod
-#     def backward(ctx, grad_output):
-#         u, v = ctx.saved_tensors
-#         c, t = ctx.c, ctx.t
-#         
-#         # autograd를 사용하여 backprop 계산
-#         with torch.enable_grad():
-#             u_new = u.detach().requires_grad_(True)
-#             v_new = v.detach().requires_grad_(True)
-#             
-#             if u_new.is_cuda and _has_cuda:
-#                 output = lorentz_forward_cuda(u_new, v_new, c, t)
-#             else:
-#                 output = lorentz_forward_cpu(u_new, v_new, c, t)
-#             
-#             grad_u, grad_v = torch.autograd.grad(
-#                 output, 
-#                 [u_new, v_new], 
-#                 grad_outputs=grad_output,
-#                 retain_graph=True
-#             )
-#         return grad_u, grad_v, None, None
-# 
-# class KleinModel(Function):
-#     @staticmethod
-#     def forward(ctx, u, v, c, t):
-#         ctx.save_for_backward(u, v)
-#         ctx.c = c
-#         ctx.t = t
-#         
-#         # forward만 수행하고 requires_grad 처리
-#         with torch.enable_grad():
-#             if u.is_cuda and _has_cuda:
-#                 result = klein_forward_cuda(u, v, c, t)
-#             else:
-#                 result = klein_forward_cpu(u, v, c, t)
-#         return result
-# 
-#     @staticmethod
-#     def backward(ctx, grad_output):
-#         u, v = ctx.saved_tensors
-#         c, t = ctx.c, ctx.t
-#         
-#         # autograd를 사용하여 backprop 계산
-#         with torch.enable_grad():
-#             u_new = u.detach().requires_grad_(True)
-#             v_new = v.detach().requires_grad_(True)
-#             
-#             if u_new.is_cuda and _has_cuda:
-#                 output = klein_forward_cuda(u_new, v_new, c, t)
-#             else:
-#                 output = klein_forward_cpu(u_new, v_new, c, t)
-#             
-#             grad_u, grad_v = torch.autograd.grad(
-#                 output, 
-#                 [u_new, v_new], 
-#                 grad_outputs=grad_output,
-#                 retain_graph=True
-#             )
-#         return grad_u, grad_v, None, None
-# 
-# # Python API 함수들
-# def poincare_ball_layer(u, v, c, t):
-#     return PoincareBall.apply(u, v, c, t)
-# 
-# def lorentz_layer(u, v, c, t):
-#     return LorentzModel.apply(u, v, c, t)
-# 
-# def klein_layer(u, v, c, t):
-#     return KleinModel.apply(u, v, c, t)
-# 
-# # 모델 변환 API 추가
-# from ._C import (
-#     poincare_to_lorentz_cpu, lorentz_to_poincare_cpu,
-#     poincare_to_klein_cpu, klein_to_poincare_cpu,
-#     lorentz_to_klein_cpu, klein_to_lorentz_cpu
-# )
-# 
-# if _has_cuda:
-#     from ._C import (
-#         poincare_to_lorentz_cuda, lorentz_to_poincare_cuda,
-#         poincare_to_klein_cuda, klein_to_poincare_cuda,
-#         lorentz_to_klein_cuda, klein_to_lorentz_cuda
-#     )
-# 
-# def poincare_to_lorentz(x, c):
-#     if x.is_cuda and _has_cuda:
-#         return poincare_to_lorentz_cuda(x, c)
-#     else:
-#         return poincare_to_lorentz_cpu(x, c)
-# 
-# def lorentz_to_poincare(x, c):
-#     if x.is_cuda and _has_cuda:
-#         return lorentz_to_poincare_cuda(x, c)
-#     else:
-#         return lorentz_to_poincare_cpu(x, c)
-# 
-# def poincare_to_klein(x, c):
-#     if x.is_cuda and _has_cuda:
-#         return poincare_to_klein_cuda(x, c)
-#     else:
-#         return poincare_to_klein_cpu(x, c)
-# 
-# def klein_to_poincare(x, c):
-#     if x.is_cuda and _has_cuda:
-#         return klein_to_poincare_cuda(x, c)
-#     else:
-#         return klein_to_poincare_cpu(x, c)
-# 
-# def lorentz_to_klein(x, c):
-#     if x.is_cuda and _has_cuda:
-#         return lorentz_to_klein_cuda(x, c)
-#     else:
-#         return lorentz_to_klein_cpu(x, c)
-# 
-# def klein_to_lorentz(x, c):
-#     if x.is_cuda and _has_cuda:
-#         return klein_to_lorentz_cuda(x, c)
-#     else:
-#         return klein_to_lorentz_cpu(x, c)
-# 
-# 
-# def mobius_add(x: torch.Tensor, y: torch.Tensor, c: float) -> torch.Tensor:
-#     if x.is_cuda and _has_cuda:
-#         return mobius_add_cuda(x, y, c)
-#     else:
-#         return mobius_add_cpu(x, y, c)
-# 
-# def mobius_scalar(x: torch.Tensor, r: float, c: float) -> torch.Tensor:
-#     if x.is_cuda and _has_cuda:
-#         return mobius_scalar_cuda(x, r, c)
-#     else:
-#         return mobius_scalar_cpu(x, r, c)
+# ===============================
+# 🔥 ADVANCED FEATURES 🔥
+# ===============================
+
+# Advanced 기능들 import
+from .advanced import (
+    # 설정 클래스
+    AdvancedConfig, BenchmarkResult,
+    
+    # 동적 곡률
+    predict_dynamic_curvature, dynamic_mobius_add,
+    
+    # 하이퍼볼릭 정규화
+    hyperbolic_regularization,
+    
+    # 측지선 활성화
+    geodesic_activation, einstein_midpoint,
+    
+    # Fused 연산들
+    hyperbolic_linear_fused, transform_regularize_fused,
+    
+    # 편의 함수들
+    fix_mnist_nan, benchmark_advanced_features
+)
+
+# 고급 레이어들 import
+from .layers import (
+    # 레이어 클래스들
+    DynamicCurvatureLayer, HyperbolicLinearAdvanced, 
+    GeodesicActivationLayer, RegularizedHyperbolicLayer,
+    AdvancedHyperbolicMLP, DynamicCurvatureMLP, FusedHyperbolicLayer,
+    
+    # 팩토리 함수들
+    create_mnist_model, create_performance_model, create_research_model
+)
+
+# 성능 최적화 import
+from .optimizations import (
+    # 설정 클래스들
+    OptimizationConfig,
+    
+    # 최적화 도구들
+    OptimizedModel, AdaptiveBatchSize, MemoryOptimizer,
+    
+    # 벤치마크 도구들
+    benchmark_model_performance, optimize_for_inference,
+    
+    # 프로파일링
+    enable_profiling, disable_profiling, print_performance_summary,
+    
+    # 빠른 설정 함수들
+    quick_setup_for_mnist, quick_setup_for_production, quick_setup_for_research,
+    
+    # 작업별 설정
+    create_optimized_config_for_task, setup_optimizations
+)
+
+# ===============================
+# Quick Start Functions
+# ===============================
+
+def create_advanced_mnist_model(enable_all_features=False):
+    """MNIST용 고급 모델 생성 (빠른 시작)
+    
+    Args:
+        enable_all_features: 모든 고급 기능 활성화 여부
+        
+    Returns:
+        nn.Module: MNIST 분류용 고급 모델
+    """
+    if enable_all_features:
+        # 연구용: 모든 기능 활성화
+        return create_research_model(784, 10, [128, 64])
+    else:
+        # 실용적: NaN 문제 해결 + 성능 최적화
+        return create_mnist_model()
+
+def setup_reality_stone_for_training():
+    """훈련용 Reality Stone 설정"""
+    quick_setup_for_mnist()
+    return create_advanced_mnist_model()
+
+def setup_reality_stone_for_inference():
+    """추론용 Reality Stone 설정"""
+    quick_setup_for_production()
+    return create_performance_model(784, 10)
+
+def setup_reality_stone_for_research():
+    """연구용 Reality Stone 설정"""
+    quick_setup_for_research()
+    return create_research_model(784, 10, [256, 128, 64])
+
+# ===============================
+# Compatibility & Convenience
+# ===============================
+
+# 기존 models.py의 클래스들 import (하위 호환성)
+from .models import LorentzMLP, KleinMLP
+
+# 하위 호환성을 위한 별칭들
+HyperbolicLinear = HyperbolicLinearAdvanced
+HyperbolicMLP = AdvancedHyperbolicMLP
+
+# 편의 함수들
+def quick_fix_nan(tensor, curvature=1.0):
+    """NaN 문제 빠른 해결 (별칭)"""
+    return fix_mnist_nan(tensor, curvature)
+
+def benchmark_performance(model, input_shape, device="cuda"):
+    """성능 벤치마크 (간단 버전)"""
+    return benchmark_model_performance(model, input_shape, device)
+
+# ===============================
+# Version & Feature Detection
+# ===============================
+
+__version__ = "2.0.0-advanced"
+
+def get_available_features():
+    """사용 가능한 기능들 반환"""
+    features = {
+        "basic_operations": True,
+        "cuda_support": _has_cuda,
+        "advanced_features": True,  # 새로 추가된 고급 기능들
+        "dynamic_curvature": True,
+        "hyperbolic_regularization": True,
+        "geodesic_activation": True,
+        "fused_operations": True,
+        "performance_optimization": True
+    }
+    return features
+
+def print_feature_status():
+    """기능 상태 출력"""
+    features = get_available_features()
+    print("\n" + "="*50)
+    print("Reality Stone Feature Status")
+    print("="*50)
+    for feature, available in features.items():
+        status = "✅ Available" if available else "❌ Not Available"
+        print(f"{feature:25}: {status}")
+    print("="*50)
+
+# ===============================
+# Advanced API Shortcuts
+# ===============================
+
+# 자주 사용되는 고급 기능들의 단축 경로
+class advanced:
+    """고급 기능 네임스페이스"""
+    
+    # 설정
+    Config = AdvancedConfig
+    OptimConfig = OptimizationConfig
+    
+    # 레이어들
+    Linear = HyperbolicLinearAdvanced
+    MLP = AdvancedHyperbolicMLP
+    DynamicMLP = DynamicCurvatureMLP
+    GeodesicActivation = GeodesicActivationLayer
+    
+    # 함수들
+    predict_curvature = predict_dynamic_curvature
+    regularize = hyperbolic_regularization
+    fused_linear = hyperbolic_linear_fused
+    fix_nan = fix_mnist_nan
+    
+    # 팩토리
+    create_mnist = create_mnist_model
+    create_performance = create_performance_model
+    create_research = create_research_model
+
+class optim:
+    """최적화 네임스페이스"""
+    
+    Config = OptimizationConfig
+    OptimizedModel = OptimizedModel
+    AdaptiveBatch = AdaptiveBatchSize
+    MemoryOpt = MemoryOptimizer
+    
+    # 빠른 설정
+    setup_mnist = quick_setup_for_mnist
+    setup_production = quick_setup_for_production
+    setup_research = quick_setup_for_research
+    
+    # 벤치마크
+    benchmark = benchmark_model_performance
+    profile_enable = enable_profiling
+    profile_disable = disable_profiling
+    profile_summary = print_performance_summary
+
+# ===============================
+# Examples & Tutorials
+# ===============================
+
+def show_example_usage():
+    """사용 예제 출력"""
+    print("""
+    Reality Stone Advanced Features - Usage Examples
+    ================================================
+    
+    # 1. 빠른 시작 (MNIST NaN 문제 해결)
+    import reality_stone as rs
+    model = rs.setup_reality_stone_for_training()
+    
+    # 2. 고급 기능 사용
+    config = rs.AdvancedConfig(
+        enable_dynamic_curvature=True,
+        enable_fused_ops=True,
+        enable_regularization=True
+    )
+    model = rs.create_research_model(784, 10, config=config)
+    
+    # 3. 성능 최적화
+    rs.quick_setup_for_production()
+    model = rs.OptimizedModel(model)
+    
+    # 4. 단축 경로 사용
+    model = rs.advanced.create_mnist()
+    rs.optim.setup_production()
+    
+    # 5. 기능 상태 확인
+    rs.print_feature_status()
+    
+    # 6. 성능 벤치마크
+    results = rs.benchmark_performance(model, (32, 784))
+    
+    ================================================
+    """)
+
+# 자동으로 기능 상태 표시 (옵션)
+import os
+if os.getenv('REALITY_STONE_VERBOSE', '0') == '1':
+    print_feature_status()

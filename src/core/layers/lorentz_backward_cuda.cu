@@ -85,8 +85,6 @@ namespace reality_stone::layers {
 
         // Calculate gradients
         for (int d = tid; d < D; d += blockSize) {
-            float u_val = u_bid[d];
-            float v_val = v_bid[d];
             float grad_out_val = grad_out_bid[d];
 
             float jacob_u, jacob_v;

@@ -27,18 +27,19 @@ namespace reality_stone::layers {
 
         if (bid >= B) return;
 
-        const scalar_t* u_bid = u + bid * D;
-        const scalar_t* v_bid = v + bid * D;
+        // 포인카레 디스크에서 선형 보간: (1-t)*u + t*v
+        // 역전파: grad_u = (1-t) * grad_output, grad_v = t * grad_output
+        
         scalar_t* grad_u_bid = grad_u + bid * D;
         scalar_t* grad_v_bid = grad_v + bid * D;
         const scalar_t* grad_out_bid = grad_output + bid * D;
-        float c2 = c * c;
+        
+        // 야코비안 계수들 (곡률 c는 선형 보간에서는 직접적으로 사용되지 않음)
+        float jacob_u = 1.0f - t;  // u에 대한 미분
+        float jacob_v = t;         // v에 대한 미분
+        
         for (int d = tid; d < D; d += blockSize) {
-            float u_val = u_bid[d];
-            float v_val = v_bid[d];
             float grad_out_val = grad_out_bid[d];
-            float jacob_u = 1.0f - t;
-            float jacob_v = t;
             grad_u_bid[d] = grad_out_val * jacob_u;
             grad_v_bid[d] = grad_out_val * jacob_v;
         }
@@ -62,8 +63,10 @@ namespace reality_stone::layers {
         int B = u.size(0), D = u.size(1);
         auto grad_u = torch::zeros_like(u);
         auto grad_v = torch::zeros_like(v);
+        
         int threads = 256;
         int blocks = B;
+        
         AT_DISPATCH_FLOATING_TYPES(u.scalar_type(), "poincare_ball_backward_cuda", [&] {
             poincare_ball_backward_kernel<scalar_t><<<blocks, threads>>> (
                 grad_output.data_ptr<scalar_t>(),
@@ -80,6 +83,7 @@ namespace reality_stone::layers {
             printf("CUDA error: %s\n", cudaGetErrorString(err));
         }
         cudaDeviceSynchronize();
+        
         return std::make_tuple(grad_u, grad_v);
     }
 }

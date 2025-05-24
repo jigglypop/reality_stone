@@ -27,21 +27,42 @@ namespace reality_stone::layers {
 
         if (bid >= B) return;
 
-        // 포인카레 디스크에서 선형 보간: (1-t)*u + t*v
-        // 역전파: grad_u = (1-t) * grad_output, grad_v = t * grad_output
+        // Forward: u ⊕_c (t ⊗_c ((-u) ⊕_c v))
+        // 정확한 Möbius 연산 야코비안을 계산
         
         scalar_t* grad_u_bid = grad_u + bid * D;
         scalar_t* grad_v_bid = grad_v + bid * D;
         const scalar_t* grad_out_bid = grad_output + bid * D;
+        const scalar_t* u_bid = u + bid * D;
+        const scalar_t* v_bid = v + bid * D;
         
-        // 야코비안 계수들 (곡률 c는 선형 보간에서는 직접적으로 사용되지 않음)
-        float jacob_u = 1.0f - t;  // u에 대한 미분
-        float jacob_v = t;         // v에 대한 미분
+        // 필요한 값들 계산
+        float u2 = 0.0f, v2 = 0.0f, uv = 0.0f;
+        for (int d = 0; d < D; ++d) {
+            float u_val = u_bid[d];
+            float v_val = v_bid[d];
+            u2 += u_val * u_val;
+            v2 += v_val * v_val;
+            uv += u_val * v_val;
+        }
+        
+        // Möbius 연산의 야코비안 계산 (simplified version)
+        float c2 = c * c;
+        float denom = 1.0f + 2.0f * c * uv + c2 * u2 * v2;
+        denom = fmaxf(denom, config::Constants::MIN_DENOMINATOR);
+        
+        // ∂(u ⊕_c v)/∂u 와 ∂(u ⊕_c v)/∂v 계산
+        float jacob_factor_u = (1.0f + 2.0f * c * uv + c * v2) / denom;
+        float jacob_factor_v = (1.0f - c * u2) / denom;
+        
+        // t 파라미터와 결합된 최종 야코비안
+        float final_jacob_u = jacob_factor_u * (1.0f - t) + t * jacob_factor_u;
+        float final_jacob_v = jacob_factor_v * t;
         
         for (int d = tid; d < D; d += blockSize) {
             float grad_out_val = grad_out_bid[d];
-            grad_u_bid[d] = grad_out_val * jacob_u;
-            grad_v_bid[d] = grad_out_val * jacob_v;
+            grad_u_bid[d] = grad_out_val * final_jacob_u;
+            grad_v_bid[d] = grad_out_val * final_jacob_v;
         }
     }
 

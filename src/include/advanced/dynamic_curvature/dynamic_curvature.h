@@ -58,4 +58,25 @@ namespace reality_stone::advanced {
         float t
     );
     
+    // CUDA 함수 선언들
+    torch::Tensor dynamic_curvature_prediction_cuda(
+        const torch::Tensor& features,
+        const torch::Tensor& weight,
+        const torch::Tensor& bias,
+        float c_base
+    );
+    
+    torch::Tensor dynamic_mobius_add_cuda(
+        const torch::Tensor& u,
+        const torch::Tensor& v, 
+        const torch::Tensor& curvatures
+    );
+    
+    torch::Tensor dynamic_poincare_layer_cuda(
+        const torch::Tensor& u,
+        const torch::Tensor& v,
+        const torch::Tensor& curvatures,
+        float t
+    );
+    
 } // namespace reality_stone::advanced

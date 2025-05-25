@@ -33,7 +33,8 @@ __device__ __forceinline__ float warp_reduce_sum(float val) {
 
 /**
  * 경계 근접 페널티 커널
- * R_boundary(x) = max(0, ||x|| - (1/√c - ε))²
+ * Poincaré 디스크 모델: R_boundary(x) = max(0, ||x|| - (1 - ε))²
+ * Klein 모델: R_boundary(x) = max(0, ||x|| - (1/√c - ε))²
  */
 __global__ void boundary_penalty_kernel(
     const float* __restrict__ x,        // [B, D]
@@ -41,7 +42,8 @@ __global__ void boundary_penalty_kernel(
     float curvature,
     float epsilon,
     int batch_size,
-    int dim
+    int dim,
+    bool use_poincare_model = true      // 모델 선택 플래그
 ) {
     int b = blockIdx.x;
     int d = threadIdx.x;
@@ -68,7 +70,16 @@ __global__ void boundary_penalty_kernel(
     // 첫 번째 스레드가 페널티 계산
     if (threadIdx.x == 0) {
         float norm = sqrtf(norm_squared);
-        float max_norm = safe_div(1.0f, sqrtf(curvature)) - epsilon;
+        float max_norm;
+        
+        if (use_poincare_model) {
+            // Poincaré 디스크: ||x|| < 1
+            max_norm = 1.0f - epsilon;
+        } else {
+            // Klein 모델: ||x|| < 1/√c  
+            max_norm = safe_div(1.0f, sqrtf(curvature)) - epsilon;
+        }
+        
         float violation = norm - max_norm;
         penalties[b] = fmaxf(0.0f, violation * violation);
     }

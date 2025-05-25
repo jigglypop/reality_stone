@@ -164,6 +164,22 @@ from .advanced import (
     # Fused 연산들
     hyperbolic_linear_fused, transform_regularize_fused,
     
+    # 🆕 새로 추가된 체비셰프 기능들 🆕
+    chebyshev_approximation, chebyshev_distance, chebyshev_nodes,
+    fast_chebyshev_transform, inverse_chebyshev_transform,
+    chebyshev_derivative, chebyshev_integral,
+    
+    # 🆕 새로 추가된 라플라스-벨트라미 기능들 🆕
+    hyperbolic_laplacian, heat_kernel, laplace_beltrami_eigen,
+    spectral_graph_conv, solve_diffusion_equation,
+    geodesic_distance_matrix, spectral_normalize,
+    
+    # 🆕 새로 추가된 FFT 및 리만 기하학 기능들 🆕
+    hyperbolic_fft, spherical_harmonics, fast_spherical_conv,
+    ricci_curvature, parallel_transport, geodesic_flow,
+    riemannian_gradient, geodesic_sgd_step,
+    hyperbolic_wavelet_decomposition, frequency_domain_filter,
+    
     # 편의 함수들
     fix_mnist_nan, benchmark_advanced_features
 )
@@ -310,6 +326,29 @@ class advanced:
     fused_linear = hyperbolic_linear_fused
     fix_nan = fix_mnist_nan
     
+    # 🆕 체비셰프 관련 🆕
+    chebyshev_approx = chebyshev_approximation
+    chebyshev_dist = chebyshev_distance
+    chebyshev_transform = fast_chebyshev_transform
+    chebyshev_inverse = inverse_chebyshev_transform
+    
+    # 🆕 라플라스-벨트라미 관련 🆕
+    laplacian = hyperbolic_laplacian
+    heat_kernel = heat_kernel
+    spectral_conv = spectral_graph_conv
+    distance_matrix = geodesic_distance_matrix
+    
+    # 🆕 FFT 및 리만 기하학 관련 🆕
+    fft = hyperbolic_fft
+    spherical_harm = spherical_harmonics
+    ricci = ricci_curvature
+    transport = parallel_transport
+    flow = geodesic_flow
+    riem_grad = riemannian_gradient
+    geo_sgd = geodesic_sgd_step
+    wavelet = hyperbolic_wavelet_decomposition
+    filter_freq = frequency_domain_filter
+    
     # 팩토리
     create_mnist = create_mnist_model
     create_performance = create_performance_model
@@ -372,6 +411,44 @@ def show_example_usage():
     
     ================================================
     """)
+
+# ===============================
+# 🆕 새로 추가된 고급 API 별칭 🆕
+# ===============================
+
+# advanced_api 별칭으로 새로운 함수들에 접근 가능
+class advanced_api:
+    """새로운 고급 기능들을 위한 API (테스트에서 사용)"""
+    
+    # 체비셰프 함수들
+    chebyshev_approximation = chebyshev_approximation
+    chebyshev_distance = chebyshev_distance
+    chebyshev_nodes = chebyshev_nodes
+    fast_chebyshev_transform = fast_chebyshev_transform
+    inverse_chebyshev_transform = inverse_chebyshev_transform
+    chebyshev_derivative = chebyshev_derivative
+    chebyshev_integral = chebyshev_integral
+    
+    # 라플라스-벨트라미 함수들
+    hyperbolic_laplacian = hyperbolic_laplacian
+    heat_kernel = heat_kernel
+    laplace_beltrami_eigen = laplace_beltrami_eigen
+    spectral_graph_conv = spectral_graph_conv
+    solve_diffusion_equation = solve_diffusion_equation
+    geodesic_distance_matrix = geodesic_distance_matrix
+    spectral_normalize = spectral_normalize
+    
+    # FFT 및 리만 기하학 함수들
+    hyperbolic_fft = hyperbolic_fft
+    spherical_harmonics = spherical_harmonics
+    fast_spherical_conv = fast_spherical_conv
+    ricci_curvature = ricci_curvature
+    parallel_transport = parallel_transport
+    geodesic_flow = geodesic_flow
+    riemannian_gradient = riemannian_gradient
+    geodesic_sgd_step = geodesic_sgd_step
+    hyperbolic_wavelet_decomposition = hyperbolic_wavelet_decomposition
+    frequency_domain_filter = frequency_domain_filter
 
 # 자동으로 기능 상태 표시 (옵션)
 import os

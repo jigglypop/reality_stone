@@ -9,7 +9,7 @@
 #include <config/constant.h>
 
 // Advanced 기능들 (올바른 경로)
-#include <advanced/regularization/hyperbolic_reqularization.h>
+#include <advanced/regularization/hyperbolic_regularization.h>
 #include <advanced/dynamic_curvature/dynamic_curvature.h>
 #include <advanced/fused_ops/fused_ops.h>
 #include <advanced/geodesic_activation/geodesic_activation.h>

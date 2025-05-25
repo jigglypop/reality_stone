@@ -1,0 +1,60 @@
+# ===== Development Dependencies =====
+# Include base requirements
+-r requirements.txt
+
+# Build tools
+setuptools>=60.0
+wheel
+ninja
+
+# Testing frameworks
+pytest>=7.0.0
+pytest-cov
+pytest-xdist
+pytest-benchmark
+
+# Code quality tools
+black>=22.0.0
+isort>=5.10.0
+flake8>=4.0.0
+mypy>=0.910
+
+# Documentation
+sphinx>=4.0.0
+sphinx-rtd-theme
+myst-parser
+nbsphinx
+
+# Jupyter ecosystem
+jupyter
+jupyterlab
+ipywidgets
+
+# Data science tools
+matplotlib>=3.5.0
+seaborn>=0.11.0
+plotly>=5.0.0
+pandas>=1.4.0
+scikit-learn>=1.0.0
+
+# Performance profiling
+psutil
+memory-profiler
+line-profiler
+py-spy
+
+# Optional export formats
+onnx>=1.12.0
+onnxruntime
+
+# Version control helpers
+pre-commit
+gitpython
+
+# Linting and formatting
+autopep8
+pylint
+
+# Type checking
+types-setuptools
+types-requests 

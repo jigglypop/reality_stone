@@ -1,0 +1,21 @@
+# ===== Core Dependencies =====
+# PyTorch with CUDA support
+torch==2.5.1+cu121
+torchvision==0.20.1+cu121
+torchaudio==2.5.1+cu121
+
+# Find links for PyTorch CUDA packages
+--find-links https://download.pytorch.org/whl/cu121/torch_stable.html
+
+# Core numerical computing
+numpy>=1.21.0
+
+# Essential dependencies
+sympy==1.13.1
+filelock>=3.0.0
+typing-extensions>=4.8.0
+jinja2>=3.0.0
+networkx
+
+# For basic functionality
+setuptools>=60.0 

@@ -324,7 +324,6 @@ torch::Tensor geodesic_variance_penalty_cuda(
     );
     
     cudaDeviceSynchronize();
-    
     // 평균화
     return penalty / (n * n);
 }
@@ -364,4 +363,4 @@ torch::Tensor combined_regularization_cuda(
     return total_loss;
 }
 
-} // namespace reality_stone::advanced 
+} 

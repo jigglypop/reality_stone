@@ -86,6 +86,32 @@ namespace reality_stone::advanced {
         );
     };
     
+    // CPU 함수 선언들
+    torch::Tensor boundary_penalty_cpu(
+        const torch::Tensor& x,
+        float curvature,
+        float epsilon = 0.01f
+    );
+    
+    torch::Tensor curvature_adaptive_penalty_cpu(
+        const torch::Tensor& x,
+        float curvature
+    );
+    
+    torch::Tensor geodesic_variance_penalty_cpu(
+        const torch::Tensor& weights,
+        float curvature
+    );
+    
+    torch::Tensor combined_regularization_cpu(
+        const torch::Tensor& x,
+        const torch::Tensor& weights,
+        float curvature,
+        float lambda_boundary = 1.0f,
+        float lambda_curvature = 0.1f,
+        float lambda_geodesic = 0.01f
+    );
+    
     // CUDA 함수 선언들
     torch::Tensor boundary_penalty_cuda(
         const torch::Tensor& x,
@@ -111,5 +137,4 @@ namespace reality_stone::advanced {
         float lambda_curvature = 0.1f,
         float lambda_geodesic = 0.01f
     );
-    
-} // namespace reality_stone::advanced
+} 

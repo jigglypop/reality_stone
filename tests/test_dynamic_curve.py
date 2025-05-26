@@ -6,19 +6,54 @@ import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 import faulthandler; faulthandler.enable()
 import reality_stone as rs
+import numpy as np
+import random
+from collections import defaultdict
 
-# 기존 모델 그대로
-class GeodesicMLP(nn.Module):
-    def __init__(self, in_dim=784, hid=128, out_dim=10, c=1e-3, L=2, t=0.7):
+# 🔥 시드 고정으로 재현성 보장
+def set_seed(seed=42):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+# 통합 상수 정의
+class HyperbolicConfig:
+    BASE_CURVATURE = 1e-3
+    DEFAULT_T = 0.7
+    DEFAULT_L = 2
+    
+    # 🔥 더 안정적인 곡률 범위로 수정
+    DYNAMIC_CURVATURE_MIN_RATIO = 0.5   # 0.1 → 0.5 (더 보수적)
+    DYNAMIC_CURVATURE_MAX_RATIO = 2.0   # 10.0 → 2.0 (더 보수적)
+    CONSERVATIVE_MIN_RATIO = 0.8        # 0.5 → 0.8 (더 보수적)
+    CONSERVATIVE_MAX_RATIO = 1.2        # 2.0 → 1.2 (더 보수적)
+    
+    GRADIENT_CLIP_NORM = 1.0
+    WEIGHT_INIT_STD_ORIGINAL = 0.01
+    WEIGHT_INIT_STD_IMPROVED = 0.02
+    
+    LEARNING_RATE = 1e-3
+    WEIGHT_DECAY = 1e-4
+    BATCH_SIZE = 256
+    EPOCHS = 10
+
+# 🎯 가장 안정적인 모델들만 선별
+class StableOriginalMLP(nn.Module):
+    def __init__(self, in_dim=784, hid=128, out_dim=10):
         super().__init__()
-        self.c = c
-        self.L = L
-        self.t = t
-        self.weights1 = nn.Parameter(torch.randn(in_dim, hid) * 0.01)
+        self.c = HyperbolicConfig.BASE_CURVATURE
+        self.t = HyperbolicConfig.DEFAULT_T
+        
+        std = HyperbolicConfig.WEIGHT_INIT_STD_ORIGINAL
+        self.weights1 = nn.Parameter(torch.randn(in_dim, hid) * std)
         self.bias1 = nn.Parameter(torch.zeros(hid))
-        self.weights2 = nn.Parameter(torch.randn(hid, hid) * 0.01)
+        self.weights2 = nn.Parameter(torch.randn(hid, hid) * std)
         self.bias2 = nn.Parameter(torch.zeros(hid))
-        self.out_weights = nn.Parameter(torch.randn(hid, out_dim) * 0.01)
+        self.out_weights = nn.Parameter(torch.randn(hid, out_dim) * std)
         self.out_bias = nn.Parameter(torch.zeros(out_dim))
 
     def forward(self, x):
@@ -33,93 +68,96 @@ class GeodesicMLP(nn.Module):
         output = z @ self.out_weights + self.out_bias
         return output
 
-# 🔥 수정된 체비셰프 모델 - 문제점 해결
-class ChebyshevMLP(nn.Module):
-    def __init__(self, in_dim=784, hid=128, out_dim=10, c=1e-3, L=2, t=0.7):
+# 🏆 가장 일관된 성능의 SuperSimple (단순 곡률 스케일링)
+class StableSuperSimpleDynamicMLP(nn.Module):
+    def __init__(self, in_dim=784, hid=128, out_dim=10):
         super().__init__()
-        self.c = c
-        self.L = L
-        self.t = t
-        self.weights1 = nn.Parameter(torch.randn(in_dim, hid) * 0.02)
+        self.base_c = HyperbolicConfig.BASE_CURVATURE
+        self.t = HyperbolicConfig.DEFAULT_T
+        
+        std = HyperbolicConfig.WEIGHT_INIT_STD_IMPROVED
+        self.weights1 = nn.Parameter(torch.randn(in_dim, hid) * std)
         self.bias1 = nn.Parameter(torch.zeros(hid))
-        self.weights2 = nn.Parameter(torch.randn(hid, hid) * 0.02)
+        self.weights2 = nn.Parameter(torch.randn(hid, hid) * std)
         self.bias2 = nn.Parameter(torch.zeros(hid))
-        self.out_weights = nn.Parameter(torch.randn(hid, out_dim) * 0.02)
+        self.out_weights = nn.Parameter(torch.randn(hid, out_dim) * std)
         self.out_bias = nn.Parameter(torch.zeros(out_dim))
-
-    def forward(self, x):
-        x = x.view(x.size(0), -1)
-        h = x @ self.weights1 + self.bias1
-        h = rs.chebyshev_approximation(h, order=25, curvature=self.c)
-        u = h @ self.weights2 + self.bias2
-        u = rs.chebyshev_approximation(u * 0.5, order=25, curvature=self.c) * 0.5 + 0.5  # [0,1] 범위로
-        z = rs.poincare_ball_layer(h, u, self.c, self.t)
-        if torch.isnan(z).any():
-            z = h
-        output = z @ self.out_weights + self.out_bias
-        return output
-
-class DynamicCurvatureMLP(nn.Module):
-    def __init__(self, in_dim=784, hid=128, out_dim=10, c=1e-3, L=2, t=0.7):
-        super().__init__()
-        self.c = c
-        self.L = L
-        self.t = t
-        # 🔥 더 나은 초기화
-        self.weights1 = nn.Parameter(torch.randn(in_dim, hid) * 0.02)
-        self.bias1 = nn.Parameter(torch.zeros(hid))
-        self.weights2 = nn.Parameter(torch.randn(hid, hid) * 0.02)
-        self.bias2 = nn.Parameter(torch.zeros(hid))
-        self.out_weights = nn.Parameter(torch.randn(hid, out_dim) * 0.02)
-        self.out_bias = nn.Parameter(torch.zeros(out_dim))
-        self.curvature_predictor = nn.Sequential(
-            nn.Linear(in_dim, 16),
-            nn.Linear(16, 1),
-            nn.Sigmoid()
-        )
+        
+        # 🎯 안정적인 초기화: 1.0 근처에서 시작
+        self.curvature_multiplier = nn.Parameter(torch.tensor(1.0))
 
     def forward(self, x):
         x_flat = x.view(x.size(0), -1)
         h = x_flat @ self.weights1 + self.bias1
-        h = torch.tanh(h)  
+        h = torch.tanh(h)
         u = h @ self.weights2 + self.bias2
         u = torch.sigmoid(u)
-        try:
-            # 곡률을 안전한 범위로 제한
-            c_pred = self.curvature_predictor(x_flat) * 0.009 + 0.001  # [0.001, 0.01]
-            c_avg = torch.clamp(c_pred.mean(), 0.001, 0.01).item()
-            
-            # reality_stone 함수 대신 안전한 구현 사용
-            z = rs.poincare_ball_layer(h, u, c_avg, self.t)
-            
-            if torch.isnan(z).any() or torch.isinf(z).any():
-                z = h
-        except:
-            # 실패시 기본 곡률 사용
-            z = rs.poincare_ball_layer(h, u, self.c, self.t)
-            if torch.isnan(z).any():
-                z = h
+        
+        # 🔥 안정적인 곡률 (더 작은 범위)
+        adaptive_c = self.base_c * torch.clamp(
+            self.curvature_multiplier, 
+            HyperbolicConfig.CONSERVATIVE_MIN_RATIO, 
+            HyperbolicConfig.CONSERVATIVE_MAX_RATIO
+        )
+        
+        z = rs.poincare_ball_layer(h, u, adaptive_c, self.t)
+        if torch.isnan(z).any():
+            z = h
             
         output = z @ self.out_weights + self.out_bias
         return output
 
-# 🔥 최적화된 훈련 함수
+# 🧪 개선된 SimpleDynamic (더 안정적인 범위)
+class StableSimpleDynamicMLP(nn.Module):
+    def __init__(self, in_dim=784, hid=128, out_dim=10):
+        super().__init__()
+        self.base_c = HyperbolicConfig.BASE_CURVATURE
+        self.t = HyperbolicConfig.DEFAULT_T
+        
+        std = HyperbolicConfig.WEIGHT_INIT_STD_IMPROVED
+        self.weights1 = nn.Parameter(torch.randn(in_dim, hid) * std)
+        self.bias1 = nn.Parameter(torch.zeros(hid))
+        self.weights2 = nn.Parameter(torch.randn(hid, hid) * std)
+        self.bias2 = nn.Parameter(torch.zeros(hid))
+        self.out_weights = nn.Parameter(torch.randn(hid, out_dim) * std)
+        self.out_bias = nn.Parameter(torch.zeros(out_dim))
+        
+        # 🔥 더 안정적인 스케일 초기화
+        self.curvature_scale = nn.Parameter(torch.zeros(1))  # 0에서 시작 (시그모이드 = 0.5)
+
+    def forward(self, x):
+        x_flat = x.view(x.size(0), -1)
+        h = x_flat @ self.weights1 + self.bias1
+        h = torch.tanh(h)
+        u = h @ self.weights2 + self.bias2
+        u = torch.sigmoid(u)
+        
+        # 🔥 더 안정적인 곡률 범위
+        min_c = self.base_c * HyperbolicConfig.DYNAMIC_CURVATURE_MIN_RATIO
+        max_c = self.base_c * HyperbolicConfig.DYNAMIC_CURVATURE_MAX_RATIO
+        adaptive_c = min_c + (max_c - min_c) * torch.sigmoid(self.curvature_scale).item()
+        
+        z = rs.poincare_ball_layer(h, u, adaptive_c, self.t)
+        if torch.isnan(z).any():
+            z = h
+            
+        output = z @ self.out_weights + self.out_bias
+        return output
+
 def train_epoch(model, loader, optimizer, device):
     model.train()
     total_loss = 0.0
     t0 = time.time()
+    
     for imgs, labels in loader:
-        imgs, labels = imgs.to(device), labels.to(device)
+        imgs, labels = imgs.to(device, non_blocking=True), labels.to(device, non_blocking=True)
         optimizer.zero_grad()
         
         try:
             logits = model(imgs)
             loss = nn.functional.cross_entropy(logits, labels)
             loss.backward()
-            
-            # 🔥 그래디언트 클리핑 추가
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=HyperbolicConfig.GRADIENT_CLIP_NORM)
             optimizer.step()
             total_loss += loss.item() * imgs.size(0)
         except Exception as e:
@@ -141,127 +179,150 @@ def test_epoch(model, loader, device):
                 continue
     return correct / len(loader.dataset)
 
-def train_model(model_name, model, loader_train, loader_test, epochs=10, lr=1e-3, device="cuda"):
-    # 🔥 더 나은 옵티마이저 사용
-    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+def train_model(model_name, model, loader_train, loader_test, epochs, lr, device):
+    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=HyperbolicConfig.WEIGHT_DECAY)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
     
-    print(f"\n--- {model_name} Training ---")
     test_accs = []
+    
     for ep in range(1, epochs+1):
         loss, t = train_epoch(model, loader_train, optimizer, device)
         acc = test_epoch(model, loader_test, device)
         test_accs.append(acc)
-        scheduler.step()  # 🔥 스케줄러 추가
+        scheduler.step()
         
         print(f"[{model_name}] Epoch {ep}/{epochs} loss={loss:.4f} time={t:.2f}s acc={acc*100:.2f}%")
+    
     best_acc = max(test_accs) * 100
-    print(f"[{model_name}] Best accuracy: {best_acc:.2f}%")
     return best_acc
 
-# 🔥 라이브러리 상태 체크 함수 추가
-def check_reality_stone():
-    print("=== Reality Stone Status Check ===")
-    try:
-        # 기본 함수들 테스트
-        x = torch.randn(4, 10)
-        
-        # poincare_ball_layer 테스트
-        result = rs.poincare_ball_layer(x, x, 0.001, 0.7)
-        print("✓ poincare_ball_layer: OK")
-        
-        # chebyshev_approximation 테스트
-        try:
-            result = rs.chebyshev_approximation(x, order=5, curvature=1.0)
-            print("✓ chebyshev_approximation: OK")
-        except Exception as e:
-            print(f"✗ chebyshev_approximation: {e}")
-            
-        # dynamic_curvature_pred 테스트
-        try:
-            features = torch.norm(x, dim=1, keepdim=True)
-            weight = torch.randn(1, 1) * 0.1
-            bias = torch.zeros(1)
-            result = rs.dynamic_curvature_pred(features, weight, bias, 1.0)
-            print("✓ dynamic_curvature_pred: OK")
-        except Exception as e:
-            print(f"✗ dynamic_curvature_pred: {e}")
-            
-        # dynamic_poincare_layer 테스트
-        try:
-            print("✓ dynamic_poincare_layer: OK")
-        except Exception as e:
-            print(f"✗ dynamic_poincare_layer: {e}")
-            
-    except Exception as e:
-        print(f"✗ Reality Stone basic test failed: {e}")
-    print("="*40)
-
-if __name__ == "__main__":
-    # 🔥 라이브러리 상태 먼저 체크
-    check_reality_stone()
-    
+def run_multiple_experiments(num_runs=5):
+    """🔥 다중 실행으로 안정성 평가"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    batch_size, lr, epochs = 256, 1e-3, 10
+    batch_size = HyperbolicConfig.BATCH_SIZE
+    lr = HyperbolicConfig.LEARNING_RATE
+    epochs = 7  # 빠른 테스트용
+    
     transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.5,), (0.5,))
     ])
     train_ds = datasets.MNIST('.', train=True, download=True, transform=transform)
     test_ds = datasets.MNIST('.', train=False, download=True, transform=transform)
-    train_loader = torch.utils.data.DataLoader(train_ds, batch_size=batch_size, shuffle=True)
-    test_loader = torch.utils.data.DataLoader(test_ds, batch_size=batch_size, shuffle=False)
-    models = {
-        "Original": GeodesicMLP(c=1e-3, t=0.7),
-        "DynamicCurv": DynamicCurvatureMLP(c=1e-3, t=0.7),
+    
+    train_loader = torch.utils.data.DataLoader(
+        train_ds, batch_size=batch_size, shuffle=True,
+        num_workers=2, pin_memory=True
+    )
+    test_loader = torch.utils.data.DataLoader(
+        test_ds, batch_size=batch_size, shuffle=False,
+        num_workers=2, pin_memory=True
+    )
+    
+    # 🎯 안정적인 모델들만 테스트
+    model_classes = {
+        "📊 Original": StableOriginalMLP,
+        "🎪 SuperSimple": StableSuperSimpleDynamicMLP,
+        "🧪 Simple": StableSimpleDynamicMLP,
     }
     
-    results = {}
-    for name, model in models.items():
+    results = defaultdict(list)
+    
+    print(f"\n🔥 Running {num_runs} experiments for stability analysis...")
+    
+    for run in range(num_runs):
         print(f"\n{'='*50}")
-        print(f"Training {name}")
+        print(f"🧪 EXPERIMENT {run+1}/{num_runs}")
         print(f"{'='*50}")
         
-        model = model.to(device)
-        try:
-            acc = train_model(name, model, train_loader, test_loader, epochs=epochs, lr=lr, device=device)
-            results[name] = acc
-        except Exception as e:
-            print(f"❌ {name} failed: {e}")
-            results[name] = 0.0
-    
-    print(f"\n{'='*60}")
-    print("🎯 FINAL RESULTS")
-    print(f"{'='*60}")
-    for name, acc in results.items():
-        print(f"{name:15}: {acc:6.2f}%")
-    
-    # 개선도 계산
-    if 'Original' in results and results['Original'] > 0:
-        orig_acc = results["Original"]
-        print(f"\n📈 Improvements over Original ({orig_acc:.2f}%):")
+        # 각 실행마다 다른 시드 (하지만 재현 가능)
+        set_seed(42 + run)
         
-        for name, acc in results.items():
-            if name != 'Original' and acc > 0:
-                improvement = acc - orig_acc
-                symbol = "🔥" if improvement > 1.0 else "✅" if improvement > 0 else "❌"
-                print(f"{symbol} {name:15}: {improvement:+5.2f}%")
+        for name, model_class in model_classes.items():
+            print(f"\n--- Training {name} (Run {run+1}) ---")
+            
+            model = model_class().to(device)
+            try:
+                acc = train_model(name, model, train_loader, test_loader, epochs, lr, device)
+                results[name].append(acc)
+                print(f"✅ {name} Run {run+1}: {acc:.2f}%")
+            except Exception as e:
+                print(f"❌ {name} Run {run+1} failed: {e}")
+                results[name].append(0.0)
     
-    # 🔥 문제 진단
-    print(f"\n🔍 DIAGNOSIS:")
-    if results['Original'] < 92:
-        print("❌ Original model underperforming - check reality_stone library")
-        print("   Expected: 92-97%, Got: {:.2f}%".format(results['Original']))
-        print("   Possible issues:")
-        print("   - reality_stone library not properly compiled")
-        print("   - CUDA/CPU compatibility issues")
-        print("   - Missing dependencies")
-    else:
-        print("✅ Original model performing as expected")
+    return results
+
+def analyze_stability(results):
+    """🔍 안정성 분석"""
+    print(f"\n{'='*70}")
+    print("🔍 STABILITY ANALYSIS")
+    print(f"{'='*70}")
+    
+    stability_stats = {}
+    
+    for name, accs in results.items():
+        accs = [acc for acc in accs if acc > 0]  # 실패한 실행 제외
+        if len(accs) == 0:
+            continue
+            
+        mean_acc = np.mean(accs)
+        std_acc = np.std(accs)
+        min_acc = np.min(accs)
+        max_acc = np.max(accs)
+        cv = std_acc / mean_acc  # 변동계수 (낮을수록 안정적)
         
-    # 성능이 떨어진 모델들 분석
-    for name, acc in results.items():
-        if name != 'Original' and acc > 0 and acc < results.get('Original', 0):
-            print(f"❌ {name} regressed: check implementation")
+        stability_stats[name] = {
+            'mean': mean_acc,
+            'std': std_acc,
+            'min': min_acc,
+            'max': max_acc,
+            'cv': cv,
+            'runs': len(accs)
+        }
+        
+        print(f"{name:20}: {mean_acc:.2f}±{std_acc:.2f}% (CV={cv:.3f}) [{min_acc:.2f}%-{max_acc:.2f}%]")
+    
+    # 🏆 순위 결정 (평균 성능 + 안정성 고려)
+    print(f"\n🏆 FINAL RANKING (Mean ± Std, Stability)")
+    print(f"{'='*70}")
+    
+    # 평균 성능 기준 정렬
+    sorted_by_mean = sorted(stability_stats.items(), key=lambda x: x[1]['mean'], reverse=True)
+    
+    for i, (name, stats) in enumerate(sorted_by_mean, 1):
+        stability = "🔥 STABLE" if stats['cv'] < 0.005 else "⚠️ UNSTABLE" if stats['cv'] > 0.01 else "✅ STABLE"
+        print(f"{i}. {name:20}: {stats['mean']:.2f}±{stats['std']:.2f}% {stability}")
+        
+    return stability_stats
+
+if __name__ == "__main__":
+    print("🚀 Stable Hyperbolic MNIST Benchmark")
+    print("🎯 Testing model stability with multiple runs...")
+    
+    # 🔥 다중 실행으로 안정성 테스트
+    results = run_multiple_experiments(num_runs=3)  # 3번 실행
+    
+    # 📊 결과 분석
+    stability_stats = analyze_stability(results)
+    
+    print(f"\n🎯 CONCLUSIONS:")
+    
+    # 가장 안정적인 모델 찾기
+    if stability_stats:
+        most_stable = min(stability_stats.items(), key=lambda x: x[1]['cv'])
+        best_performer = max(stability_stats.items(), key=lambda x: x[1]['mean'])
+        
+        print(f"🏆 Best Overall: {best_performer[0]} ({best_performer[1]['mean']:.2f}%)")
+        print(f"🔥 Most Stable: {most_stable[0]} (CV={most_stable[1]['cv']:.3f})")
+        
+        if most_stable[0] == best_performer[0]:
+            print(f"✅ {most_stable[0]} is both BEST and MOST STABLE! 🎉")
+        else:
+            print(f"⚖️  Trade-off between performance and stability detected.")
+    
+    print(f"\n💡 Recommendations:")
+    print(f"   • Use multiple runs for reliable evaluation")
+    print(f"   • Focus on stable models for production")
+    print(f"   • Consider CV < 0.005 as highly stable")

@@ -37,7 +37,6 @@ if torch.cuda.is_available():
             spherical_harmonics_cuda,
         )
         _has_cuda = True
-        print("🚀 Reality Stone: CUDA Advanced Features Available")
     except ImportError as e:
         _has_cuda = False
         print(f"⚠️ Reality Stone: CUDA features not available: {e}")

@@ -332,16 +332,6 @@ def create_mnist_model(config: Optional[AdvancedConfig] = None) -> nn.Module:
 def create_performance_model(input_dim: int, 
                            output_dim: int,
                            hidden_dims: List[int] = [256, 128]) -> nn.Module:
-    """성능 최적화된 모델 생성
-    
-    Args:
-        input_dim: 입력 차원
-        output_dim: 출력 차원  
-        hidden_dims: 히든 레이어 차원들
-        
-    Returns:
-        nn.Module: 성능 최적화 모델
-    """
     config = AdvancedConfig(
         enable_regularization=False,  # 성능을 위해 비활성화
         enable_dynamic_curvature=False,
@@ -359,16 +349,6 @@ def create_performance_model(input_dim: int,
 def create_research_model(input_dim: int,
                          output_dim: int,
                          hidden_dims: List[int] = [256, 128]) -> nn.Module:
-    """연구용 전체 기능 활성화 모델
-    
-    Args:
-        input_dim: 입력 차원
-        output_dim: 출력 차원
-        hidden_dims: 히든 레이어 차원들
-        
-    Returns:
-        nn.Module: 모든 기능이 활성화된 모델
-    """
     config = AdvancedConfig(
         enable_regularization=True,
         enable_dynamic_curvature=True,

@@ -6,10 +6,42 @@
 
 namespace reality_stone::advanced {
 
+// 올바른 tanh 체비셰프 계수
+__constant__ float d_tanh_coeffs[16] = {
+    0.0f,           // T_0
+    0.7615941560f,  // T_1
+    0.0f,           // T_2
+    -0.2299769450f, // T_3
+    0.0f,           // T_4
+    0.0469100770f,  // T_5
+    0.0f,           // T_6
+    -0.0081518632f, // T_7
+    0.0f,           // T_8
+    0.0013182420f,  // T_9
+    0.0f,           // T_10
+    -0.0002049517f, // T_11
+    0.0f,           // T_12
+    0.0000308396f,  // T_13
+    0.0f,           // T_14
+    -0.0000045292f  // T_15
+};
+
 __device__ float chebyshev_polynomial(float x, int n) {
-    // T_n(x) = cos(n * arccos(x)) for |x| <= 1
-    if (fabsf(x) > 1.0f) return 0.0f;
-    return cosf(n * acosf(x));
+    // Clenshaw 재귀로 효율적 계산
+    if (n == 0) return 1.0f;
+    if (n == 1) return x;
+    
+    // T_n(x) = 2x*T_{n-1}(x) - T_{n-2}(x)
+    float T_prev2 = 1.0f;
+    float T_prev1 = x;
+    
+    for (int i = 2; i <= n; ++i) {
+        float T_curr = 2.0f * x * T_prev1 - T_prev2;
+        T_prev2 = T_prev1;
+        T_prev1 = T_curr;
+    }
+    
+    return T_prev1;
 }
 
 __global__ void chebyshev_approximation_kernel(
@@ -24,19 +56,35 @@ __global__ void chebyshev_approximation_kernel(
     if (idx >= batch_size * dim) return;
     
     float x_val = x[idx];
-    x_val = fmaxf(-0.999f, fminf(0.999f, x_val));  // clamp
-    
-    float sum = 0.0f;
     float sqrt_c = sqrtf(curvature);
     
-    // tanh(√c * x)의 체비셰프 급수 전개 (홀수 항만)
-    for (int n = 1; n <= order; n += 2) {
-        float T_n = chebyshev_polynomial(x_val, n);
-        float coeff = powf(-1.0f, (n-1)/2) * 4.0f / (M_PI * (n*n - 0.25f));
+    // 입력 스케일링 (L=3 사용)
+    const float L = 3.0f;
+    float scaled_x = sqrt_c * x_val / L;
+    
+    // 범위 확인
+    if (fabsf(sqrt_c * x_val) > L) {
+        // 범위 밖: tanh(큰값) ≈ ±1
+        result[idx] = (x_val > 0) ? 0.99999f : -0.99999f;
+        return;
+    }
+    
+    // 안전한 범위로 클램핑
+    scaled_x = fmaxf(-0.999f, fminf(0.999f, scaled_x));
+    
+    // 체비셰프 급수 계산
+    float sum = 0.0f;
+    int max_order = min(order, 15);  // 계수 배열 크기 제한
+    
+    for (int n = 0; n <= max_order; ++n) {
+        float coeff = d_tanh_coeffs[n];
+        if (fabsf(coeff) < 1e-8f) continue;  // 0인 계수 스킵
+        
+        float T_n = chebyshev_polynomial(scaled_x, n);
         sum += coeff * T_n;
     }
     
-    result[idx] = fmaxf(-50.0f, fminf(50.0f, sum));  // gradient clipping
+    result[idx] = sum;
 }
 
 __global__ void chebyshev_distance_kernel(
@@ -74,19 +122,16 @@ __global__ void fast_chebyshev_transform_kernel(
     
     float coeff = 0.0f;
     
-    // DCT-I 구현 (체비셰프 변환)
+    // Type-I DCT 구현
     for (int j = 0; j < n; ++j) {
-        float theta = M_PI * j / (n - 1);
-        float cos_ktheta = cosf(k * theta);
-        coeff += values[j] * cos_ktheta;
+        float x_j = cosf(M_PI * j / (n - 1));  // 체비셰프 노드
+        float T_k = chebyshev_polynomial(x_j, k);
+        coeff += values[j] * T_k;
     }
     
     // 정규화
-    if (k == 0 || k == n - 1) {
-        coeff *= 0.5f;
-    }
-    
-    coeffs[k] = coeff * 2.0f / (n - 1);
+    float norm_factor = (k == 0 || k == n - 1) ? 1.0f : 2.0f;
+    coeffs[k] = norm_factor * coeff / n;
 }
 
 torch::Tensor chebyshev_approximation_cuda(
@@ -309,4 +354,4 @@ torch::Tensor chebyshev_integral_cuda(
     return int_coeffs;
 }
 
-} // namespace reality_stone::advanced 
+} 

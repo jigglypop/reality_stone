@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 from torch.autograd import Function
 
 from ._C import (
@@ -143,314 +144,48 @@ def mobius_scalar(x, r, c):
     fn = mobius_scalar_cuda if (x.is_cuda and _has_cuda) else mobius_scalar_cpu
     return fn(x, r, c)
 
-# ===============================
-# 🔥 ADVANCED FEATURES 🔥
-# ===============================
 
-# Advanced 기능들 import
-from .advanced import (
-    # 설정 클래스
-    AdvancedConfig, BenchmarkResult,
-    
-    # 동적 곡률
-    predict_dynamic_curvature, dynamic_mobius_add,
-    
-    # 하이퍼볼릭 정규화
-    hyperbolic_regularization,
-    
-    # 측지선 활성화
-    geodesic_activation, einstein_midpoint,
-    
-    # Fused 연산들
-    hyperbolic_linear_fused, transform_regularize_fused,
-    
-    # 🆕 새로 추가된 체비셰프 기능들 🆕
-    chebyshev_approximation, chebyshev_distance, chebyshev_nodes,
-    fast_chebyshev_transform, inverse_chebyshev_transform,
-    chebyshev_derivative, chebyshev_integral,
-    
-    # 🆕 새로 추가된 라플라스-벨트라미 기능들 🆕
-    hyperbolic_laplacian, heat_kernel, laplace_beltrami_eigen,
-    spectral_graph_conv, solve_diffusion_equation,
-    geodesic_distance_matrix, spectral_normalize,
-    
-    # 🆕 새로 추가된 FFT 및 리만 기하학 기능들 🆕
-    hyperbolic_fft, spherical_harmonics, fast_spherical_conv,
-    ricci_curvature, parallel_transport, geodesic_flow,
-    riemannian_gradient, geodesic_sgd_step,
-    hyperbolic_wavelet_decomposition, frequency_domain_filter,
-    
-    # 편의 함수들
-    fix_mnist_nan, benchmark_advanced_features
-)
 
-# 고급 레이어들 import
-from .layers import (
-    # 레이어 클래스들
-    DynamicCurvatureLayer, HyperbolicLinearAdvanced, 
-    GeodesicActivationLayer, RegularizedHyperbolicLayer,
-    AdvancedHyperbolicMLP, DynamicCurvatureMLP, FusedHyperbolicLayer,
+def chebyshev_approximation(x, order=10, curvature=1.0):
+    """체비셰프 다항식을 이용한 하이퍼볼릭 함수 근사"""
+    # PyTorch fallback 구현
+    x_clamped = torch.clamp(x, -0.99, 0.99)
+    result = torch.zeros_like(x)
+    # tanh(√c * x)의 체비셰프 급수 전개 (홀수 항만)
+    for n in range(1, order + 1, 2):
+        T_n = torch.cos(n * torch.acos(x_clamped))
+        coeff = pow(-1, (n-1)//2) * 4.0 / (np.pi * (n*n - 0.25))
+        result += coeff * T_n
     
-    # 팩토리 함수들
-    create_mnist_model, create_performance_model, create_research_model
-)
+    return torch.clamp(result, -10.0, 10.0)
 
-# 성능 최적화 import
-from .optimizations import (
-    # 설정 클래스들
-    OptimizationConfig,
-    
-    # 최적화 도구들
-    OptimizedModel, AdaptiveBatchSize, MemoryOptimizer,
-    
-    # 벤치마크 도구들
-    benchmark_model_performance, optimize_for_inference,
-    
-    # 프로파일링
-    enable_profiling, disable_profiling, print_performance_summary,
-    
-    # 빠른 설정 함수들
-    quick_setup_for_mnist, quick_setup_for_production, quick_setup_for_research,
-    
-    # 작업별 설정
-    create_optimized_config_for_task, setup_optimizations
-)
+def predict_dynamic_curvature(features, weight, bias, base_curvature):
+    """동적 곡률 예측"""
+    logits = torch.mm(features, weight.t()) + bias
+    normalized = torch.sigmoid(logits)
+    return base_curvature * normalized.squeeze()
 
-# ===============================
-# Quick Start Functions
-# ===============================
-
-def create_advanced_mnist_model(enable_all_features=False):
-    """MNIST용 고급 모델 생성 (빠른 시작)
+def dynamic_mobius_add(u, v, curvatures):
+    """동적 곡률을 사용한 Möbius 덧셈"""
+    batch_size = u.size(0)
+    result = torch.zeros_like(u)
     
-    Args:
-        enable_all_features: 모든 고급 기능 활성화 여부
+    for b in range(batch_size):
+        u_b = u[b]
+        v_b = v[b] 
+        c = curvatures[b].item()
         
-    Returns:
-        nn.Module: MNIST 분류용 고급 모델
-    """
-    if enable_all_features:
-        # 연구용: 모든 기능 활성화
-        return create_research_model(784, 10, [128, 64])
-    else:
-        # 실용적: NaN 문제 해결 + 성능 최적화
-        return create_mnist_model()
-
-def setup_reality_stone_for_training():
-    """훈련용 Reality Stone 설정"""
-    quick_setup_for_mnist()
-    return create_advanced_mnist_model()
-
-def setup_reality_stone_for_inference():
-    """추론용 Reality Stone 설정"""
-    quick_setup_for_production()
-    return create_performance_model(784, 10)
-
-def setup_reality_stone_for_research():
-    """연구용 Reality Stone 설정"""
-    quick_setup_for_research()
-    return create_research_model(784, 10, [256, 128, 64])
-
-# ===============================
-# Compatibility & Convenience
-# ===============================
-
-# 기존 models.py의 클래스들 import (하위 호환성)
-from .models import LorentzMLP, KleinMLP
-
-# 하위 호환성을 위한 별칭들
-HyperbolicLinear = HyperbolicLinearAdvanced
-HyperbolicMLP = AdvancedHyperbolicMLP
-
-# 편의 함수들
-def quick_fix_nan(tensor, curvature=1.0):
-    """NaN 문제 빠른 해결 (별칭)"""
-    return fix_mnist_nan(tensor, curvature)
-
-def benchmark_performance(model, input_shape, device="cuda"):
-    """성능 벤치마크 (간단 버전)"""
-    return benchmark_model_performance(model, input_shape, device)
-
-# ===============================
-# Version & Feature Detection
-# ===============================
-
-__version__ = "2.0.0-advanced"
-
-def get_available_features():
-    """사용 가능한 기능들 반환"""
-    features = {
-        "basic_operations": True,
-        "cuda_support": _has_cuda,
-        "advanced_features": True,  # 새로 추가된 고급 기능들
-        "dynamic_curvature": True,
-        "hyperbolic_regularization": True,
-        "geodesic_activation": True,
-        "fused_operations": True,
-        "performance_optimization": True
-    }
-    return features
-
-def print_feature_status():
-    """기능 상태 출력"""
-    features = get_available_features()
-    print("\n" + "="*50)
-    print("Reality Stone Feature Status")
-    print("="*50)
-    for feature, available in features.items():
-        status = "✅ Available" if available else "❌ Not Available"
-        print(f"{feature:25}: {status}")
-    print("="*50)
-
-# ===============================
-# Advanced API Shortcuts
-# ===============================
-
-# 자주 사용되는 고급 기능들의 단축 경로
-class advanced:
-    """고급 기능 네임스페이스"""
+        u2 = torch.sum(u_b * u_b)
+        v2 = torch.sum(v_b * v_b)
+        uv = torch.sum(u_b * v_b)
+        
+        c2 = c * c
+        denom = 1.0 + 2.0 * c * uv + c2 * u2 * v2
+        denom = max(denom, 1e-6)
+        
+        num_u = (1.0 + 2.0 * c * uv + c * v2) * u_b
+        num_v = (1.0 - c * u2) * v_b
+        
+        result[b] = (num_u + num_v) / denom
     
-    # 설정
-    Config = AdvancedConfig
-    OptimConfig = OptimizationConfig
-    
-    # 레이어들
-    Linear = HyperbolicLinearAdvanced
-    MLP = AdvancedHyperbolicMLP
-    DynamicMLP = DynamicCurvatureMLP
-    GeodesicActivation = GeodesicActivationLayer
-    
-    # 함수들
-    predict_curvature = predict_dynamic_curvature
-    regularize = hyperbolic_regularization
-    fused_linear = hyperbolic_linear_fused
-    fix_nan = fix_mnist_nan
-    
-    # 🆕 체비셰프 관련 🆕
-    chebyshev_approx = chebyshev_approximation
-    chebyshev_dist = chebyshev_distance
-    chebyshev_transform = fast_chebyshev_transform
-    chebyshev_inverse = inverse_chebyshev_transform
-    
-    # 🆕 라플라스-벨트라미 관련 🆕
-    laplacian = hyperbolic_laplacian
-    heat_kernel = heat_kernel
-    spectral_conv = spectral_graph_conv
-    distance_matrix = geodesic_distance_matrix
-    
-    # 🆕 FFT 및 리만 기하학 관련 🆕
-    fft = hyperbolic_fft
-    spherical_harm = spherical_harmonics
-    ricci = ricci_curvature
-    transport = parallel_transport
-    flow = geodesic_flow
-    riem_grad = riemannian_gradient
-    geo_sgd = geodesic_sgd_step
-    wavelet = hyperbolic_wavelet_decomposition
-    filter_freq = frequency_domain_filter
-    
-    # 팩토리
-    create_mnist = create_mnist_model
-    create_performance = create_performance_model
-    create_research = create_research_model
-
-class optim:
-    """최적화 네임스페이스"""
-    
-    Config = OptimizationConfig
-    OptimizedModel = OptimizedModel
-    AdaptiveBatch = AdaptiveBatchSize
-    MemoryOpt = MemoryOptimizer
-    
-    # 빠른 설정
-    setup_mnist = quick_setup_for_mnist
-    setup_production = quick_setup_for_production
-    setup_research = quick_setup_for_research
-    
-    # 벤치마크
-    benchmark = benchmark_model_performance
-    profile_enable = enable_profiling
-    profile_disable = disable_profiling
-    profile_summary = print_performance_summary
-
-# ===============================
-# Examples & Tutorials
-# ===============================
-
-def show_example_usage():
-    """사용 예제 출력"""
-    print("""
-    Reality Stone Advanced Features - Usage Examples
-    ================================================
-    
-    # 1. 빠른 시작 (MNIST NaN 문제 해결)
-    import reality_stone as rs
-    model = rs.setup_reality_stone_for_training()
-    
-    # 2. 고급 기능 사용
-    config = rs.AdvancedConfig(
-        enable_dynamic_curvature=True,
-        enable_fused_ops=True,
-        enable_regularization=True
-    )
-    model = rs.create_research_model(784, 10, config=config)
-    
-    # 3. 성능 최적화
-    rs.quick_setup_for_production()
-    model = rs.OptimizedModel(model)
-    
-    # 4. 단축 경로 사용
-    model = rs.advanced.create_mnist()
-    rs.optim.setup_production()
-    
-    # 5. 기능 상태 확인
-    rs.print_feature_status()
-    
-    # 6. 성능 벤치마크
-    results = rs.benchmark_performance(model, (32, 784))
-    
-    ================================================
-    """)
-
-# ===============================
-# 🆕 새로 추가된 고급 API 별칭 🆕
-# ===============================
-
-# advanced_api 별칭으로 새로운 함수들에 접근 가능
-class advanced_api:
-    """새로운 고급 기능들을 위한 API (테스트에서 사용)"""
-    
-    # 체비셰프 함수들
-    chebyshev_approximation = chebyshev_approximation
-    chebyshev_distance = chebyshev_distance
-    chebyshev_nodes = chebyshev_nodes
-    fast_chebyshev_transform = fast_chebyshev_transform
-    inverse_chebyshev_transform = inverse_chebyshev_transform
-    chebyshev_derivative = chebyshev_derivative
-    chebyshev_integral = chebyshev_integral
-    
-    # 라플라스-벨트라미 함수들
-    hyperbolic_laplacian = hyperbolic_laplacian
-    heat_kernel = heat_kernel
-    laplace_beltrami_eigen = laplace_beltrami_eigen
-    spectral_graph_conv = spectral_graph_conv
-    solve_diffusion_equation = solve_diffusion_equation
-    geodesic_distance_matrix = geodesic_distance_matrix
-    spectral_normalize = spectral_normalize
-    
-    # FFT 및 리만 기하학 함수들
-    hyperbolic_fft = hyperbolic_fft
-    spherical_harmonics = spherical_harmonics
-    fast_spherical_conv = fast_spherical_conv
-    ricci_curvature = ricci_curvature
-    parallel_transport = parallel_transport
-    geodesic_flow = geodesic_flow
-    riemannian_gradient = riemannian_gradient
-    geodesic_sgd_step = geodesic_sgd_step
-    hyperbolic_wavelet_decomposition = hyperbolic_wavelet_decomposition
-    frequency_domain_filter = frequency_domain_filter
-
-# 자동으로 기능 상태 표시 (옵션)
-import os
-if os.getenv('REALITY_STONE_VERBOSE', '0') == '1':
-    print_feature_status()
+    return result

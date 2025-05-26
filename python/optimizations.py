@@ -8,10 +8,8 @@ import torch.nn as nn
 import time
 import warnings
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple, Union, Any
+from typing import Dict, List, Tuple
 from contextlib import contextmanager
-
-from .advanced import BenchmarkResult, benchmark_advanced_features
 
 @dataclass
 class OptimizationConfig:

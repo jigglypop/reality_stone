@@ -6,7 +6,6 @@ import torch
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension, CppExtension
 from pathlib import Path
 
-
 def get_pytorch_cuda_version():
     """PyTorch가 사용하는 CUDA 버전 확인"""
     if torch.cuda.is_available():
@@ -14,7 +13,6 @@ def get_pytorch_cuda_version():
         print(f"PyTorch CUDA version: {cuda_version}")
         return cuda_version
     return None
-
 
 def find_cuda_installation(preferred_version=None):
     """설치된 CUDA 찾기"""

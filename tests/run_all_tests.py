@@ -10,7 +10,7 @@ import os
 
 # 테스트 파일들 임포트
 from test_mobius import *
-from test_poincare import *
+from tests.test_dynamic_curve import *
 from test_conversions import *
 from test_lorentz import *
 from test_klein import *

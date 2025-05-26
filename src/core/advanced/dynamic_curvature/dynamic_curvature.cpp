@@ -1,117 +1,83 @@
 #include <torch/extension.h>
 #include <ATen/ATen.h>
 #include <advanced/dynamic_curvature/dynamic_curvature.h>
+#include <ops/mobius.h>
 #include <vector>
 #include <cmath>
 
+namespace ops = reality_stone::ops;
+
 namespace reality_stone::advanced {
 
-// CUDA 함수 선언
-torch::Tensor dynamic_curvature_prediction_cuda(
-    const torch::Tensor& features,
-    const torch::Tensor& weight,
-    const torch::Tensor& bias,
-    float c_base
-);
-
-torch::Tensor dynamic_mobius_add_cuda(
-    const torch::Tensor& u,
-    const torch::Tensor& v,
-    const torch::Tensor& curvatures
-);
-
-torch::Tensor dynamic_poincare_layer_cuda(
-    const torch::Tensor& u,
-    const torch::Tensor& v,
-    const torch::Tensor& curvatures,
-    float t
-);
-
-DynamicCurvature::DynamicCurvature(int input_dim, float base_curvature) 
-    : c_base(base_curvature) {
-    // 곡률 예측을 위한 가중치 초기화
+DynamicCurvature::DynamicCurvature(int input_dim, float base_curvature, 
+                                   float min_curvature, float max_curvature) 
+    : c_base(base_curvature), min_curvature(min_curvature), max_curvature(max_curvature) {
     weight_c = torch::randn({1, input_dim}, torch::kFloat32) * 0.1f;
     bias_c = torch::zeros({1}, torch::kFloat32);
 }
 
 torch::Tensor DynamicCurvature::extract_features(const torch::Tensor& x) {
-    // L2 norm 기반 특징 추출
-    // shape: [B, D] -> [B, 1]
-    auto norm = torch::norm(x, 2, /*dim=*/-1, /*keepdim=*/true);
+    auto norm = torch::norm(x, 2, -1, true);
     return norm;
 }
 
 torch::Tensor DynamicCurvature::normalize_curvature(const torch::Tensor& logits) {
-    // 시그모이드를 통한 곡률 정규화 [0, c_base]
-    auto sigmoid_output = torch::sigmoid(logits);
-    return c_base * sigmoid_output;
+    auto clamped_logits = torch::clamp(logits, -20.0f, 20.0f);
+    auto exp_output = torch::exp(clamped_logits);
+    auto curvatures = c_base * exp_output;
+    return torch::clamp(curvatures, min_curvature, max_curvature);
 }
 
 torch::Tensor DynamicCurvature::predict_curvature(const torch::Tensor& x) {
-    // 특징 추출
     auto features = extract_features(x);
-    
-    if (x.is_cuda()) {
-        return dynamic_curvature_prediction_cuda(features, weight_c, bias_c, c_base);
-    }
-    
-    // CPU 구현
     auto logits = torch::mm(features, weight_c.t()) + bias_c;
     return normalize_curvature(logits);
 }
 
-torch::Tensor dynamic_mobius_add(
+torch::Tensor predict_dynamic_curvature_cpu(
+    const torch::Tensor& features,
+    const torch::Tensor& weight,
+    const torch::Tensor& bias,
+    float c_base,
+    float min_curvature,
+    float max_curvature
+) {
+    auto logits = torch::mm(features, weight.t()) + bias;
+    auto clamped_logits = torch::clamp(logits, -20.0f, 20.0f);
+    auto exp_output = torch::exp(clamped_logits);
+    auto curvatures = c_base * exp_output;
+    return torch::clamp(curvatures, min_curvature, max_curvature).squeeze();
+}
+
+torch::Tensor dynamic_mobius_add_cpu(
     const torch::Tensor& u,
     const torch::Tensor& v,
     const torch::Tensor& curvatures
 ) {
-    if (u.is_cuda() && v.is_cuda() && curvatures.is_cuda()) {
-        return dynamic_mobius_add_cuda(u, v, curvatures);
-    }
-    
-    // CPU 구현
     auto batch_size = u.size(0);
-    auto dim = u.size(1);
     auto result = torch::zeros_like(u);
     
-    for (int b = 0; b < batch_size; ++b) {
-        auto u_b = u[b];
-        auto v_b = v[b];
-        auto c = curvatures[b].item<float>();
+    for (int64_t b = 0; b < batch_size; ++b) {
+        auto u_b = u[b].unsqueeze(0);
+        auto v_b = v[b].unsqueeze(0);
+        float c_b = std::max(1e-6f, std::min(curvatures[b].item<float>(), 1e6f));
         
-        // ||u||², ||v||², <u,v>
-        auto u2 = torch::sum(u_b * u_b);
-        auto v2 = torch::sum(v_b * v_b);
-        auto uv = torch::sum(u_b * v_b);
-        
-        // Möbius 덧셈 공식
-        auto c2 = c * c;
-        auto denom = 1.0f + 2.0f * c * uv + c2 * u2 * v2;
-        
-        auto num_u = (1.0f + 2.0f * c * uv + c * v2) * u_b;
-        auto num_v = (1.0f - c * u2) * v_b;
-        
-        result[b] = (num_u + num_v) / denom;
+        auto result_b = ops::mobius_add_cpu(u_b, v_b, c_b);
+        result[b] = result_b.squeeze(0);
     }
     
     return result;
 }
 
-torch::Tensor dynamic_poincare_layer(
+torch::Tensor dynamic_poincare_layer_cpu(
     const torch::Tensor& u,
     const torch::Tensor& v,
     const torch::Tensor& curvatures,
     float t
 ) {
-    if (u.is_cuda() && v.is_cuda() && curvatures.is_cuda()) {
-        return dynamic_poincare_layer_cuda(u, v, curvatures, t);
-    }
-    
-    // CPU 측지선 보간: γ(t) = (1-t)u ⊕_c tv
     auto tv = t * v;
     auto one_minus_t_u = (1.0f - t) * u;
-    
-    return dynamic_mobius_add(one_minus_t_u, tv, curvatures);
+    return dynamic_mobius_add_cpu(one_minus_t_u, tv, curvatures);
 }
 
-} // namespace reality_stone::advanced 
+}

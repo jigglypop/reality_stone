@@ -26,15 +26,28 @@ __constant__ float d_tanh_coeffs[16] = {
     -0.0000045292f  // T_15
 };
 
+// 동적 곡률 제한 해제 함수들
+__device__ float get_dynamic_limit(float curvature) {
+    // 곡률에 따른 동적 제한값 계산
+    float base_limit = 0.999f;
+    float curvature_factor = fminf(curvature, 10.0f);  // 최대 10까지
+    return base_limit + (1.0f - base_limit) * (curvature_factor / 10.0f);
+}
+
+__device__ float get_dynamic_scale_limit(float curvature) {
+    // 스케일링 제한값을 곡률에 따라 동적 조정
+    if (curvature <= 1.0f) return 3.0f;      // 기본값
+    if (curvature <= 5.0f) return 5.0f;      // 중간 곡률
+    return 10.0f + curvature * 0.5f;         // 높은 곡률: 더 넓은 범위
+}
+
 __device__ float chebyshev_polynomial(float x, int n) {
     // Clenshaw 재귀로 효율적 계산
     if (n == 0) return 1.0f;
     if (n == 1) return x;
-    
     // T_n(x) = 2x*T_{n-1}(x) - T_{n-2}(x)
     float T_prev2 = 1.0f;
     float T_prev1 = x;
-    
     for (int i = 2; i <= n; ++i) {
         float T_curr = 2.0f * x * T_prev1 - T_prev2;
         T_prev2 = T_prev1;
@@ -58,32 +71,29 @@ __global__ void chebyshev_approximation_kernel(
     float x_val = x[idx];
     float sqrt_c = sqrtf(curvature);
     
-    // 입력 스케일링 (L=3 사용)
-    const float L = 3.0f;
+    // 동적 곡률 제한 해제: 곡률에 따른 스케일링 범위 조정
+    const float L = get_dynamic_scale_limit(curvature);  // 동적 스케일 범위
     float scaled_x = sqrt_c * x_val / L;
     
-    // 범위 확인
+    // 범위 확인 (동적 제한 적용)
     if (fabsf(sqrt_c * x_val) > L) {
         // 범위 밖: tanh(큰값) ≈ ±1
         result[idx] = (x_val > 0) ? 0.99999f : -0.99999f;
         return;
     }
     
-    // 안전한 범위로 클램핑
-    scaled_x = fmaxf(-0.999f, fminf(0.999f, scaled_x));
+    // 동적 제한으로 클리핑 범위 확장
+    float dynamic_limit = get_dynamic_limit(curvature);
+    scaled_x = fmaxf(-dynamic_limit, fminf(dynamic_limit, scaled_x));
     
-    // 체비셰프 급수 계산
     float sum = 0.0f;
     int max_order = min(order, 15);  // 계수 배열 크기 제한
-    
     for (int n = 0; n <= max_order; ++n) {
         float coeff = d_tanh_coeffs[n];
         if (fabsf(coeff) < 1e-8f) continue;  // 0인 계수 스킵
-        
         float T_n = chebyshev_polynomial(scaled_x, n);
         sum += coeff * T_n;
     }
-    
     result[idx] = sum;
 }
 
@@ -97,17 +107,18 @@ __global__ void chebyshev_distance_kernel(
 ) {
     int batch_idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (batch_idx >= batch_size) return;
-    
     // 체비셰프 거리 (max norm) 계산
     float max_diff = 0.0f;
     for (int d = 0; d < dim; ++d) {
         float diff = fabsf(x[batch_idx * dim + d] - y[batch_idx * dim + d]);
         max_diff = fmaxf(max_diff, diff);
     }
-    
     // 하이퍼볼릭 공간 변환: d_H = (1/√c) * atanh(√c * d_cheb)
     float sqrt_c = sqrtf(curvature);
-    float scaled_dist = fmaxf(0.0f, fminf(0.99f, sqrt_c * max_diff));
+    
+    // 동적 곡률 제한 해제: 거리 계산시 제한값 확장
+    float distance_limit = get_dynamic_limit(curvature);
+    float scaled_dist = fmaxf(0.0f, fminf(distance_limit, sqrt_c * max_diff));
     
     result[batch_idx] = (1.0f / sqrt_c) * atanhf(scaled_dist);
 }
@@ -310,12 +321,9 @@ torch::Tensor chebyshev_derivative_cuda(
     auto batch_size = coeffs.size(0);
     auto n = coeffs.size(-1);
     if (n <= 1) return torch::zeros({batch_size, 1}, coeffs.options());
-    
     auto d_coeffs = torch::zeros({batch_size, n - 1}, coeffs.options());
-    
     const int threads = 256;
     const int blocks = (batch_size * (n - 1) + threads - 1) / threads;
-    
     // 역순으로 계산 (점화식 때문)
     for (int k = n - 2; k >= 0; --k) {
         dim3 grid((batch_size + threads - 1) / threads);
@@ -354,4 +362,4 @@ torch::Tensor chebyshev_integral_cuda(
     return int_coeffs;
 }
 
-} 
+}

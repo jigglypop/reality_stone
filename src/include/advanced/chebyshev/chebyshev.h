@@ -115,21 +115,17 @@ torch::Tensor fast_chebyshev_transform_cpu(
     const torch::Tensor& values
 );
 
-// 역 체비셰프 변환
 torch::Tensor inverse_chebyshev_transform_cpu(
     const torch::Tensor& coeffs,
     const torch::Tensor& eval_points
 );
 
-// 체비셰프 미분
 torch::Tensor chebyshev_derivative_cpu(
     const torch::Tensor& coeffs
 );
 
-// 체비셰프 적분
 torch::Tensor chebyshev_integral_cpu(
     const torch::Tensor& coeffs,
     float constant = 0.0f
 );
-
-} // namespace reality_stone::advanced 
+} 

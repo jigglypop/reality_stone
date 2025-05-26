@@ -23,6 +23,28 @@ torch::Tensor fast_chebyshev_transform_cuda(
     const torch::Tensor& values
 );
 
+// 동적 곡률 제한 해제 함수들
+float get_dynamic_limit_cpu(float curvature) {
+    // 곡률에 따른 동적 제한값 계산
+    float base_limit = 0.999f;
+    float curvature_factor = std::min(curvature, 10.0f);  // 최대 10까지
+    return base_limit + (1.0f - base_limit) * (curvature_factor / 10.0f);
+}
+
+float get_dynamic_scale_limit_cpu(float curvature) {
+    // 스케일링 제한값을 곡률에 따라 동적 조정
+    if (curvature <= 1.0f) return 3.0f;      // 기본값
+    if (curvature <= 5.0f) return 5.0f;      // 중간 곡률
+    return 10.0f + curvature * 0.5f;         // 높은 곡률: 더 넓은 범위
+}
+
+float get_dynamic_clamp_limit_cpu(float curvature) {
+    // 결과 클리핑 제한값을 곡률에 따라 동적 조정
+    float base_limit = 50.0f;
+    if (curvature > 5.0f) return base_limit * (1.0f + std::log(curvature));
+    return base_limit;
+}
+
 // ChebyshevApproximator 클래스 구현
 ChebyshevApproximator::ChebyshevApproximator(int order, float base_curvature) 
     : order(order), base_curvature(base_curvature) {
@@ -42,61 +64,28 @@ torch::Tensor ChebyshevApproximator::approximate_tanh(
         return chebyshev_approximation_cuda(x, order, curvature);
     }
     
-    // 올바른 tanh 체비셰프 계수 (미리 계산된 값)
-    // tanh(x) ≈ Σ a_n * T_n(x/L) for x ∈ [-L, L]
-    static const std::vector<float> tanh_coeffs = {
-        0.0f,           // T_0
-        0.7615941560f,  // T_1
-        0.0f,           // T_2
-        -0.2299769450f, // T_3
-        0.0f,           // T_4
-        0.0469100770f,  // T_5
-        0.0f,           // T_6
-        -0.0081518632f, // T_7
-        0.0f,           // T_8
-        0.0013182420f,  // T_9
-        0.0f,           // T_10
-        -0.0002049517f, // T_11
-        0.0f,           // T_12
-        0.0000308396f,  // T_13
-        0.0f,           // T_14
-        -0.0000045292f, // T_15
-    };
+    // CPU 구현: tanh(√c * x)를 체비셰프 급수로 근사
+    // 동적 곡률 제한 해제: 클리핑 범위 확장
+    float dynamic_limit = get_dynamic_limit_cpu(curvature);
+    auto x_clamped = torch::clamp(x, -dynamic_limit, dynamic_limit);
     
-    // 입력 스케일링 (tanh는 x=±3에서 ≈±0.995이므로 L=3 사용)
-    const float L = 3.0f;
     auto sqrt_c = std::sqrt(curvature);
-    
-    // √c * x를 [-L, L] 범위로 스케일링
-    auto scaled_input = sqrt_c * x / L;
-    auto x_clamped = torch::clamp(scaled_input, -0.999f, 0.999f);
+    auto scaled_x = sqrt_c * x_clamped;
     
     auto result = torch::zeros_like(x);
     
-    // 체비셰프 급수 계산
-    int max_order = std::min(order, static_cast<int>(tanh_coeffs.size()) - 1);
-    
-    for (int n = 0; n <= max_order; ++n) {
-        if (std::abs(tanh_coeffs[n]) < 1e-8f) continue;  // 0인 계수 스킵
+    // 체비셰프 다항식 T_n(x) = cos(n * arccos(x))
+    for (int n = 1; n <= order; n += 2) {  // 홀수 항만 (tanh는 홀함수)
+        auto T_n = torch::cos(n * torch::acos(x_clamped));
         
-        torch::Tensor T_n;
-        if (n == 0) {
-            T_n = torch::ones_like(x_clamped);
-        } else if (n == 1) {
-            T_n = x_clamped;
-        } else {
-            // T_n(x) = cos(n * arccos(x))
-            T_n = torch::cos(n * torch::acos(x_clamped));
-        }
-        
-        result += tanh_coeffs[n] * T_n;
+        // tanh(x)의 체비셰프 계수 근사
+        float coeff = std::pow(-1.0f, (n-1)/2) * 4.0f / (M_PI * (n*n - 0.25f));
+        result += coeff * T_n;
     }
     
-    // 범위 밖 처리 (|√c * x| > L인 경우)
-    auto mask = torch::abs(sqrt_c * x) > L;
-    result = torch::where(mask, torch::sign(x) * 0.99999f, result);
-    
-    return result;
+    // 동적 곡률 제한 해제: 결과 클리핑 범위 확장
+    float clamp_limit = get_dynamic_clamp_limit_cpu(curvature);
+    return torch::clamp(result, -clamp_limit, clamp_limit);  // 확장된 그래디언트 클리핑
 }
 
 torch::Tensor ChebyshevApproximator::compute_distance(
@@ -107,21 +96,20 @@ torch::Tensor ChebyshevApproximator::compute_distance(
     if (x.is_cuda() && y.is_cuda()) {
         return chebyshev_distance_cuda(x, y, curvature);
     }
-    
     // CPU 구현: 체비셰프 거리 (max norm)
     auto diff = torch::abs(x - y);
     auto max_result = torch::max(diff, /*dim=*/-1);
     auto cheb_dist = std::get<0>(max_result);  // values
-    
-    // 하이퍼볼릭 공간 변환: d_H = (1/√c) * atanh(√c * d_cheb)
     auto sqrt_c = std::sqrt(curvature);
-    auto scaled_dist = torch::clamp(sqrt_c * cheb_dist, 0.0f, 0.99f);
+    
+    // 동적 곡률 제한 해제: 거리 계산시 제한값 확장
+    float distance_limit = get_dynamic_limit_cpu(curvature);
+    auto scaled_dist = torch::clamp(sqrt_c * cheb_dist, 0.0f, distance_limit);
     
     return (1.0f / sqrt_c) * torch::atanh(scaled_dist);
 }
 
 torch::Tensor ChebyshevApproximator::generate_nodes(int n, torch::Device device) {
-    // 체비셰프 점들: x_k = cos((2k+1)π/(2n))
     auto k = torch::arange(n, torch::TensorOptions().dtype(torch::kFloat32).device(device));
     return torch::cos((2 * k + 1) * M_PI / (2 * n));
 }
@@ -130,22 +118,17 @@ torch::Tensor ChebyshevApproximator::fast_transform(const torch::Tensor& values)
     if (values.is_cuda()) {
         return fast_chebyshev_transform_cuda(values);
     }
-    
     auto n = values.size(-1);
     if ((n & (n - 1)) != 0) {
-        // 2의 거듭제곱이 아니면 일반 변환 사용
         return compute_coefficients(values);
     }
-    
-    // FFT 기반 고속 변환 (Type-I DCT)
+    // FFT 기반 고속 변환
     auto extended = torch::cat({values, values.flip(-1).narrow(-1, 1, n-2)}, -1);
     auto fft_result = torch::fft_fft(extended.to(torch::kComplexFloat));
-    
     auto coeffs = torch::real(fft_result).narrow(-1, 0, n);
     coeffs.index({0}) *= 0.5f;
     if (n > 1) coeffs.index({-1}) *= 0.5f;
-    
-    return coeffs * 2.0f / (n - 1);
+    return coeffs / (n - 1);
 }
 
 torch::Tensor ChebyshevApproximator::compute_coefficients(const torch::Tensor& func_values) {
@@ -155,20 +138,14 @@ torch::Tensor ChebyshevApproximator::compute_coefficients(const torch::Tensor& f
     auto nodes = generate_nodes(n, device);
     
     for (int k = 0; k <= order; ++k) {
-        torch::Tensor T_k;
-        if (k == 0) {
-            T_k = torch::ones_like(nodes);
-        } else if (k == 1) {
-            T_k = nodes;
-        } else {
-            T_k = torch::cos(k * torch::acos(nodes));
-        }
-        
+        auto T_k = torch::cos(k * torch::acos(nodes));
         auto coeff_sum = torch::sum(func_values * T_k);
         
-        // 정규화
-        float norm_factor = (k == 0 || k == n-1) ? 1.0f : 2.0f;
-        coeffs.index({k}) = norm_factor * coeff_sum / n;
+        if (k == 0) {
+            coeffs.index({k}) = coeff_sum / n;
+        } else {
+            coeffs.index({k}) = 2.0f * coeff_sum / n;
+        }
     }
     
     return coeffs;
@@ -180,18 +157,14 @@ torch::Tensor ChebyshevApproximator::evaluate_polynomial(
 ) {
     auto order = coeffs.size(-1) - 1;
     auto x_clamped = torch::clamp(x, -1.0f + 1e-6f, 1.0f - 1e-6f);
+    auto result = torch::zeros_like(x);
     
-    // Clenshaw 알고리즘으로 효율적 평가
-    auto b1 = torch::zeros_like(x);
-    auto b2 = torch::zeros_like(x);
-    
-    for (int k = order; k >= 1; --k) {
-        auto b0 = 2.0f * x_clamped * b1 - b2 + coeffs.index({k});
-        b2 = b1;
-        b1 = b0;
+    for (int k = 0; k <= order; ++k) {
+        auto T_k = torch::cos(k * torch::acos(x_clamped));
+        result += coeffs.index({k}) * T_k;
     }
     
-    return x_clamped * b1 - b2 + coeffs.index({0});
+    return result;
 }
 
 // 편의 함수들 구현
@@ -308,4 +281,4 @@ torch::Tensor chebyshev_integral_cpu(const torch::Tensor& coeffs, float constant
     return int_coeffs;
 }
 
-} 
+} // namespace reality_stone::advanced

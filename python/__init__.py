@@ -15,6 +15,7 @@ from ._C import (
     hyperbolic_laplacian_cpu,
     heat_kernel_cpu,
     hyperbolic_fft_cpu,
+    inverse_hyperbolic_fft_cpu,
     spherical_harmonics_cpu,
 )
 
@@ -34,6 +35,7 @@ if torch.cuda.is_available():
             hyperbolic_laplacian_cuda,
             heat_kernel_cuda,
             hyperbolic_fft_cuda,
+            inverse_hyperbolic_fft_cuda,
             spherical_harmonics_cuda,
         )
         _has_cuda = True
@@ -161,6 +163,10 @@ def heat_kernel(x, t, curvature=1.0):
 def hyperbolic_fft(x, curvature=1.0):
     fn = hyperbolic_fft_cuda if (x.is_cuda and _has_cuda) else hyperbolic_fft_cpu
     return fn(x, curvature)
+
+def inverse_hyperbolic_fft(coeffs, curvature=1.0):
+    fn = inverse_hyperbolic_fft_cuda if (coeffs.is_cuda and _has_cuda) else inverse_hyperbolic_fft_cpu
+    return fn(coeffs, curvature)
 
 def spherical_harmonics(theta_phi, l_max=10):
     fn = spherical_harmonics_cuda if (theta_phi.is_cuda and _has_cuda) else spherical_harmonics_cpu

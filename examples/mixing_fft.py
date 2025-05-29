@@ -1,3 +1,5 @@
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
 import sys, time
 from tqdm import tqdm
 import torch
@@ -108,7 +110,7 @@ class HyperbolicCompressor:
 
 # ───────── Hybrid Linear Layer ─────────
 class HybridLinear(nn.Module):
-    def __init__(self, lin: nn.Linear, keep_frac=0.4, svd_frac=0.2, c=1.0):
+    def __init__(self, lin: nn.Linear, keep_frac=0.2, svd_frac=0.1, c=1.0):
         super().__init__()
         W = lin.weight.data.clone()    # [out_f, in_f]
         self.comp = HyperbolicCompressor(W, keep_frac, svd_frac, c)
@@ -125,7 +127,7 @@ class HybridLinear(nn.Module):
 
 # ───────── GPT-2 Block Wrapper ─────────
 class HybridBlock(nn.Module):
-    def __init__(self, block, keep_frac=0.4, svd_frac=0.2, c=1.0):
+    def __init__(self, block, keep_frac, svd_frac, c):
         super().__init__()
         self.ln1 = block.ln_1
         self.ln2 = block.ln_2
@@ -152,7 +154,7 @@ class HybridBlock(nn.Module):
         return outputs
 
 # ───────── Apply to Full Model ─────────
-def apply_hybrid(model, keep_frac=0.4, svd_frac=0.2, c=1.0):
+def apply_hybrid(model, keep_frac=0.2, svd_frac=0.1, c=1.0):
     total = sum(p.numel() for p in model.parameters())
     print(f"Before: {total:,} params")
     for i in tqdm(range(len(model.transformer.h)), desc="Compressing"):
@@ -172,7 +174,7 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = apply_hybrid(model, keep_frac=0.4, svd_frac=0.2, c=1.0)
+    model = apply_hybrid(model, keep_frac=0.2, svd_frac=0.1, c=1.0)
 
     prompt = "안녕하세요"
     inputs = tokenizer(prompt, return_tensors="pt")

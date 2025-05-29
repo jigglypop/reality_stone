@@ -279,6 +279,13 @@ torch::Tensor hyperbolic_fft_cuda(const torch::Tensor& x, float curvature) {
     return coeffs;
 }
 
+torch::Tensor inverse_hyperbolic_fft_cuda(const torch::Tensor& coeffs, float curvature) {
+    int64_t N = coeffs.size(1);
+    int64_t max_l = static_cast<int64_t>(std::floor(std::sqrt(static_cast<double>(N)))) - 1;
+    HyperbolicFFT fft(curvature, static_cast<int>(max_l));
+    return fft.inverse_transform(coeffs);
+}
+
 torch::Tensor spherical_harmonics_cuda(const torch::Tensor& theta_phi, int l_max) {
     auto batch_size = theta_phi.size(0);
     auto harmonics = torch::zeros({batch_size, (l_max + 1) * (l_max + 1)}, theta_phi.options());

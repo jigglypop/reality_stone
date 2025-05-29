@@ -1,3 +1,5 @@
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
 import sys, time
 from tqdm import tqdm
 import torch
@@ -53,10 +55,6 @@ class HyperbolicCompressor:
         # 5) exp map back to manifold
         Wf = poincare_exp(T_rec, c)
         self.Wf = torch.nan_to_num(Wf, nan=0.0, posinf=1e6, neginf=-1e6)
-        
-        # Ensure Wf has correct shape [out_f, in_f]
-        if self.Wf.shape != (out_f, in_f):
-            self.Wf = self.Wf.T
 
         # 6) residual and SVD
         R = torch.nan_to_num(W - self.Wf, nan=0.0, posinf=1e6, neginf=-1e6)
@@ -66,49 +64,23 @@ class HyperbolicCompressor:
         self.V = Vh[:r, :]                       # [r, in_f]
 
     def apply(self, x: torch.Tensor) -> torch.Tensor:
-        # x shape [..., actual_in_f]
-        orig_shape = x.shape
-        actual_in_f = x.shape[-1]
-        
+        # x shape [..., in_f]
         # 1) main FFT-based approx
-        if self.Wf.shape[0] == actual_in_f:  # [actual_in_f, out_f]
-            y1 = x @ self.Wf
-        else:  # [out_f, actual_in_f] 
-            y1 = x @ self.Wf.T
-            
-        target_out_f = y1.shape[-1]  # Use actual output dimension from y1
+        y1 = x @ self.Wf.T  # [..., out_f]
 
         # 2) residual correction
+        # flatten to [batch_flat, in_f]
+        orig_shape = x.shape
         batch_flat = int(torch.tensor(orig_shape[:-1]).prod().item())
-        flat = x.reshape(batch_flat, actual_in_f)
-        
-        # Adjust V matrix if needed
-        if self.V.shape[1] == actual_in_f:
-            corr = (flat @ self.V.t())  # [B, r]
-            corr = corr @ self.U.t()    # [B, out_f]
-        else:
-            # Create zero correction with correct output dimension
-            corr = torch.zeros(batch_flat, target_out_f, device=x.device, dtype=x.dtype)
-            
-        # Reshape correction to match y1 dimensions
-        corr = corr.reshape(*orig_shape[:-1], -1)
-        
-        # Ensure correction matches y1 output dimension
-        if corr.shape[-1] != target_out_f:
-            if corr.shape[-1] < target_out_f:
-                # Pad with zeros
-                padding_shape = orig_shape[:-1] + (target_out_f - corr.shape[-1],)
-                padding = torch.zeros(padding_shape, device=x.device, dtype=x.dtype)
-                corr = torch.cat([corr, padding], dim=-1)
-            else:
-                # Truncate
-                corr = corr[..., :target_out_f]
-        
+        flat = x.reshape(batch_flat, self.in_f)      # [B, in_f]
+        corr = (flat @ self.V.t())                   # [B, r]
+        corr = corr @ self.U.t()                     # [B, out_f]
+        corr = corr.reshape(*orig_shape[:-1], self.out_f)
         return y1 + corr
 
 # ───────── Hybrid Linear Layer ─────────
 class HybridLinear(nn.Module):
-    def __init__(self, lin: nn.Linear, keep_frac=0.4, svd_frac=0.2, c=1.0):
+    def __init__(self, lin: nn.Linear, keep_frac=0.2, svd_frac=0.1, c=1.0):
         super().__init__()
         W = lin.weight.data.clone()    # [out_f, in_f]
         self.comp = HyperbolicCompressor(W, keep_frac, svd_frac, c)
@@ -125,7 +97,7 @@ class HybridLinear(nn.Module):
 
 # ───────── GPT-2 Block Wrapper ─────────
 class HybridBlock(nn.Module):
-    def __init__(self, block, keep_frac=0.4, svd_frac=0.2, c=1.0):
+    def __init__(self, block, keep_frac, svd_frac, c):
         super().__init__()
         self.ln1 = block.ln_1
         self.ln2 = block.ln_2
@@ -140,19 +112,14 @@ class HybridBlock(nn.Module):
 
     def forward(self, x, **kwargs):
         h = self.ln1(x)
-        attn_outputs = self.attn(h, **kwargs)  # Get full tuple
-        a = attn_outputs[0]   # attention output
+        a = self.attn(h, **kwargs)[0]   # GPT-2 returns (attn_out, …)
         x = x + a
         h2 = self.ln2(x)
         m = self.mlp(h2)
-        x = x + m
-        
-        # Return in same format as original block
-        outputs = (x,) + attn_outputs[1:]  # (hidden_states, present, attentions, ...)
-        return outputs
+        return x + m
 
 # ───────── Apply to Full Model ─────────
-def apply_hybrid(model, keep_frac=0.4, svd_frac=0.2, c=1.0):
+def apply_hybrid(model, keep_frac=0.2, svd_frac=0.1, c=1.0):
     total = sum(p.numel() for p in model.parameters())
     print(f"Before: {total:,} params")
     for i in tqdm(range(len(model.transformer.h)), desc="Compressing"):
@@ -172,7 +139,7 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = apply_hybrid(model, keep_frac=0.4, svd_frac=0.2, c=1.0)
+    model = apply_hybrid(model, keep_frac=0.2, svd_frac=0.1, c=1.0)
 
     prompt = "안녕하세요"
     inputs = tokenizer(prompt, return_tensors="pt")

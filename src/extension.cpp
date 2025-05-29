@@ -83,6 +83,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 
     // ===== 새로 추가된 FFT 및 리만 기하학 기능들 =====
     m.def("hyperbolic_fft_cpu", &advanced::hyperbolic_fft_cpu, "Hyperbolic FFT CPU");
+    m.def("inverse_hyperbolic_fft_cpu", &advanced::inverse_hyperbolic_fft_cpu, "Inverse hyperbolic FFT CPU");
     m.def("spherical_harmonics_cpu", &advanced::spherical_harmonics_cpu, "Spherical harmonics CPU");
     m.def("fast_spherical_conv_cpu", &advanced::fast_spherical_conv_cpu, "Fast spherical convolution CPU");
     m.def("ricci_curvature_cpu", &advanced::ricci_curvature_cpu, "Ricci curvature CPU");
@@ -146,6 +147,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("geodesic_distance_matrix_cuda", &advanced::geodesic_distance_matrix_cuda, "Geodesic distance matrix CUDA");
     m.def("spectral_normalize_cuda", &advanced::spectral_normalize_cuda, "Spectral normalize CUDA");
     m.def("hyperbolic_fft_cuda", &advanced::hyperbolic_fft_cuda, "Hyperbolic FFT CUDA");
+    m.def("inverse_hyperbolic_fft_cuda", &advanced::inverse_hyperbolic_fft_cuda, "Inverse hyperbolic FFT CUDA");
     m.def("spherical_harmonics_cuda", &advanced::spherical_harmonics_cuda, "Spherical harmonics CUDA");
     m.def("fast_spherical_conv_cuda", &advanced::fast_spherical_conv_cuda, "Fast spherical convolution CUDA");
     m.def("ricci_curvature_cuda", &advanced::ricci_curvature_cuda, "Ricci curvature CUDA");

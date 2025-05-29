@@ -276,6 +276,12 @@ torch::Tensor hyperbolic_fft_cpu(const torch::Tensor& x, float curvature) {
     HyperbolicFFT fft(curvature, 20); // 더 높은 해상도
     return fft.forward_transform(x);
 }
+torch::Tensor inverse_hyperbolic_fft_cpu(const torch::Tensor& coeffs, float curvature) {
+    int64_t N = coeffs.size(1);
+    int64_t max_l = static_cast<int64_t>(std::floor(std::sqrt(static_cast<double>(N)))) - 1;
+    HyperbolicFFT fft(curvature, static_cast<int>(max_l));
+    return fft.inverse_transform(coeffs);
+}
 
 torch::Tensor spherical_harmonics_cpu(const torch::Tensor& theta_phi, int l_max) {
     HyperbolicFFT fft(1.0f, l_max);

@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "C:\Users\ydh22\OneDrive\바탕 화면\hyper_butterfly\reality_stone\examples\28_riemann_fft_reverse_compression.py", line 20, in <module>
+    print("\U0001f300 Reality Stone 로드 성공!")
+UnicodeEncodeError: 'cp949' codec can't encode character '\U0001f300' in position 0: illegal multibyte sequence

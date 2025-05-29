@@ -96,13 +96,23 @@ class SimpleHybridSuperLayer(nn.Module):
         mask[important_indices] = True
         mask = mask.reshape(h, w)
         
-        # 가중 평균으로 융합
-        layer_weights = torch.linspace(0.5, 1.5, len(weight_list))
-        layer_weights = layer_weights / layer_weights.sum()
+        # 가중 평균으로 융합 - 레이어 깊이에 따른 적응적 가중치
+        layer_depths = torch.arange(len(weight_list), dtype=torch.float32)
+        layer_weights = torch.softmax(layer_depths / 2.0, dim=0)  # 깊은 레이어에 더 많은 가중치
         
+        # 주파수 도메인에서 학습 가능한 가중치 적용
         weighted_fft = torch.zeros_like(fft_stack[0])
+        phase_consensus = torch.zeros_like(fft_stack[0])
+        
         for i, weight in enumerate(layer_weights):
+            # 위상 정보도 고려
+            phase = torch.angle(fft_stack[i])
+            phase_consensus += phase * weight
             weighted_fft += fft_stack[i] * weight * mask
+        
+        # 위상 보정 적용
+        magnitude = torch.abs(weighted_fft)
+        weighted_fft = magnitude * torch.exp(1j * phase_consensus)
         
         # IFFT로 복원
         fused_weight = torch.fft.ifft2(weighted_fft).real
@@ -110,12 +120,28 @@ class SimpleHybridSuperLayer(nn.Module):
         # 2. SVD 압축 적용
         U, S, V = torch.svd(fused_weight)
         
-        # rank 계산 (에너지 기반)
+        # 적응적 rank 계산 - 에너지 기반 + 최소 rank 보장
         energy = torch.cumsum(S**2, dim=0) / torch.sum(S**2)
-        rank = torch.sum(energy < self.svd_rank_ratio).item() + 1
-        rank = max(rank, int(min(fused_weight.shape) * 0.1))
+        
+        # 더 스마트한 rank 선택: 에너지 보존 + gradient 기반
+        energy_threshold = self.svd_rank_ratio
+        rank = torch.sum(energy < energy_threshold).item() + 1
+        
+        # gradient 기반 rank 조정
+        if rank > 1:
+            energy_diff = energy[1:] - energy[:-1]
+            largest_gaps = torch.argsort(energy_diff, descending=True)[:5]
+            if len(largest_gaps) > 0:
+                optimal_rank = largest_gaps[0].item() + 1
+                rank = min(rank, optimal_rank)
+        
+        # 최소/최대 rank 제한
+        min_rank = max(int(min(fused_weight.shape) * 0.05), 32)  # 최소 5% 또는 32
+        max_rank = int(min(fused_weight.shape) * 0.9)  # 최대 90%
+        rank = max(min_rank, min(rank, max_rank))
         
         print(f"   SVD rank: {min(fused_weight.shape)} → {rank} ({rank/min(fused_weight.shape):.1%})")
+        print(f"   에너지 보존: {energy[rank-1]:.1%}")
         
         # 압축된 성분들
         U_compressed = U[:, :rank]

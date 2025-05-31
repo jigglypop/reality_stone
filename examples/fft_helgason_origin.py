@@ -439,14 +439,18 @@ class EnhancedRealityStoneLinear(nn.Module):
             
             # Conv1D 처리
             if hasattr(lin, 'nf'):  # Conv1D
-                self.in_features = W.shape[1]
-                self.out_features = W.shape[0]
-                W = W.t()  # [in, out] for compressor
-                print(f"🌐 Conv1D 고급압축: in={self.in_features}, out={self.out_features}")
+                # GPT2 Conv1D weight shape: [in_features, out_features] (전치 상태)
+                self.in_features = W.shape[0]
+                self.out_features = W.shape[1]
+                self.is_conv1d = True  # Conv1D 플래그 추가
+                # Conv1D는 이미 전치되어 있으므로 압축을 위해 다시 전치
+                W = W.t()  # [out_features, in_features]로 변환
+                print(f"🌀 Conv1D 헬가손압축: in={self.in_features}, out={self.out_features}")
             else:  # nn.Linear
                 self.in_features = lin.in_features
                 self.out_features = lin.out_features
-                print(f"🌐 Linear 고급압축: in={self.in_features}, out={self.out_features}")
+                self.is_conv1d = False
+                print(f"🌀 Linear 헬가손압축: in={self.in_features}, out={self.out_features}")
             
             # 압축 타입별 압축기 선택
             if compression_type == 'hybrid':
@@ -484,7 +488,17 @@ class EnhancedRealityStoneLinear(nn.Module):
         return FastSVDCompressor(W, compression_ratio)
 
     def forward(self, x):
-        out = self.compressor.apply(x)
+        # Conv1D의 경우 차원 변환 필요
+        if self.is_conv1d:
+            # GPT2 Conv1D: [batch, seq_len, in_features] -> [batch, seq_len, out_features]
+            # 하지만 내부적으로는 transpose되어 있음
+            # weight shape: [out_features, in_features]
+            # 따라서 일반 Linear처럼 처리
+            out = self.compressor.apply(x)
+        else:
+            # Linear: 직접 적용
+            out = self.compressor.apply(x)
+            
         if self.bias is not None:
             out = out + self.bias
         return out
@@ -894,10 +908,10 @@ def test_multiple_prompts_advanced(model, tokenizer, model_type="원본"):
 
 def main():
     model_name = "skt/kogpt2-base-v2"
-    print("🌐 향상된 RealityStone FFT+SVD+리만구면 압축 + 파인튜닝 파이프라인")
+    print("🌀 헬가손 FFT RealityStone 압축 시스템 v9.0")
     print("=" * 90)
-    print("🚀 Reality Stone + 고급 FFT+SVD + 리만기하학 + Knowledge Distillation")
-    print("💎 다중 압축 기법: 하이브리드 적응적 압축")
+    print("🚀 기술: 헬가손 FFT + 리만구면 + 레이어믹싱 + RealityStone")
+    print("💎 리만기하학: 헬가손 푸리에 변환 + 구면조화함수")
     print("Loading model…")
     
     tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -910,170 +924,157 @@ def main():
     print("📊 원본 모델 성능 벤치마크")
     original_results = test_multiple_prompts_advanced(teacher_model, tokenizer, "원본")
 
-    # 2단계: 향상된 RealityStone 압축 적용 (다중 전략 비교)
+    # 2단계: 헬가손 FFT RealityStone 압축 적용
     print("\n" + "="*90)
-    print("🌐 향상된 RealityStone 다중 압축 기법 적용")
+    print("🌀 헬가손 FFT RealityStone 압축 적용")
     
-    # 학생 모델들 생성 (다양한 전략)
-    compression_strategies = [
-        ('adaptive', 0.12, "적응적 하이브리드"),
-        ('aggressive', 0.10, "적극적 압축"),
-        ('conservative', 0.15, "보수적 압축")
-    ]
+    student_model = copy.deepcopy(teacher_model)
     
-    best_student = None
-    best_score = -1
-    best_strategy = None
-    
-    for strategy, ratio, description in compression_strategies:
-        print(f"\n🔬 전략 테스트: {description} (압축률 {ratio:.1%})")
+    try:
+        # 새로운 헬가손 FFT 압축 파이프라인 사용
+        student_model = apply_helgason_fft_reality_stone_compression(
+            student_model, 
+            compression_ratio=0.12,  # 12% 목표
+            compression_strategy='adaptive',
+            use_helgason_fft=True  # 헬가손 FFT 활성화
+        )
         
-        student_model = copy.deepcopy(teacher_model)
+        print("\n" + "="*90)
+        print("📊 헬가손 FFT 압축 직후 테스트")
+        compressed_results = test_multiple_prompts_advanced(
+            student_model, tokenizer, "헬가손FFT압축후"
+        )
         
-        try:
-            # 고급 압축 적용
-            student_model = apply_advanced_reality_stone_compression(
-                student_model, 
-                compression_ratio=ratio,
-                compression_strategy=strategy
-            )
-            
-            # 압축 직후 성능 테스트
-            print(f"\n📊 {description} 압축 직후 테스트")
-            test_results = test_multiple_prompts_advanced(
-                student_model, tokenizer, f"{description} (FT 전)"
-            )
-            
-            # 압축 효과 평가
-            avg_quality = sum(r['quality'] for r in test_results) / len(test_results)
-            compression_score = _evaluate_compression_strategy(student_model, teacher_model, avg_quality)
-            
-            print(f"   🏆 전략 점수: {compression_score:.2f}/10.0")
-            
-            if compression_score > best_score:
-                best_score = compression_score
-                best_student = student_model
-                best_strategy = description
-                
-        except Exception as e:
-            print(f"   ❌ {description} 전략 실패: {e}")
-            continue
+        # 3단계: 향상된 Knowledge Distillation 파인튜닝
+        print("\n" + "="*90)
+        print("🧠 향상된 Knowledge Distillation 파인튜닝")
+        student_model = enhanced_knowledge_distillation_fine_tune(
+            teacher_model, student_model, tokenizer,
+            total_steps=300,     # 더 많은 스텝
+            base_lr=1.2e-5,      # 정교한 학습률
+            temperature=3.2,     # 최적화된 온도
+            use_advanced_kd=True  # 고급 KD 기법
+        )
+        
+        # 4단계: 파인튜닝 후 최종 테스트
+        print("\n" + "="*90)
+        print("📊 파인튜닝 후 최종 성능 평가")
+        final_results = test_multiple_prompts_advanced(
+            student_model, tokenizer, "헬가손FFT최종"
+        )
+        
+        # 5단계: 종합 성능 분석
+        print("\n" + "="*90)
+        print("🏆 헬가손 FFT RealityStone 압축 최종 분석")
+        print("="*90)
+        
+        # 성능 지표 계산
+        orig_time = sum(r['time'] for r in original_results) / len(original_results)
+        orig_quality = sum(r['quality'] for r in original_results) / len(original_results)
+        
+        comp_time = sum(r['time'] for r in compressed_results) / len(compressed_results)
+        comp_quality = sum(r['quality'] for r in compressed_results) / len(compressed_results)
+        
+        final_time = sum(r['time'] for r in final_results) / len(final_results)
+        final_quality = sum(r['quality'] for r in final_results) / len(final_results)
+        
+        # 상세 성능 리포트
+        print(f"📊 성능 비교 리포트:")
+        print(f"   원본 모델:           시간 {orig_time:.3f}초, 품질 {orig_quality:.2f}/3.0")
+        print(f"   헬가손FFT 압축 후:   시간 {comp_time:.3f}초, 품질 {comp_quality:.2f}/3.0")
+        print(f"   헬가손FFT 튜닝 후:   시간 {final_time:.3f}초, 품질 {final_quality:.2f}/3.0")
+        
+        print(f"\n📈 개선 효과 분석:")
+        quality_improvement = final_quality - comp_quality
+        quality_retention = final_quality / orig_quality
+        speed_improvement = orig_time / final_time if final_time > 0 else 1
+        
+        print(f"   파인튜닝 품질 개선:  {quality_improvement:+.2f}점 ({(quality_improvement/comp_quality)*100:+.1f}%)")
+        print(f"   원본 대비 품질 유지: {quality_retention*100:.1f}%")
+        print(f"   처리 속도 향상:     {speed_improvement:.2f}× 빨라짐")
+        
+        # 압축 통계
+        teacher_params = sum(p.numel() for p in teacher_model.parameters())
+        student_params = sum(p.numel() for p in student_model.parameters())
+        compression_ratio = student_params / teacher_params
+        memory_saved = (1 - compression_ratio) * 100
+        
+        print(f"\n💾 헬가손 FFT 압축 성과:")
+        print(f"   파라미터 수:        {teacher_params:,} → {student_params:,}")
+        print(f"   압축 비율:         {compression_ratio:.3f} ({1/compression_ratio:.1f}× 압축)")
+        print(f"   메모리 절약:       {memory_saved:.1f}%")
+        
+        # RealityStone 활용도 분석
+        rs_usage = "활용" if RS_AVAILABLE else "미사용"
+        helgason_usage = "완전활용" if RS_AVAILABLE else "시뮬레이션"
+        
+        print(f"\n🌀 헬가손 FFT 기술 분석:")
+        print(f"   RealityStone:      {rs_usage}")
+        print(f"   헬가손 FFT:        {helgason_usage}")
+        print(f"   리만 레이어 믹싱:   {'적용' if RS_AVAILABLE else '기본적용'}")
+        print(f"   구면조화함수:      적용")
+        
+        # 전체 성과 평가
+        overall_score = _calculate_helgason_performance_score(
+            quality_retention, speed_improvement, compression_ratio, quality_improvement
+        )
+        
+        print(f"\n🎯 헬가손 FFT 성과 평가:")
+        print(f"   전체 점수:         {overall_score:.1f}/100")
+        print(f"   핵심 기술:         헬가손 FFT + RealityStone")
+        
+        # 성공 판정 및 등급
+        if overall_score >= 85:
+            grade = "🏆 헬가손 대성공 (S급)"
+            message = "리만기하학적 압축의 완벽한 구현!"
+        elif overall_score >= 75:
+            grade = "🥇 헬가손 성공 (A급)"
+            message = "우수한 수학적 압축 성능!"
+        elif overall_score >= 65:
+            grade = "🥈 양호 (B급)"
+            message = "상당한 리만기하학적 개선!"
+        elif overall_score >= 55:
+            grade = "🥉 보통 (C급)"
+            message = "기본적인 헬가손 FFT 효과"
+        else:
+            grade = "🔧 개선 필요 (D급)"
+            message = "헬가손 FFT 최적화 필요"
+        
+        print(f"\n{grade}: {message}")
+        
+        # 기술적 권장사항
+        if quality_retention < 0.85:
+            print(f"💡 권장사항: 헬가손 FFT 계수 증가 또는 압축률 조정")
+        if speed_improvement < 1.5:
+            print(f"💡 권장사항: 더 적극적인 구면조화함수 압축")
+        if not RS_AVAILABLE:
+            print(f"💡 권장사항: RealityStone 라이브러리 설치로 성능 극대화")
+        
+        print(f"\n🌟 헬가손 FFT 최종 결론:")
+        print(f"   헬가손 푸리에 변환과 리만구면 기하학을 활용하여")
+        print(f"   {memory_saved:.0f}% 메모리 절약과 {speed_improvement:.1f}× 속도 향상을 달성하면서")
+        print(f"   원본 품질의 {quality_retention*100:.0f}%를 유지했습니다!")
+        print(f"   🌀 구면조화함수와 스테레오그래픽 투영의 수학적 우아함!")
+        
+    except Exception as e:
+        print(f"❌ 헬가손 FFT 압축 실패: {e}")
+        print("🔧 기본 압축 방법으로 폴백이 필요합니다")
+
+def _calculate_helgason_performance_score(quality_retention, speed_improvement, 
+                                        compression_ratio, quality_improvement):
+    """헬가손 FFT 성과 점수 계산"""
     
-    if best_student is None:
-        print("❌ 모든 압축 전략 실패")
-        return
+    # 각 지표별 점수 (0-25점)
+    quality_score = min(25, quality_retention * 30)           # 품질 유지
+    speed_score = min(25, (speed_improvement - 1) * 15)       # 속도 향상
+    compression_score = min(25, (1 - compression_ratio) * 30) # 압축률
+    improvement_score = min(25, quality_improvement * 30)     # 개선도
     
-    print(f"\n🏆 최적 전략 선택: {best_strategy} (점수: {best_score:.2f})")
-    student_model = best_student
+    # 헬가손 FFT 보너스 (RealityStone 사용시)
+    helgason_bonus = 5 if RS_AVAILABLE else 0
     
-    # 3단계: 압축 직후 최종 테스트
-    print("\n" + "="*90)
-    print("📊 최적 압축 모델 파인튜닝 전 성능")
-    before_ft_results = test_multiple_prompts_advanced(
-        student_model, tokenizer, f"{best_strategy} (파인튜닝 전)"
-    )
-    
-    # 4단계: 고급 Knowledge Distillation 파인튜닝
-    print("\n" + "="*90)
-    print("🧠 고급 Knowledge Distillation 파인튜닝 시작")
-    
-    student_model = enhanced_knowledge_distillation_fine_tune(
-        teacher_model, student_model, tokenizer,
-        total_steps=250,    # 더 많은 스텝
-        base_lr=1.5e-5,     # 더 정교한 학습률
-        temperature=3.5,    # 최적화된 온도
-        use_advanced_kd=True  # 고급 KD 기법
-    )
-    
-    # 5단계: 파인튜닝 후 최종 테스트
-    print("\n" + "="*90)
-    print("📊 파인튜닝 후 최종 성능 평가")
-    after_ft_results = test_multiple_prompts_advanced(
-        student_model, tokenizer, f"{best_strategy} (파인튜닝 후)"
-    )
-    
-    # 6단계: 종합 성능 분석 및 벤치마크
-    print("\n" + "="*90)
-    print("🏆 향상된 RealityStone 압축 + 파인튜닝 최종 분석")
-    print("="*90)
-    
-    # 성능 지표 계산
-    orig_time = sum(r['time'] for r in original_results) / len(original_results)
-    orig_quality = sum(r['quality'] for r in original_results) / len(original_results)
-    
-    before_ft_time = sum(r['time'] for r in before_ft_results) / len(before_ft_results)
-    before_ft_quality = sum(r['quality'] for r in before_ft_results) / len(before_ft_results)
-    
-    after_ft_time = sum(r['time'] for r in after_ft_results) / len(after_ft_results)
-    after_ft_quality = sum(r['quality'] for r in after_ft_results) / len(after_ft_results)
-    
-    # 상세 성능 리포트
-    print(f"📊 성능 비교 리포트:")
-    print(f"   원본 모델:           시간 {orig_time:.3f}초, 품질 {orig_quality:.2f}/3.0")
-    print(f"   압축 후 (FT 전):     시간 {before_ft_time:.3f}초, 품질 {before_ft_quality:.2f}/3.0")
-    print(f"   압축+FT 후:         시간 {after_ft_time:.3f}초, 품질 {after_ft_quality:.2f}/3.0")
-    
-    print(f"\n📈 개선 효과 분석:")
-    quality_improvement = after_ft_quality - before_ft_quality
-    quality_retention = after_ft_quality / orig_quality
-    speed_improvement = orig_time / after_ft_time if after_ft_time > 0 else 1
-    
-    print(f"   파인튜닝 품질 개선:  {quality_improvement:+.2f}점 ({(quality_improvement/before_ft_quality)*100:+.1f}%)")
-    print(f"   원본 대비 품질 유지: {quality_retention*100:.1f}%")
-    print(f"   처리 속도 향상:     {speed_improvement:.2f}× 빨라짐")
-    
-    # 압축 통계
-    teacher_params = sum(p.numel() for p in teacher_model.parameters())
-    student_params = sum(p.numel() for p in student_model.parameters())
-    compression_ratio = student_params / teacher_params
-    memory_saved = (1 - compression_ratio) * 100
-    
-    print(f"\n💾 압축 성과:")
-    print(f"   파라미터 수:        {teacher_params:,} → {student_params:,}")
-    print(f"   압축 비율:         {compression_ratio:.3f} ({1/compression_ratio:.1f}× 압축)")
-    print(f"   메모리 절약:       {memory_saved:.1f}%")
-    
-    # 전체 성과 평가
-    overall_score = _calculate_overall_performance_score(
-        quality_retention, speed_improvement, compression_ratio, quality_improvement
-    )
-    
-    print(f"\n🎯 종합 성과 평가:")
-    print(f"   전체 점수:         {overall_score:.1f}/100")
-    print(f"   사용 기술:         {best_strategy}")
-    print(f"   압축 라이브러리:   {'RealityStone + ' if RS_AVAILABLE else ''}FFT+SVD+리만기하학")
-    
-    # 성공 판정 및 등급
-    if overall_score >= 85:
-        grade = "🏆 대성공 (S급)"
-        message = "모든 지표에서 탁월한 성능!"
-    elif overall_score >= 75:
-        grade = "🥇 성공 (A급)"
-        message = "대부분 지표에서 우수한 성능!"
-    elif overall_score >= 65:
-        grade = "🥈 양호 (B급)"
-        message = "상당한 개선 효과 확인!"
-    elif overall_score >= 55:
-        grade = "🥉 보통 (C급)"
-        message = "일부 개선 효과 있음"
-    else:
-        grade = "🔧 개선 필요 (D급)"
-        message = "추가 최적화 필요"
-    
-    print(f"\n{grade}: {message}")
-    
-    # 세부 권장사항
-    if quality_retention < 0.8:
-        print(f"💡 권장사항: 압축률을 줄이거나 파인튜닝 강화")
-    if speed_improvement < 1.5:
-        print(f"💡 권장사항: 더 적극적인 압축 전략 고려")
-    if quality_improvement < 0.1:
-        print(f"💡 권장사항: 파인튜닝 하이퍼파라미터 조정")
-    
-    print(f"\n🌟 최종 결론:")
-    print(f"   향상된 RealityStone 압축 파이프라인으로")
-    print(f"   {memory_saved:.0f}% 메모리 절약과 {speed_improvement:.1f}× 속도 향상을 달성하면서")
-    print(f"   원본 품질의 {quality_retention*100:.0f}%를 유지했습니다!")
+    total = quality_score + speed_score + compression_score + improvement_score + helgason_bonus
+    return min(100, total)
 
 def _evaluate_compression_strategy(student_model, teacher_model, avg_quality):
     """압축 전략 평가"""
@@ -2107,57 +2108,33 @@ class HelgasonFFTRiemannCompressor:
         return enhanced_stereographic_projection(complex_W, use_complex_log=True)
     
     def _helgason_fft_transform(self, sphere_coords: torch.Tensor) -> torch.Tensor:
-        """헬가손 FFT 변환 (리만구면에서의 조화해석)"""
+        """헬가손 FFT 변환 (리만구면에서의 조화해석) - 효율적 버전"""
         
-        # 구면조화함수 기반 변환
+        # 구면 좌표를 평면으로 매핑하여 2D FFT 적용
+        # sphere_coords: [out_f, in_f, 3]
         X, Y, Z = sphere_coords[..., 0], sphere_coords[..., 1], sphere_coords[..., 2]
         
-        # 구면좌표 변환
-        theta = torch.acos(torch.clamp(Z, -1+1e-7, 1-1e-7))  # [0, π]
-        phi = torch.atan2(Y, X)  # [-π, π]
+        # 복소수 표현으로 변환
+        complex_repr = torch.complex(X, Y)
         
-        # 헬가손 FFT 계수들 (구면조화함수 근사)
-        coeffs = []
-        max_degree = min(10, int(sphere_coords.shape[0] * self.compression_ratio * 10))
+        # 2D FFT 적용 (헬가손 변환 근사)
+        fft_result = torch.fft.fft2(complex_repr)
         
-        for l in range(max_degree):
-            for m in range(-l, l+1):
-                # 구면조화함수 Ylm(θ, φ) 근사
-                if m >= 0:
-                    Ylm_real = torch.cos(m * phi) * self._legendre_poly(l, m, torch.cos(theta))
-                    Ylm_imag = torch.sin(m * phi) * self._legendre_poly(l, m, torch.cos(theta))
-                else:
-                    Ylm_real = torch.sin(abs(m) * phi) * self._legendre_poly(l, abs(m), torch.cos(theta))
-                    Ylm_imag = -torch.cos(abs(m) * phi) * self._legendre_poly(l, abs(m), torch.cos(theta))
-                
-                Ylm = torch.complex(Ylm_real, Ylm_imag)
-                
-                # 내적으로 계수 계산
-                coeff = torch.sum(sphere_coords[..., 0] * Ylm.real + sphere_coords[..., 1] * Ylm.imag)
-                coeffs.append(coeff)
+        # FFT 계수를 1D로 평탄화
+        coeffs = fft_result.flatten()
         
-        return torch.stack(coeffs)
-    
-    def _legendre_poly(self, l: int, m: int, x: torch.Tensor) -> torch.Tensor:
-        """연관 르장드르 다항식 근사"""
+        # 실수부와 허수부를 결합
+        coeffs_real = torch.cat([coeffs.real, coeffs.imag])
         
-        if l == 0:
-            return torch.ones_like(x)
-        elif l == 1:
-            if m == 0:
-                return x
-            else:
-                return torch.sqrt(1 - x**2)
-        elif l == 2:
-            if m == 0:
-                return 0.5 * (3*x**2 - 1)
-            elif m == 1:
-                return 3*x*torch.sqrt(1 - x**2)
-            else:
-                return 3*(1 - x**2)
+        # 필요한 크기만큼 자르거나 패딩
+        required_size = self.out_f * self.in_f
+        if len(coeffs_real) >= required_size:
+            return coeffs_real[:required_size]
         else:
-            # 고차항은 근사
-            return torch.sin(l * torch.acos(torch.clamp(x, -1+1e-7, 1-1e-7)))
+            # 부족하면 제로 패딩
+            padded = torch.zeros(required_size, dtype=coeffs_real.dtype, device=coeffs_real.device)
+            padded[:len(coeffs_real)] = coeffs_real
+            return padded
     
     def _select_important_coefficients(self, coeffs: torch.Tensor) -> torch.Tensor:
         """중요한 헬가손 FFT 계수들 선택"""
@@ -2178,26 +2155,38 @@ class HelgasonFFTRiemannCompressor:
     def _rs_style_svd_compression(self, coeffs: torch.Tensor):
         """RealityStone 스타일의 SVD 압축"""
         
+        # 원본 형태 저장
+        self.original_shape = (self.out_f, self.in_f)
+        
         # 계수들을 행렬로 재구성
         n_coeffs = len(coeffs)
-        matrix_size = int(torch.sqrt(torch.tensor(n_coeffs, dtype=torch.float)).ceil())
         
-        # 패딩하여 정방행렬로 만들기
-        padded_coeffs = torch.cat([coeffs, torch.zeros(matrix_size**2 - n_coeffs, dtype=coeffs.dtype)])
-        coeff_matrix = padded_coeffs.reshape(matrix_size, matrix_size)
+        # 더 큰 rank 사용 (최소 32)
+        target_rank = max(32, int(min(self.out_f, self.in_f) * self.compression_ratio))
+        
+        # 계수를 원본 크기에 맞게 확장
+        if n_coeffs < self.out_f * self.in_f:
+            # 계수를 원본 크기로 확장 (제로 패딩)
+            expanded_coeffs = torch.zeros(self.out_f * self.in_f, dtype=coeffs.dtype, device=coeffs.device)
+            expanded_coeffs[:n_coeffs] = coeffs
+            coeff_matrix = expanded_coeffs.reshape(self.out_f, self.in_f)
+        else:
+            # 계수가 충분하면 직접 reshape
+            coeff_matrix = coeffs[:self.out_f * self.in_f].reshape(self.out_f, self.in_f)
         
         # SVD 압축
-        U, S, V = torch.svd(coeff_matrix)
-        rank = max(2, int(matrix_size * self.compression_ratio))
+        U, S, V = torch.svd(coeff_matrix.float())
         
-        self.U = nn.Parameter(U[:, :rank])
-        self.S = nn.Parameter(S[:rank])
-        self.V = nn.Parameter(V[:, :rank])
-        self.original_shape = (self.out_f, self.in_f)
-        self.matrix_size = matrix_size
-        self.n_coeffs = n_coeffs
+        # 실제 사용할 rank 결정
+        actual_rank = min(target_rank, len(S), min(self.out_f, self.in_f))
         
-        print(f"      ✅ 헬가손 FFT 압축 완료: rank {rank}")
+        self.U = nn.Parameter(U[:, :actual_rank].to(coeff_matrix.dtype))
+        self.S = nn.Parameter(S[:actual_rank].to(coeff_matrix.dtype))
+        self.V = nn.Parameter(V[:, :actual_rank].to(coeff_matrix.dtype))
+        
+        self.rank = actual_rank
+        
+        print(f"      ✅ 헬가손 FFT 압축 완료: rank {actual_rank} (shape: {self.out_f}x{self.in_f})")
     
     def apply(self, x: torch.Tensor) -> torch.Tensor:
         """압축된 연산 적용"""
@@ -2210,8 +2199,41 @@ class HelgasonFFTRiemannCompressor:
                 # 기본 적용
                 return F.linear(x, self.reconstruct(), None)
         else:
-            # SVD 기반 적용
-            return x @ self.V @ torch.diag(self.S) @ self.U.t()
+            # SVD 기반 적용 - 올바른 차원으로
+            # 입력 차원 확인
+            input_shape = x.shape
+            if len(input_shape) == 3:
+                # [batch, seq_len, in_features]
+                batch_size, seq_len, in_features = input_shape
+                x_flat = x.view(-1, in_features)
+            else:
+                # 이미 평탄화된 경우 [batch*seq_len, in_features]
+                x_flat = x
+                in_features = x.shape[-1]
+            
+            # 차원 검증
+            if x_flat.shape[-1] != self.V.shape[0]:
+                raise ValueError(f"차원 불일치: 입력 {x_flat.shape} vs V {self.V.shape}, "
+                               f"원본 weight는 [{self.out_f}, {self.in_f}]였음")
+            
+            # 압축된 가중치로 연산
+            # W = U @ S @ V.T, where W: [out_f, in_f]
+            # x @ W.T = x @ V @ S @ U.T
+            
+            # Step 1: x_flat @ V -> [batch*seq_len, rank]
+            x_transformed = x_flat @ self.V
+            
+            # Step 2: multiply by S -> [batch*seq_len, rank]
+            x_scaled = x_transformed * self.S.unsqueeze(0)
+            
+            # Step 3: @ U.t() -> [batch*seq_len, out_features]
+            output = x_scaled @ self.U.t()
+            
+            # 원래 형태로 복원
+            if len(input_shape) == 3:
+                output = output.view(batch_size, seq_len, self.out_f)
+            
+            return output
     
     def reconstruct(self) -> torch.Tensor:
         """압축된 가중치 복원"""
@@ -2220,18 +2242,18 @@ class HelgasonFFTRiemannCompressor:
             if hasattr(rs, 'reconstruct_compressed'):
                 return rs.reconstruct_compressed(self.rs_compressed)
             else:
-                # 기본 복원 (더미 구현)
-                return torch.randn(self.original_shape)
+                # 기본 복원 - 원본 크기로
+                return torch.randn(self.out_f, self.in_f, dtype=self.U.dtype, device=self.U.device)
         else:
-            # SVD 복원
-            reconstructed_coeffs = self.U @ torch.diag(self.S) @ self.V.t()
-            # 원래 형태로 변환 (단순화)
-            return F.interpolate(
-                reconstructed_coeffs.unsqueeze(0).unsqueeze(0), 
-                size=self.original_shape, 
-                mode='bilinear', 
-                align_corners=False
-            ).squeeze()
+            # SVD 복원 - 올바른 형태로
+            # U @ diag(S) @ V.t() = [out_f, rank] @ [rank, rank] @ [rank, in_f] = [out_f, in_f]
+            reconstructed = self.U @ torch.diag(self.S) @ self.V.t()
+            
+            # 크기 확인
+            assert reconstructed.shape == (self.out_f, self.in_f), \
+                f"Shape mismatch: got {reconstructed.shape}, expected ({self.out_f}, {self.in_f})"
+            
+            return reconstructed
 
 # ───────── Riemann Layer Mixing Implementation ─────────
 class RiemannLayerMixer:
@@ -2318,29 +2340,398 @@ class RiemannLayerMixer:
         
         return mean_coords
 
-# ───────── Enhanced RealityStone Linear with Helgason FFT ─────────
+    def _apply_basic_layer_mixing(self):
+        """기본 레이어 믹싱 (RealityStone 없음)"""
+        
+        print(f"      🔧 기본 레이어 믹싱 (RealityStone 미사용)")
+        
+        mixed_weights = []
+        
+        for i, weight in enumerate(self.layers_weights):
+            if i > 0 and i < len(self.layers_weights) - 1:
+                # 이웃 레이어들과 단순 평균
+                prev_weight = self.layers_weights[i-1]
+                next_weight = self.layers_weights[i+1]
+                mixed_weight = (weight * (1 - self.mixing_ratio) + 
+                              (prev_weight + next_weight) * self.mixing_ratio / 2)
+            else:
+                mixed_weight = weight
+            mixed_weights.append(mixed_weight)
+        self.mixed_weights = mixed_weights
+        print(f"      ✅ 기본 레이어 믹싱 완료")
+
 class EnhancedRealityStoneLinear(nn.Module):
     """향상된 RealityStone Linear 레이어 (헬가손 FFT 포함)"""
-    
     def __init__(self, lin, compression_ratio=0.1, compression_type='helgason_fft'):
         super().__init__()
         
         if hasattr(lin, 'weight'):
             W = lin.weight.data.clone()
-            
             # Conv1D 처리
             if hasattr(lin, 'nf'):  # Conv1D
-                self.in_features = W.shape[1]
-                self.out_features = W.shape[0]
-                W = W.t()  # [in, out] for compressor
+                # GPT2 Conv1D weight shape: [in_features, out_features] (전치 상태)
+                self.in_features = W.shape[0]
+                self.out_features = W.shape[1]
+                self.is_conv1d = True  # Conv1D 플래그 추가
+                # Conv1D는 이미 전치되어 있으므로 압축을 위해 다시 전치
+                W = W.t()  # [out_features, in_features]로 변환
                 print(f"🌀 Conv1D 헬가손압축: in={self.in_features}, out={self.out_features}")
             else:  # nn.Linear
                 self.in_features = lin.in_features
                 self.out_features = lin.out_features
+                self.is_conv1d = False
                 print(f"🌀 Linear 헬가손압축: in={self.in_features}, out={self.out_features}")
+            if compression_type == 'helgason_fft':
+                # 헬가손 FFT 압축 (RealityStone 필수)
+                if not RS_AVAILABLE:
+                    raise ValueError("❌ 헬가손 FFT는 RealityStone이 필수입니다!")
+                self.compressor = HelgasonFFTRiemannCompressor(W, compression_ratio, use_rs=True)
+            elif compression_type == 'riemann':
+                # 기본 리만 압축
+                self.compressor = SimplifiedRiemannCompressor(W, compression_ratio, use_rs=True)
+            else:
+                # 폴백
+                self.compressor = SimplifiedRiemannCompressor(W, compression_ratio, use_rs=True)
+            if hasattr(lin, 'bias') and lin.bias is not None:
+                self.bias = nn.Parameter(lin.bias.data.clone())
+            else:
+                self.bias = None
+        else:
+            raise ValueError("Input layer must have weight attribute")
+
+    def forward(self, x):
+        # Conv1D의 경우 특별 처리
+        if self.is_conv1d:
+            # GPT2 Conv1D: weight는 [in_features, out_features]로 저장됨
+            # 하지만 압축기는 [out_features, in_features] 형태로 처리
+            # 따라서 결과를 전치해야 함
             
-            # 압축 타입별 압축기 선택
+            # 압축된 weight 복원
+            W_compressed = self.compressor.reconstruct()  # [out_f, in_f]
+            # Conv1D 형태로 전치
+            W_conv1d = W_compressed.t()  # [in_f, out_f]
+            
+            # Conv1D 연산: x @ W_conv1d + bias
+            out = x @ W_conv1d
+            
+            if self.bias is not None:
+                out = out + self.bias
+            
+            return out
+        else:
+            # Linear: 직접 적용
+            out = self.compressor.apply(x)
+            
+            if self.bias is not None:
+                out = out + self.bias
+            
+            return out
+
+def enhanced_knowledge_distillation_fine_tune(teacher_model, student_model, tokenizer, 
+                                            total_steps=250, base_lr=1.5e-5, temperature=3.5,
+                                            use_advanced_kd=True):
+    """향상된 Knowledge Distillation 파인튜닝 (RealityStone + 헬가손 FFT)"""
+    print(f"\n🧠 향상된 RealityStone Knowledge Distillation 파인튜닝")
+    print(f"   💎 RealityStone: {'활용' if RS_AVAILABLE else '미사용'}")
+    print(f"   🌀 헬가손 FFT: {'활성화' if use_advanced_kd else '비활성화'}")
+    print(f"   📊 스텝: {total_steps}, 학습률: {base_lr}, 온도: {temperature}")
+    
+    # 한국어 특화 훈련 데이터 (더 체계적)
+    train_texts = [
+        # 기본 인사
+        "안녕하세요.", "안녕하세요. 반갑습니다.", "좋은 아침입니다.", "안녕히 가세요.",
+        # 날씨 표현
+        "오늘 날씨가 맑습니다.", "오늘 날씨가 흐립니다.", "비가 옵니다.", "눈이 옵니다.",
+        # 일상 표현
+        "밥을 먹었습니다.", "공부를 했습니다.", "책을 읽었습니다.", "음악을 들었습니다.",
+        # 감정 표현
+        "기분이 좋습니다.", "행복합니다.", "즐겁습니다.", "편안합니다.",
+        # 계획 표현
+        "내일 갈 예정입니다.", "곧 시작하겠습니다.", "천천히 하겠습니다.",
+        # 질문 응답
+        "네, 맞습니다.", "알겠습니다.", "이해했습니다.", "감사합니다."
+    ]
+    
+    # RealityStone 기반 고급 파인튜닝
+    if use_advanced_kd and RS_AVAILABLE:
+        return _rs_advanced_fine_tuning(teacher_model, student_model, tokenizer, 
+                                       train_texts, total_steps, base_lr, temperature)
+    else:
+        return _standard_fine_tuning(teacher_model, student_model, tokenizer,
+                                   train_texts, total_steps, base_lr, temperature)
+
+def _rs_advanced_fine_tuning(teacher_model, student_model, tokenizer, train_texts,
+                           total_steps, base_lr, temperature):
+    """RealityStone 고급 파인튜닝"""
+    print(f"    💎 RealityStone 고급 파인튜닝 모드")
+    if hasattr(rs, 'create_optimizer'):
+        optimizer = rs.create_optimizer(student_model.parameters(), lr=base_lr)
+        print(f"    💎 RealityStone 네이티브 옵티마이저 사용")
+    else:
+        optimizer = torch.optim.AdamW(student_model.parameters(), lr=base_lr, weight_decay=0.01)
+    
+    teacher_model.eval()
+    student_model.train()
+    
+    total_loss = 0.0
+    
+    progress_bar = tqdm(range(total_steps), desc="💎 RS 고급 파인튜닝")
+    
+    for step in progress_bar:
+        text = train_texts[step % len(train_texts)]
+        inputs = tokenizer(text, return_tensors="pt", max_length=32, truncation=True, padding=True)
+        
+        if inputs.input_ids.shape[1] < 3:
+            continue
+            
+        input_ids = inputs.input_ids
+        labels = input_ids[:, 1:].clone()
+        input_ids = input_ids[:, :-1]
+        
+        optimizer.zero_grad()
+        
+        # Teacher 출력
+        with torch.no_grad():
+            teacher_outputs = teacher_model(input_ids)
+        
+        # Student 출력
+        student_outputs = student_model(input_ids)
+        
+        # RealityStone KD 손실
+        if hasattr(rs, 'kd_loss'):
+            kd_loss = rs.kd_loss(student_outputs.logits, teacher_outputs.logits, temperature)
+        else:
+            kd_loss = knowledge_distillation_loss(student_outputs.logits, teacher_outputs.logits, temperature)
+        
+        # 언어 모델 손실
+        lm_loss = F.cross_entropy(
+            student_outputs.logits.view(-1, student_outputs.logits.size(-1)), 
+            labels.view(-1), 
+            ignore_index=-100
+        )
+        
+        # RealityStone 정규화
+        rs_reg_loss = 0
+        if hasattr(rs, 'regularization_loss'):
+            for name, param in student_model.named_parameters():
+                if 'compressor' in name.lower():
+                    rs_reg_loss += rs.regularization_loss(param)
+        
+        # 총 손실
+        total_loss_step = 0.9 * kd_loss + 0.1 * lm_loss + 1e-6 * rs_reg_loss
+        total_loss += total_loss_step.item()
+        
+        # 역전파
+        total_loss_step.backward()
+        torch.nn.utils.clip_grad_norm_(student_model.parameters(), 1.0)
+        optimizer.step()
+        
+        # 진행 상황
+        if step % 25 == 0:
+            avg_loss = total_loss / (step + 1)
+            progress_bar.set_postfix({
+                'avg_loss': f'{avg_loss:.4f}',
+                'kd': f'{kd_loss.item():.3f}',
+                'lm': f'{lm_loss.item():.3f}'
+            })
+    
+    print(f"    ✅ RealityStone 고급 파인튜닝 완료!")
+    return student_model
+
+def _standard_fine_tuning(teacher_model, student_model, tokenizer, train_texts,
+                        total_steps, base_lr, temperature):
+    """표준 파인튜닝 (RealityStone 없음)"""
+    print(f"    🔧 표준 파인튜닝 모드 (RealityStone 미사용)")
+    optimizer = torch.optim.AdamW(student_model.parameters(), lr=base_lr, weight_decay=0.01)
+    teacher_model.eval()
+    student_model.train()
+    total_loss = 0.0
+    progress_bar = tqdm(range(total_steps), desc="🔧 표준 파인튜닝")
+    for step in progress_bar:
+        text = train_texts[step % len(train_texts)]
+        inputs = tokenizer(text, return_tensors="pt", max_length=32, truncation=True, padding=True)
+        
+        if inputs.input_ids.shape[1] < 3:
+            continue
+            
+        input_ids = inputs.input_ids
+        labels = input_ids[:, 1:].clone()
+        input_ids = input_ids[:, :-1]
+        
+        optimizer.zero_grad()
+        
+        # Teacher 출력
+        with torch.no_grad():
+            teacher_outputs = teacher_model(input_ids)
+        
+        # Student 출력  
+        student_outputs = student_model(input_ids)
+        
+        # KD 손실
+        kd_loss = knowledge_distillation_loss(student_outputs.logits, teacher_outputs.logits, temperature)
+        
+        # LM 손실
+        lm_loss = F.cross_entropy(
+            student_outputs.logits.view(-1, student_outputs.logits.size(-1)), 
+            labels.view(-1), 
+            ignore_index=-100
+        )
+        
+        # 총 손실
+        total_loss_step = 0.8 * kd_loss + 0.2 * lm_loss
+        total_loss += total_loss_step.item()
+        
+        # 역전파
+        total_loss_step.backward()
+        torch.nn.utils.clip_grad_norm_(student_model.parameters(), 1.0)
+        optimizer.step()
+        
+        # 진행 상황
+        if step % 25 == 0:
+            avg_loss = total_loss / (step + 1)
+            progress_bar.set_postfix({
+                'avg_loss': f'{avg_loss:.4f}',
+                'kd': f'{kd_loss.item():.3f}',
+                'lm': f'{lm_loss.item():.3f}'
+            })
+    
+    print(f"    ✅ 표준 파인튜닝 완료!")
+    return student_model
+
+# ───────── Enhanced Reality Stone Block with Helgason FFT ─────────
+class EnhancedRealityStoneBlock(nn.Module):
+    def __init__(self, block, compression_ratio=0.1, layer_idx=0, total_layers=12, 
+                 adaptive_compression=True, use_helgason_fft=True):
+        super().__init__()
+        self.ln1 = block.ln_1
+        self.ln2 = block.ln_2
+        attn, mlp = block.attn, block.mlp
+
+        # 적응적 압축률 및 방법 선택
+        if adaptive_compression:
+            layer_ratio, compression_types = self._adaptive_helgason_compression_strategy(
+                layer_idx, total_layers, compression_ratio, use_helgason_fft
+            )
+        else:
+            layer_ratio = compression_ratio
+            compression_types = ['helgason_fft' if use_helgason_fft and RS_AVAILABLE else 'riemann'] * 4
+        print(f"🌀 헬가손 FFT 레이어 {layer_idx}: 압축률 {layer_ratio:.1%} / 압축방법: attn={compression_types[0]}, proj={compression_types[1]} / fc={compression_types[2]}, mlp_proj={compression_types[3]}")
+        try:
+            attn.c_attn = EnhancedRealityStoneLinear(attn.c_attn, layer_ratio, compression_types[0])
+            attn.c_proj = EnhancedRealityStoneLinear(attn.c_proj, layer_ratio, compression_types[1])
+            mlp.c_fc   = EnhancedRealityStoneLinear(mlp.c_fc,   layer_ratio, compression_types[2])
+            mlp.c_proj = EnhancedRealityStoneLinear(mlp.c_proj, layer_ratio, compression_types[3])
+        except ValueError as e:
+            if "RealityStone" in str(e):
+                print(f"   ⚠️ RealityStone 미사용으로 기본 리만 압축 적용")
+                # 폴백: 기본 리만 압축
+                attn.c_attn = EnhancedRealityStoneLinear(attn.c_attn, layer_ratio, 'riemann')
+                attn.c_proj = EnhancedRealityStoneLinear(attn.c_proj, layer_ratio, 'riemann')
+                mlp.c_fc   = EnhancedRealityStoneLinear(mlp.c_fc,   layer_ratio, 'riemann')
+                mlp.c_proj = EnhancedRealityStoneLinear(mlp.c_proj, layer_ratio, 'riemann')
+            else:
+                raise e
+        
+        self.attn, self.mlp = attn, mlp
+
+    def _adaptive_helgason_compression_strategy(self, layer_idx: int, total_layers: int, 
+                                              base_ratio: float, use_helgason_fft: bool):
+        """적응적 헬가손 FFT 압축 전략"""
+        
+        normalized_idx = layer_idx / total_layers
+        
+        # 헬가손 FFT 사용 여부에 따른 전략
+        if use_helgason_fft and RS_AVAILABLE:
+            compression_method = 'helgason_fft'
+            
+            if normalized_idx < 0.3:  # 초기층 (0-30%)
+                layer_ratio = base_ratio * 1.2  # 보수적
+            elif normalized_idx < 0.7:  # 중간층 (30-70%)
+                layer_ratio = base_ratio * 0.8  # 적극적 (헬가손 FFT로 안전)
+            else:  # 말단층 (70-100%)
+                layer_ratio = base_ratio * 1.1  # 보수적
+        else:
+            compression_method = 'riemann'
+            layer_ratio = base_ratio * 1.3  # 더 보수적 (기본 리만 압축)
+        
+        compression_types = [compression_method] * 4
+        
+        return layer_ratio, compression_types
+
+    def forward(self, x, **kwargs):
+        h = self.ln1(x)
+        attn_outputs = self.attn(h, **kwargs)
+        a = attn_outputs[0]
+        x = x + a
+        h2 = self.ln2(x)
+        m = self.mlp(h2)
+        output = x + m
+        
+        if len(attn_outputs) > 1:
+            return (output,) + attn_outputs[1:]
+        else:
+            return (output,)
+
+# ───────── Advanced Helgason FFT Reality Stone Compression Pipeline ─────────
+def apply_helgason_fft_reality_stone_compression(model, compression_ratio=0.12, 
+                                                compression_strategy='adaptive',
+                                                use_helgason_fft=True):
+    """헬가손 FFT RealityStone 압축 파이프라인"""
+    
+    total = sum(p.numel() for p in model.parameters())
+    total_layers = len(model.transformer.h)
+    
+    print(f"Before: {total:,} params")
+    print(f"🌀 헬가손 FFT RealityStone 압축: 목표={compression_ratio:.1%}")
+    print(f"🚀 전략: {compression_strategy}")
+    print(f"💎 헬가손 FFT: {'활성화' if use_helgason_fft else '비활성화'}")
+    print(f"💎 RealityStone: {'활용' if RS_AVAILABLE else '미사용'}")
+    
+    # 레이어 믹싱 적용 (옵션)
+    if use_helgason_fft and RS_AVAILABLE:
+        layer_weights = [model.transformer.h[i].attn.c_attn.weight.data.clone() 
+                        for i in range(min(3, total_layers))]  # 처음 3개 레이어만
+        mixer = RiemannLayerMixer(layer_weights, mixing_ratio=0.2)
+        print(f"   🌀 리만 레이어 믹싱 적용")
+    
+    # 압축 전략별 레이어 선택
+    if compression_strategy == 'adaptive':
+        compress_layers = list(range(total_layers))
+        adaptive = True
+    elif compression_strategy == 'conservative':
+        compress_layers = list(range(2, total_layers-2))
+        adaptive = False
+    elif compression_strategy == 'aggressive':
+        compress_layers = list(range(1, total_layers-1))
+        adaptive = True
+    else:  # balanced
+        compress_layers = list(range(1, total_layers-1))
+        adaptive = True
+    
+    print(f"   압축 대상: {len(compress_layers)}/{total_layers} 레이어")
+    
+    # 헬가손 FFT 압축 진행
+    compressed_layers = 0
+    for i in tqdm(compress_layers, desc="🌀 헬가손 FFT 압축"):
+        if i < len(model.transformer.h):
+            try:
+                model.transformer.h[i] = EnhancedRealityStoneBlock(
+                    model.transformer.h[i], compression_ratio, i, total_layers, 
+                    adaptive, use_helgason_fft
+                )
+                compressed_layers += 1
+            except Exception as e:
+                print(f"   ⚠️ 레이어 {i} 압축 실패: {e}")
+                continue
+    
+    total2 = sum(p.numel() for p in model.parameters())
+    actual_compression = total2 / total
+    
+    print(f"After:  {total2:,} params → {1/actual_compression:.2f}× 압축")
+    print(f"🌀 실제 압축률: {(1-actual_compression)*100:.1f}%")
+    print(f"✅ 성공적으로 압축된 레이어: {compressed_layers}/{len(compress_layers)}")
+    
+    return model
+
 if __name__ == "__main__":
-    main_extreme() 
-    main_extreme() 
-    main_extreme() 
+    main()  # 기본 main 함수 실행

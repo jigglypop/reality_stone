@@ -1,4 +1,6 @@
 #include <torch/extension.h>
+#include <c10/cuda/CUDAGuard.h>
+#include <c10/cuda/CUDAStream.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
@@ -7,6 +9,11 @@
 
 #define MAX_THREADS_PER_BLOCK 1024
 #define WARP_SIZE 32
+
+// CUDA 버전 체크 추가
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 600
+#define CUDA_ATOMICS_AVAILABLE
+#endif
 
 namespace reality_stone::advanced {
 

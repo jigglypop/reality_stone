@@ -7,7 +7,6 @@ from torch.utils.cpp_extension import BuildExtension, CUDAExtension, CppExtensio
 from pathlib import Path
 
 def get_pytorch_cuda_version():
-    """PyTorch가 사용하는 CUDA 버전 확인"""
     if torch.cuda.is_available():
         cuda_version = torch.version.cuda
         print(f"PyTorch CUDA version: {cuda_version}")
@@ -17,44 +16,34 @@ def get_pytorch_cuda_version():
 def find_cuda_installation(preferred_version=None):
     """설치된 CUDA 찾기"""
     cuda_base = r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA"
-    
     if preferred_version:
-        # PyTorch가 사용하는 버전 우선 확인
         cuda_path = os.path.join(cuda_base, f"v{preferred_version}")
         if os.path.exists(cuda_path):
             return cuda_path
-    
-    # 설치된 모든 CUDA 버전 확인
     if os.path.exists(cuda_base):
         versions = [d for d in os.listdir(cuda_base) if d.startswith('v')]
         if versions:
-            # 최신 버전 사용
             latest = sorted(versions, reverse=True)[0]
             return os.path.join(cuda_base, latest)
-    
     return None
 
 
 def get_cuda_libraries():
     """PyTorch와 호환되는 CUDA 라이브러리 찾기"""
     torch_lib_path = os.path.join(os.path.dirname(torch.__file__), "lib")
-    
     # PyTorch lib 폴더의 실제 파일 목록
     if os.path.exists(torch_lib_path):
         lib_files = [f for f in os.listdir(torch_lib_path) if f.endswith('.lib')]
         print(f"Available .lib files in PyTorch: {len(lib_files)} files")
     else:
         lib_files = []
-    
     # 필요한 라이브러리와 가능한 변형들
     required_libs = {
         'cudart': ['cudart64_12', 'cudart64_121', 'cudart_static', 'cudart', 'cudart64'],
         'cublas': ['cublas64_12', 'cublas64_121', 'cublas', 'cublas64', 'cublasLt64_12', 'cublasLt64_121'],
         'cublasLt': ['cublasLt64_12', 'cublasLt64_121', 'cublasLt', 'cublasLt64'],
     }
-    
     found_libs = []
-    
     # PyTorch lib 폴더에서 실제 존재하는 라이브러리만 사용
     for lib_type, candidates in required_libs.items():
         found = False
@@ -64,17 +53,12 @@ def get_cuda_libraries():
                 print(f"Found {lib_type}: {candidate}")
                 found = True
                 break
-        
         if not found:
             print(f"Warning: No {lib_type} library found in PyTorch lib folder")
-    
-    # PyTorch 기본 라이브러리
     pytorch_libs = []
     for lib in ['c10', 'torch', 'torch_cpu', 'torch_python', 'c10_cuda', 'torch_cuda']:
         if f"{lib}.lib" in lib_files:
             pytorch_libs.append(lib)
-    
-    # 만약 CUDA 라이브러리를 찾지 못했다면, 기본 이름들로 시도
     if not found_libs:
         print("Warning: No CUDA libraries found in PyTorch lib folder, using default names")
         found_libs = ['cudart', 'cublas', 'cublasLt']
@@ -85,17 +69,12 @@ def setup_windows_env():
     """Windows 개발 환경 설정"""
     if sys.platform != 'win32':
         return
-    
-    # Visual Studio 설정
     os.environ['DISTUTILS_USE_SDK'] = '1'
-    
-    # Visual Studio 찾기
     vs_paths = [
         r"C:\Program Files\Microsoft Visual Studio\2022\Community",
         r"C:\Program Files\Microsoft Visual Studio\2022\Professional",
         r"C:\Program Files\Microsoft Visual Studio\2022\Enterprise",
     ]
-    
     for vs_path in vs_paths:
         vcvarsall = os.path.join(vs_path, r"VC\Auxiliary\Build\vcvarsall.bat")
         if os.path.exists(vcvarsall):
@@ -110,8 +89,6 @@ def setup_windows_env():
                         key, value = line.split('=', 1)
                         os.environ[key] = value
             break
-    
-    # Windows SDK 설정
     sdk_base = r"C:\Program Files (x86)\Windows Kits\10"
     if os.path.exists(sdk_base):
         bin_path = os.path.join(sdk_base, "bin")
@@ -121,18 +98,14 @@ def setup_windows_env():
             if sdk_versions:
                 latest_sdk = sorted(sdk_versions)[-1]
                 print(f"Found Windows SDK: {latest_sdk}")
-                
-                # rc.exe 경로 추가
                 rc_paths = [
                     os.path.join(bin_path, latest_sdk, "x64"),
                     os.path.join(bin_path, latest_sdk, "x86"),
                 ]
-                
                 current_path = os.environ.get('PATH', '')
                 new_paths = [p for p in rc_paths if os.path.exists(p)]
                 if new_paths:
                     os.environ['PATH'] = ';'.join(new_paths) + ';' + current_path
-                # SDK 환경 변수
                 os.environ['WindowsSdkDir'] = sdk_base
                 os.environ['WindowsSdkVersion'] = latest_sdk
                 os.environ['WindowsSdkVerBinPath'] = os.path.join(bin_path, latest_sdk) + '\\'
@@ -166,7 +139,6 @@ def setup_windows_env():
 
 
 def build_extension():
-    """확장 모듈 빌드 설정"""
     try:
         setup_windows_env()
         project_root = Path(__file__).parent.absolute()
@@ -202,25 +174,15 @@ def build_extension():
                             os.path.join(lib_path, latest_sdk, "ucrt", "x64"),
                             os.path.join(lib_path, latest_sdk, "um", "x64"),
                         ])
-        
-        # PyTorch include 경로
         include_dirs.extend(torch.utils.cpp_extension.include_paths())
-        
-        # CUDA 경로 (있으면 추가)
         cuda_home = os.environ.get('CUDA_HOME', os.environ.get('CUDA_PATH'))
         if cuda_home:
             include_dirs.append(os.path.join(cuda_home, 'include'))
             cuda_lib_path = os.path.join(cuda_home, 'lib', 'x64')
             if os.path.exists(cuda_lib_path):
                 library_dirs.append(cuda_lib_path)
-        
-        # CUDA 사용 가능 여부 확인
         has_cuda = torch.cuda.is_available() and len(cuda_sources) > 0
-        
         if has_cuda:
-            print("Building with CUDA support")
-            
-            # 컴파일 옵션
             extra_compile_args = {
                 "cxx": ["/O2", "/std:c++17", "/MD"],
                 "nvcc": [

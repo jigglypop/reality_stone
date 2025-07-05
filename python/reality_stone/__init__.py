@@ -1,172 +1,237 @@
-"""
-Reality Stone - High-performance hyperbolic neural networks
-Powered by Rust + PyTorch
-"""
-
-__version__ = "0.2.0"
-
 import torch
 import numpy as np
-from . import _rust
+from torch.autograd import Function
 
-# Constants
-EPS = 1e-7
-BOUNDARY_EPS = 1e-5
-MIN_DENOMINATOR = 1e-6
+_has_rust_ext = False
+_has_cuda = False
 
-def _to_numpy(tensor):
-    """Convert PyTorch tensor to numpy array"""
-    if isinstance(tensor, torch.Tensor):
-        return tensor.detach().cpu().numpy()
-    return tensor
+try:
+    # The module name is defined in pyproject.toml and Cargo.toml
+    from ._rust import (
+        mobius_add_cpu,
+        mobius_scalar_cpu,
+        poincare_distance_cpu,
+        poincare_ball_layer_cpu,
+        # TODO: Other CPU functions will be added here
+    )
+    _has_rust_ext = True
 
-def _from_numpy(array, device=None, dtype=torch.float32):
-    """Convert numpy array to PyTorch tensor"""
-    tensor = torch.from_numpy(array).to(dtype)
-    if device is not None:
-        tensor = tensor.to(device)
-    return tensor
+    # Conditionally import CUDA functions only if Rust extension loaded and CUDA is available
+    if torch.cuda.is_available():
+        from ._rust import (
+            mobius_add_cuda, 
+            mobius_scalar_cuda, 
+            poincare_distance_cuda,
+            poincare_ball_layer_cuda
+        )
+        _has_cuda = True
 
-# Mobius operations
-def mobius_add(u, v, c=1.0):
-    """Möbius addition in the Poincaré ball"""
-    device = u.device
-    u_np = _to_numpy(u).astype(np.float32)
-    v_np = _to_numpy(v).astype(np.float32)
-    result = _rust.mobius_add(u_np, v_np, float(c))
-    return _from_numpy(result, device)
+except ImportError:
+    # This is a genuine import error, meaning the .so file is missing.
+    print("⚠️ Reality Stone: Rust extension (.so file) not found.")
+    print("   Please build the project first (e.g., `maturin develop`).")
+except Exception as e:
+    # Any other exception during import (e.g., linking error, CUDA error)
+    import traceback
+    print("🔥 Reality Stone: An unexpected error occurred while importing the Rust extension.")
+    print(f"   Error Type: {type(e).__name__}")
+    print(f"   Error Details: {e}")
+    print("--- Traceback ---")
+    traceback.print_exc()
+    print("-----------------")
+    print("   This might be due to a missing dependency (like CUDA toolkit) or a build mismatch.")
 
-def mobius_scalar(u, r, c=1.0):
-    """Möbius scalar multiplication in the Poincaré ball"""
-    device = u.device
-    u_np = _to_numpy(u).astype(np.float32)
-    result = _rust.mobius_scalar(u_np, float(c), float(r))
-    return _from_numpy(result, device)
 
-# Poincaré operations
-def poincare_distance(u, v, c=1.0):
-    """Distance in the Poincaré ball"""
-    device = u.device
-    u_np = _to_numpy(u).astype(np.float32)
-    v_np = _to_numpy(v).astype(np.float32)
-    result = _rust.poincare_distance(u_np, v_np, float(c))
-    return _from_numpy(result, device)
+# --- Public API ---
 
-def poincare_to_lorentz(x, c=1.0):
-    """Convert from Poincaré ball to Lorentz model"""
-    device = x.device
-    x_np = _to_numpy(x).astype(np.float32)
-    result = _rust.poincare_to_lorentz(x_np, float(c))
-    return _from_numpy(result, device)
+def mobius_add(x: torch.Tensor, y: torch.Tensor, c: float) -> torch.Tensor:
+    if not _has_rust_ext:
+        raise RuntimeError("Reality Stone's Rust extension is not installed. Please build it first.")
 
-def poincare_to_klein(x, c=1.0):
-    """Convert from Poincaré ball to Klein model"""
-    device = x.device
-    x_np = _to_numpy(x).astype(np.float32)
-    result = _rust.poincare_to_klein(x_np, float(c))
-    return _from_numpy(result, device)
+    if x.device.type == 'cuda':
+        if not _has_cuda:
+            raise RuntimeError("Reality Stone was not built with CUDA support, but the input tensor is on a CUDA device.")
+        if not x.is_contiguous() or not y.is_contiguous():
+            raise ValueError("Input tensors must be contiguous for CUDA operations.")
+        
+        out = torch.empty_like(x)
+        batch_size, dim = x.shape
+        
+        mobius_add_cuda(
+            x.data_ptr(),
+            y.data_ptr(),
+            out.data_ptr(),
+            batch_size,
+            dim,
+            c
+        )
+        return out
+    else:
+        x_np = x.detach().cpu().numpy()
+        y_np = y.detach().cpu().numpy()
+        result_np = mobius_add_cpu(x_np, y_np, c)
+        return torch.from_numpy(result_np).to(x.device)
 
-# Lorentz operations
-def lorentz_add(u, v, c=1.0):
-    """Addition in the Lorentz model"""
-    device = u.device
-    u_np = _to_numpy(u).astype(np.float32)
-    v_np = _to_numpy(v).astype(np.float32)
-    result = _rust.lorentz_add(u_np, v_np, float(c))
-    return _from_numpy(result, device)
 
-def lorentz_scalar(u, r, c=1.0):
-    """Scalar multiplication in the Lorentz model"""
-    device = u.device
-    u_np = _to_numpy(u).astype(np.float32)
-    result = _rust.lorentz_scalar(u_np, float(c), float(r))
-    return _from_numpy(result, device)
+def mobius_scalar(x: torch.Tensor, r: float, c: float) -> torch.Tensor:
+    if not _has_rust_ext:
+        raise RuntimeError("Reality Stone's Rust extension is not installed. Please build it first.")
+    if x.device.type == 'cuda':
+        if not _has_cuda:
+            raise RuntimeError("Reality Stone was not built with CUDA support, but the input tensor is on a CUDA device.")
+        if not x.is_contiguous():
+            raise ValueError("Input tensor must be contiguous for CUDA operations.")
+        out = torch.empty_like(x)
+        batch_size, dim = x.shape
+        mobius_scalar_cuda(
+            x.data_ptr(),
+            out.data_ptr(),
+            batch_size,
+            dim,
+            r,
+            c
+        )
+        return out
+    else:
+        x_np = x.detach().cpu().numpy()
+        result_np = mobius_scalar_cpu(x_np, r, c)
+        return torch.from_numpy(result_np).to(x.device)
 
-def lorentz_distance(u, v, c=1.0):
-    """Distance in the Lorentz model"""
-    device = u.device
-    u_np = _to_numpy(u).astype(np.float32)
-    v_np = _to_numpy(v).astype(np.float32)
-    result = _rust.lorentz_distance(u_np, v_np, float(c))
-    return _from_numpy(result, device)
 
-def lorentz_inner(u, v):
-    """Minkowski inner product"""
-    device = u.device
-    u_np = _to_numpy(u).astype(np.float32)
-    v_np = _to_numpy(v).astype(np.float32)
-    result = _rust.lorentz_inner(u_np, v_np)
-    return _from_numpy(result, device)
+def poincare_distance(x: torch.Tensor, y: torch.Tensor, c: float) -> torch.Tensor:
+    if not _has_rust_ext:
+        raise RuntimeError("Reality Stone's Rust extension is not installed. Please build it first.")
 
-def lorentz_to_poincare(x, c=1.0):
-    """Convert from Lorentz model to Poincaré ball"""
-    device = x.device
-    x_np = _to_numpy(x).astype(np.float32)
-    result = _rust.lorentz_to_poincare(x_np, float(c))
-    return _from_numpy(result, device)
+    if x.device.type == 'cuda':
+        if not _has_cuda:
+            raise RuntimeError("Reality Stone was not built with CUDA support, but the input tensor is on a CUDA device.")
+        if not x.is_contiguous() or not y.is_contiguous():
+            raise ValueError("Input tensors must be contiguous for CUDA operations.")
+        
+        out = torch.empty(x.shape[0], device=x.device, dtype=x.dtype)
+        batch_size, dim = x.shape
+        
+        poincare_distance_cuda(
+            x.data_ptr(),
+            y.data_ptr(),
+            out.data_ptr(),
+            batch_size,
+            dim,
+            c
+        )
+        return out
+    else:
+        x_np = x.detach().cpu().numpy()
+        y_np = y.detach().cpu().numpy()
+        result_np = poincare_distance_cpu(x_np, y_np, c)
+        return torch.from_numpy(result_np).to(x.device)
 
-def lorentz_to_klein(x, c=1.0):
-    """Convert from Lorentz model to Klein model"""
-    device = x.device
-    x_np = _to_numpy(x).astype(np.float32)
-    result = _rust.lorentz_to_klein(x_np, float(c))
-    return _from_numpy(result, device)
 
-# Klein operations
-def klein_add(u, v, c=1.0):
-    """Addition in the Klein model"""
-    device = u.device
-    u_np = _to_numpy(u).astype(np.float32)
-    v_np = _to_numpy(v).astype(np.float32)
-    result = _rust.klein_add(u_np, v_np, float(c))
-    return _from_numpy(result, device)
+def poincare_ball_layer(u: torch.Tensor, v: torch.Tensor, c: float, t: float) -> torch.Tensor:
+    if not _has_rust_ext:
+        raise RuntimeError("Reality Stone's Rust extension is not installed. Please build it first.")
 
-def klein_scalar(u, r, c=1.0):
-    """Scalar multiplication in the Klein model"""
-    device = u.device
-    u_np = _to_numpy(u).astype(np.float32)
-    result = _rust.klein_scalar(u_np, float(c), float(r))
-    return _from_numpy(result, device)
+    if u.device.type == 'cuda':
+        if not _has_cuda:
+            raise RuntimeError("Reality Stone was not built with CUDA support, but the input tensor is on a CUDA device.")
+        if not u.is_contiguous() or not v.is_contiguous():
+            raise ValueError("Input tensors must be contiguous for CUDA operations.")
+        
+        out = torch.empty_like(u)
+        batch_size, dim = u.shape
+        
+        poincare_ball_layer_cuda(
+            u.data_ptr(),
+            v.data_ptr(),
+            out.data_ptr(),
+            batch_size,
+            dim,
+            c,
+            t
+        )
+        return out
+    else:
+        u_np = u.detach().cpu().numpy()
+        v_np = v.detach().cpu().numpy()
+        result_np = poincare_ball_layer_cpu(u_np, v_np, c, t)
+        return torch.from_numpy(result_np).to(u.device)
 
-def klein_distance(u, v, c=1.0):
-    """Distance in the Klein model"""
-    device = u.device
-    u_np = _to_numpy(u).astype(np.float32)
-    v_np = _to_numpy(v).astype(np.float32)
-    result = _rust.klein_distance(u_np, v_np, float(c))
-    return _from_numpy(result, device)
+def _not_implemented(*args, **kwargs):
+    raise NotImplementedError("This function is part of the legacy API and has not been ported to the new Rust backend yet.")
 
-def klein_to_poincare(x, c=1.0):
-    """Convert from Klein model to Poincaré ball"""
-    device = x.device
-    x_np = _to_numpy(x).astype(np.float32)
-    result = _rust.klein_to_poincare(x_np, float(c))
-    return _from_numpy(result, device)
+class PoincareBall(Function):
+    @staticmethod
+    def forward(ctx, u, v, c, t):
+        return poincare_ball_layer(u, v, c, t)
 
-def klein_to_lorentz(x, c=1.0):
-    """Convert from Klein model to Lorentz model"""
-    device = x.device
-    x_np = _to_numpy(x).astype(np.float32)
-    result = _rust.klein_to_lorentz(x_np, float(c))
-    return _from_numpy(result, device)
+    @staticmethod
+    def backward(ctx, grad_output):
+        _not_implemented()
 
-# Convenience aliases
-poincare_ball_add = mobius_add
-poincare_ball_scalar = mobius_scalar
+poincare_ball_forward_cpu = _not_implemented
+poincare_ball_backward_cpu = _not_implemented
+lorentz_forward_cpu = _not_implemented
+lorentz_backward_cpu = _not_implemented
+klein_forward_cpu = _not_implemented
+klein_backward_cpu = _not_implemented
+poincare_to_lorentz_cpu = _not_implemented
+lorentz_to_poincare_cpu = _not_implemented
+poincare_to_klein_cpu = _not_implemented
+klein_to_poincare_cpu = _not_implemented
+lorentz_to_klein_cpu = _not_implemented
+klein_to_lorentz_cpu = _not_implemented
 
-def poincare_ball_layer(start_point, target_point, c, t):
-    minus_start = mobius_scalar(start_point, -1.0, c)
-    delta = mobius_add(minus_start, target_point, c)
-    delta_t = mobius_scalar(delta, t, c)
-    return mobius_add(start_point, delta_t, c)
+if _has_cuda:
+    poincare_ball_forward_cuda = _not_implemented
 
-__all__ = [
-    'mobius_add', 'mobius_scalar',
-    'poincare_distance', 'poincare_to_lorentz', 'poincare_to_klein',
-    'lorentz_add', 'lorentz_scalar', 'lorentz_distance', 'lorentz_inner',
-    'lorentz_to_poincare', 'lorentz_to_klein',
-    'klein_add', 'klein_scalar', 'klein_distance',
-    'klein_to_poincare', 'klein_to_lorentz',
-    'poincare_ball_add', 'poincare_ball_scalar',
-    'poincare_ball_layer'
-] 
+# === Differentiable Torch Fallbacks ===
+# Autograd-friendly implementations are used when gradients are required.
+
+def _mobius_add_torch(x: torch.Tensor, y: torch.Tensor, c: float, eps: float = 1e-7) -> torch.Tensor:
+    x2 = (x * x).sum(dim=1, keepdim=True)
+    y2 = (y * y).sum(dim=1, keepdim=True)
+    xy = (x * y).sum(dim=1, keepdim=True)
+    num = (1 + 2 * c * xy + c * y2) * x + (1 - c * x2) * y
+    denom = 1 + 2 * c * xy + (c ** 2) * x2 * y2
+    return num / denom.clamp_min(eps)
+
+def _mobius_scalar_torch(x: torch.Tensor, r: float, c: float, eps: float = 1e-7) -> torch.Tensor:
+    sqrtc = c ** 0.5
+    x_norm = x.norm(dim=1, keepdim=True).clamp_min(eps)
+    scale = torch.tanh(r * torch.atanh(sqrtc * x_norm)) / (sqrtc * x_norm)
+    return scale * x
+
+def _poincare_ball_layer_torch(u: torch.Tensor, v: torch.Tensor, c: float, t: float) -> torch.Tensor:
+    u_prime = _mobius_scalar_torch(u, 1.0 - t, c)
+    v_prime = _mobius_scalar_torch(v, t, c)
+    return _mobius_add_torch(u_prime, v_prime, c)
+
+# Preserve original fast (Rust/CUDA) functions
+_mobius_add_fast = mobius_add  # type: ignore
+_mobius_scalar_fast = mobius_scalar  # type: ignore
+_poincare_ball_layer_fast = poincare_ball_layer  # type: ignore
+
+# Override public API with gradient-aware wrapper
+
+def mobius_add(x: torch.Tensor, y: torch.Tensor, c: float) -> torch.Tensor:  # type: ignore
+    if torch.is_grad_enabled() and (x.requires_grad or y.requires_grad):
+        return _mobius_add_torch(x, y, c)
+    return _mobius_add_fast(x, y, c)
+
+def mobius_scalar(x: torch.Tensor, r: float, c: float) -> torch.Tensor:  # type: ignore
+    if torch.is_grad_enabled() and x.requires_grad:
+        return _mobius_scalar_torch(x, r, c)
+    return _mobius_scalar_fast(x, r, c)
+
+def poincare_ball_layer(u: torch.Tensor, v: torch.Tensor, c: float, t: float) -> torch.Tensor:  # type: ignore
+    if torch.is_grad_enabled() and (u.requires_grad or v.requires_grad):
+        return _poincare_ball_layer_torch(u, v, c, t)
+    return _poincare_ball_layer_fast(u, v, c, t)
+
+# Re-export
+__all__ = ['mobius_add', 'mobius_scalar', '_has_rust_ext', '_has_cuda']
+__all__.extend([
+    'poincare_ball_layer',
+    'mobius_add',
+    'mobius_scalar',
+])

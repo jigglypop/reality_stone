@@ -1,7 +1,5 @@
-# ===== Rust =====
 target/
 
-# ===== Python tooling =====
 .tox/
 .pytest_cache/
 .mypy_cache/

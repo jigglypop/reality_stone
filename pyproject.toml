@@ -37,7 +37,7 @@ Issues = "https://github.com/jigglypop/reality_stone/issues"
 
 [tool.maturin]
 python-source = "python"
-features = ["pyo3/extension-module"]
+features = ["pyo3/extension-module", "cuda"]
 module-name = "reality_stone._rust"
 
 [tool.pytest.ini_options]

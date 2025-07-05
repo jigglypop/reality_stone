@@ -7,6 +7,13 @@
 [![Python](https://img.shields.io/badge/python-3.7%20%7C%203.8%20%7C%203.9%20%7C%203.10-blue)](https://www.python.org/)
 [![라이선스](https://img.shields.io/badge/%EB%9D%BC%EC%9D%B4%EC%84%A0%EC%8A%A4-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
+
+## 인스톨
+
+```bash
+docker-compose up --build -d
+```
+
 ## 🎯 핵심 혁신: 헬가손 변환 & 정확도 최우선 압축
 
 **reality_stone**은 **게임 체인저급 신경망 압축 기술**을 제공하는 최첨단 PyTorch 라이브러리입니다. 

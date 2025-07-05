@@ -130,7 +130,7 @@ pub fn lorentz_to_poincare(x: &ArrayView2<f32>, c: f32) -> Array2<f32> {
     result
 }
 
-pub fn lorentz_to_klein(x: &ArrayView2<f32>, c: f32) -> Array2<f32> {
+pub fn lorentz_to_klein(x: &ArrayView2<f32>, _: f32) -> Array2<f32> {
     let batch_size = x.nrows();
     let dim = x.ncols() - 1;
     let mut result = Array2::zeros((batch_size, dim));

@@ -61,3 +61,54 @@ pub fn mobius_scalar(u: &ArrayView2<f32>, c: f32, r: f32) -> Array2<f32> {
     
     result
 } 
+
+#[cfg(feature = "cuda")]
+pub mod cuda {
+    use std::os::raw::c_void;
+
+    #[link(name = "kernel_mobius", kind="static")]
+    extern "C" {
+        pub fn mobius_add_cuda_launcher(
+            out: *mut f32,
+            u: *const f32,
+            v: *const f32,
+            c: f32,
+            batch_size: i64,
+            dim: i64,
+        );
+        pub fn mobius_scalar_cuda_launcher(
+            out: *mut f32,
+            u: *const f32,
+            c: f32,
+            r: f32,
+            batch_size: i64,
+            dim: i64,
+        );
+    }
+
+    pub fn mobius_add_cuda(
+        out: *mut f32,
+        u: *const f32,
+        v: *const f32,
+        c: f32,
+        batch_size: i64,
+        dim: i64,
+    ) {
+        unsafe {
+            mobius_add_cuda_launcher(out, u, v, c, batch_size, dim);
+        }
+    }
+
+    pub fn mobius_scalar_cuda(
+        out: *mut f32,
+        u: *const f32,
+        c: f32,
+        r: f32,
+        batch_size: i64,
+        dim: i64,
+    ) {
+        unsafe {
+            mobius_scalar_cuda_launcher(out, u, c, r, batch_size, dim);
+        }
+    }
+} 

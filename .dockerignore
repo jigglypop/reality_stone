@@ -1,0 +1,29 @@
+# Git version control
+.git/
+
+# Rust build artifacts
+target/
+
+# Python virtual environment
+.venv/
+venv/
+*.venv
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Build output
+dist/
+build/
+*.egg-info/
+
+# Docker files
+.dockerignore
+Dockerfile
+
+# IDE settings
+.idea/
+.vscode/ 

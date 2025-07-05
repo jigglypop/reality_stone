@@ -1,0 +1,66 @@
+version: '3.8'
+
+services:
+  dev:
+    build:
+      context: .
+      target: builder
+    volumes:
+      # 로컬 .venv를 제외하고 마운트
+      - .:/workspace
+      - /workspace/.venv
+      - /workspace/target
+      - /workspace/dist
+      - /workspace/.git
+    working_dir: /workspace
+    environment:
+      - CUDA_HOME=/usr/local/cuda
+      - LD_LIBRARY_PATH=/usr/local/cuda/lib64
+    command: |
+      bash -c "
+        uv venv /opt/venv --seed &&
+        source /opt/venv/bin/activate &&
+        uv pip install --no-cache-dir maturin 'watchdog[watchmedo]' &&
+        watchmedo auto-restart --directory=./src --pattern='*.rs' --recursive -- maturin develop
+      "
+    stdin_open: true
+    tty: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+  # 예제 실행을 위한 서비스
+  run:
+    build:
+      context: .
+      target: builder
+    volumes:
+      - .:/workspace
+      - /workspace/.venv
+      - /workspace/target
+      - /workspace/dist
+      - /workspace/.git
+    working_dir: /workspace
+    environment:
+      - CUDA_HOME=/usr/local/cuda
+      - LD_LIBRARY_PATH=/usr/local/cuda/lib64
+    command: |
+      bash -c "
+        uv venv /opt/venv --seed &&
+        source /opt/venv/bin/activate &&
+        uv pip install --no-cache-dir maturin &&
+        maturin develop &&
+        exec bash
+      "
+    stdin_open: true
+    tty: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu] 

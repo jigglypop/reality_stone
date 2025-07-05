@@ -1,5 +1,6 @@
 use ndarray::{Array1, Array2, ArrayView2, Axis, concatenate};
 use rayon::prelude::*;
+use crate::ops::mobius;
 
 const EPS: f32 = 1e-7;
 
@@ -77,4 +78,61 @@ pub fn poincare_to_klein(x: &ArrayView2<f32>, c: f32) -> Array2<f32> {
         });
     
     result
+}
+
+pub fn poincare_ball_layer(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32, t: f32) -> Array2<f32> {
+    let u_prime = mobius::mobius_scalar(u, c, 1.0 - t);
+    let v_prime = mobius::mobius_scalar(v, c, t);
+    mobius::mobius_add(&u_prime.view(), &v_prime.view(), c)
+}
+
+#[cfg(feature = "cuda")]
+pub mod cuda {
+    #[link(name = "kernel_poincare", kind="static")]
+    extern "C" {
+        pub fn poincare_distance_cuda_launcher(
+            out: *mut f32,
+            u: *const f32,
+            v: *const f32,
+            c: f32,
+            batch_size: i64,
+            dim: i64,
+        );
+        pub fn poincare_ball_layer_cuda_launcher(
+            out: *mut f32,
+            u: *const f32,
+            v: *const f32,
+            c: f32,
+            t: f32,
+            batch_size: i64,
+            dim: i64,
+        );
+    }
+
+    pub fn poincare_distance_cuda(
+        out: *mut f32,
+        u: *const f32,
+        v: *const f32,
+        c: f32,
+        batch_size: i64,
+        dim: i64,
+    ) {
+        unsafe {
+            poincare_distance_cuda_launcher(out, u, v, c, batch_size, dim);
+        }
+    }
+
+    pub fn poincare_ball_layer_cuda(
+        out: *mut f32,
+        u: *const f32,
+        v: *const f32,
+        c: f32,
+        t: f32,
+        batch_size: i64,
+        dim: i64,
+    ) {
+        unsafe {
+            poincare_ball_layer_cuda_launcher(out, u, v, c, t, batch_size, dim);
+        }
+    }
 } 

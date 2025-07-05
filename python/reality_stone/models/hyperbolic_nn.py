@@ -52,4 +52,4 @@ class KleinMLP(nn.Module):
         if torch.isnan(klein_z).any():
             klein_z = klein_h
         output = klein_z @ self.out_weights + self.out_bias
-        return output
+        return output 

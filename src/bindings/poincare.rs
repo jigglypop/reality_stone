@@ -1,0 +1,106 @@
+use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray2};
+use pyo3::prelude::*;
+use crate::ops::poincare;
+
+#[pyfunction]
+pub fn poincare_distance_cpu<'py>(
+    py: Python<'py>,
+    u: PyReadonlyArray2<f32>,
+    v: PyReadonlyArray2<f32>,
+    c: f32,
+) -> &'py PyArray1<f32> {
+    let u_arr = u.as_array();
+    let v_arr = v.as_array();
+    let result = poincare::poincare_distance(&u_arr, &v_arr, c);
+    result.into_pyarray(py)
+}
+
+#[cfg(feature = "cuda")]
+#[pyfunction]
+pub fn poincare_distance_cuda(
+    _py: Python,
+    u_ptr: usize,
+    v_ptr: usize,
+    out_ptr: usize,
+    batch_size: i64,
+    dim: i64,
+    c: f32,
+) -> PyResult<()> {
+    let u_ptr_f32 = u_ptr as *const f32;
+    let v_ptr_f32 = v_ptr as *const f32;
+    let out_ptr_f32 = out_ptr as *mut f32;
+    crate::ops::poincare::cuda::poincare_distance_cuda(out_ptr_f32, u_ptr_f32, v_ptr_f32, c, batch_size, dim);
+    Ok(())
+}
+
+#[pyfunction]
+pub fn poincare_ball_layer_cpu<'py>(
+    py: Python<'py>,
+    u: PyReadonlyArray2<f32>,
+    v: PyReadonlyArray2<f32>,
+    c: f32,
+    t: f32,
+) -> &'py PyArray2<f32> {
+    let u_arr = u.as_array();
+    let v_arr = v.as_array();
+    let result = poincare::poincare_ball_layer(&u_arr, &v_arr, c, t);
+    result.into_pyarray(py)
+}
+
+#[cfg(feature = "cuda")]
+#[pyfunction]
+pub fn poincare_ball_layer_cuda(
+    _py: Python,
+    u_ptr: usize,
+    v_ptr: usize,
+    out_ptr: usize,
+    batch_size: i64,
+    dim: i64,
+    c: f32,
+    t: f32,
+) -> PyResult<()> {
+    crate::ops::poincare::cuda::poincare_ball_layer_cuda(
+        out_ptr as *mut f32,
+        u_ptr as *const f32,
+        v_ptr as *const f32,
+        c,
+        t,
+        batch_size,
+        dim,
+    );
+    Ok(())
+}
+
+#[pyfunction]
+pub fn poincare_to_lorentz<'py>(
+    py: Python<'py>,
+    x: PyReadonlyArray2<f32>,
+    c: f32,
+) -> &'py PyArray2<f32> {
+    let x_arr = x.as_array();
+    let result = poincare::poincare_to_lorentz(&x_arr, c);
+    result.into_pyarray(py)
+}
+
+#[pyfunction]
+pub fn poincare_to_klein<'py>(
+    py: Python<'py>,
+    x: PyReadonlyArray2<f32>,
+    c: f32,
+) -> &'py PyArray2<f32> {
+    let x_arr = x.as_array();
+    let result = poincare::poincare_to_klein(&x_arr, c);
+    result.into_pyarray(py)
+}
+
+pub fn register(m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(poincare_distance_cpu, m)?)?;
+    #[cfg(feature = "cuda")]
+    m.add_function(wrap_pyfunction!(poincare_distance_cuda, m)?)?;
+    m.add_function(wrap_pyfunction!(poincare_ball_layer_cpu, m)?)?;
+    #[cfg(feature = "cuda")]
+    m.add_function(wrap_pyfunction!(poincare_ball_layer_cuda, m)?)?;
+    m.add_function(wrap_pyfunction!(poincare_to_lorentz, m)?)?;
+    m.add_function(wrap_pyfunction!(poincare_to_klein, m)?)?;
+    Ok(())
+} 

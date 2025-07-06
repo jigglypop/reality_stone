@@ -6,6 +6,7 @@ import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 import faulthandler; faulthandler.enable()
 import reality_stone as rs
+from reality_stone import create_mnist_model, AdvancedConfig
 
 class GeodesicMLP(nn.Module):
     def __init__(self, in_dim=784, hid=128, out_dim=10, c=1e-3, L=2, t=0.7):
@@ -85,15 +86,73 @@ if __name__ == "__main__":
     test_ds = datasets.MNIST('.', train=False, download=True, transform=transform)
     train_loader = torch.utils.data.DataLoader(train_ds, batch_size=batch_size, shuffle=True)
     test_loader = torch.utils.data.DataLoader(test_ds, batch_size=batch_size, shuffle=False)
+    # 1. 동적 곡률 모델 테스트
+    print("\n" + "="*60)
+    print("1. 동적 곡률 (Dynamic Curvature) 모델 테스트")
+    print("="*60)
+    
+    # 동적 곡률 활성화 (기본값)
+    print("\n--- Dynamic Curvature Model (기본 설정) ---")
+    dynamic_model = create_mnist_model().to(device)
+    dynamic_acc = train_model("DynamicCurvatureMLP", dynamic_model, train_loader, test_loader, epochs=epochs, lr=lr, device=device)
+    
+    # 2. 고정 곡률 모델 테스트
+    print("="*60)
+    print("2. 고정 곡률 (Fixed Curvature) 모델 테스트")
+    print("="*60)
+    
     t_values = [0.5, 0.7, 1.0, 10.0, 100.0, 1000.0, 10000.0]
     geodesic_results = {}
     for t in t_values:
         model = GeodesicMLP(c=1e-3, L=2, t=t).to(device)
         acc = train_model(f"GeodesicMLP", model, train_loader, test_loader, epochs=epochs, lr=lr, device=device)
         geodesic_results[t] = acc
-    print("\n=== 결과 요약 ===")
-    print("\nGeodesicMLP 정확도 (t값에 따른 비교):")
+    
+
+    # 동적 곡률 비활성화 (비교용)
+    print("\n--- Fixed Curvature Model (동적 곡률 비활성화) ---")
+    config_fixed = AdvancedConfig(enable_dynamic_curvature=False)
+    fixed_model = create_mnist_model(config_fixed).to(device)
+    fixed_acc = train_model("FixedCurvatureMLP", fixed_model, train_loader, test_loader, epochs=epochs, lr=lr, device=device)
+    
+    # 모든 고급 기능 활성화
+    print("\n--- Full Advanced Model (모든 고급 기능) ---")
+    config_full = AdvancedConfig(
+        enable_regularization=True,
+        enable_dynamic_curvature=True,
+        enable_fused_ops=True,
+        enable_geodesic_activation=True,
+        enable_chebyshev_approximation=True
+    )
+    advanced_model = create_mnist_model(config_full).to(device)
+    advanced_acc = train_model("FullAdvancedMLP", advanced_model, train_loader, test_loader, epochs=epochs, lr=lr, device=device)
+    
+    # 3. 결과 요약
+    print("\n" + "="*60)
+    print("=== 최종 결과 요약 ===")
+    print("="*60)
+    
+    print("\n1. GeodesicMLP 정확도 (고정 곡률, t값에 따른 비교):")
     for t, acc in sorted(geodesic_results.items()):
-        print(f"t = {t}: {acc:.2f}%")
+        print(f"   t = {t}: {acc:.2f}%")
     best_t = max(geodesic_results.items(), key=lambda x: x[1])[0]
-    print(f"\n최적의 t값: {best_t} (정확도: {geodesic_results[best_t]:.2f}%)")
+    print(f"   → 최적의 t값: {best_t} (정확도: {geodesic_results[best_t]:.2f}%)")
+    
+    print("\n2. 고급 모델 비교:")
+    print(f"   - 동적 곡률 모델 (Dynamic): {dynamic_acc:.2f}%")
+    print(f"   - 고정 곡률 모델 (Fixed): {fixed_acc:.2f}%")
+    print(f"   - 전체 고급 기능 모델 (Full): {advanced_acc:.2f}%")
+    
+    print(f"\n3. 성능 향상:")
+    improvement = dynamic_acc - fixed_acc
+    print(f"   동적 곡률 효과: {improvement:+.2f}%")
+    
+    # 최고 성능 모델
+    all_results = {
+        "GeodesicMLP (best t)": geodesic_results[best_t],
+        "Dynamic Curvature": dynamic_acc,
+        "Fixed Curvature": fixed_acc,
+        "Full Advanced": advanced_acc
+    }
+    best_model = max(all_results.items(), key=lambda x: x[1])
+    print(f"\n★ 최고 성능 모델: {best_model[0]} ({best_model[1]:.2f}%)")

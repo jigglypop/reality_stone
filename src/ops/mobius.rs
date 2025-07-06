@@ -1,4 +1,4 @@
-use ndarray::{Array1, Array2, ArrayView2, Axis};
+use ndarray::{Array2, ArrayView2, Axis};
 use rayon::prelude::*;
 
 const EPS: f32 = 1e-7;
@@ -64,8 +64,6 @@ pub fn mobius_scalar(u: &ArrayView2<f32>, c: f32, r: f32) -> Array2<f32> {
 
 #[cfg(feature = "cuda")]
 pub mod cuda {
-    use std::os::raw::c_void;
-
     #[link(name = "kernel_mobius", kind="static")]
     extern "C" {
         pub fn mobius_add_cuda_launcher(

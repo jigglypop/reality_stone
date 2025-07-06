@@ -73,7 +73,7 @@ pub fn lorentz_add(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32) -> Array2<f
     result
 }
 
-pub fn lorentz_scalar(u: &ArrayView2<f32>, c: f32, r: f32) -> Array2<f32> {
+pub fn lorentz_scalar(u: &ArrayView2<f32>, _c: f32, r: f32) -> Array2<f32> {
     let batch_size = u.nrows();
     let dim = u.ncols();
     let mut result = Array2::zeros((batch_size, dim));

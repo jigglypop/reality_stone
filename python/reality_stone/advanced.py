@@ -20,8 +20,8 @@ class AdvancedConfig:
     def __init__(
         self,
         enable_regularization: bool = True,
-        enable_dynamic_curvature: bool = False,
-        enable_fused_ops: bool = False,
+        enable_dynamic_curvature: bool = True,
+        enable_fused_ops: bool = True,
         enable_geodesic_activation: bool = False,
         enable_chebyshev_approximation: bool = False,
         enable_laplace_beltrami: bool = False,
@@ -74,7 +74,22 @@ class DynamicCurvaturePrediction(Function):
     @staticmethod
     def backward(ctx, grad_output):
         x, weight, bias = ctx.saved_tensors
-        return None, None, None, None
+        
+        # 순전파 과정 재계산: y = linear(x)
+        # C++/CUDA 코드에서는 softplus(y) + base_curvature로 계산됨
+        y = torch.matmul(x, weight.t()) + bias
+        
+        # softplus의 그래디언트는 sigmoid
+        # grad_output [B] -> [B, 1] 로 확장
+        grad_y = grad_output.unsqueeze(1) * torch.sigmoid(y)
+        
+        # 각 파라미터에 대한 그래디언트 계산
+        grad_weight = grad_y.t().matmul(x)
+        grad_bias = grad_y.sum(dim=0)
+        grad_x = grad_y.matmul(weight)
+        
+        # 입력 x, weight, bias, base_curvature 순서에 맞춰 그래디언트 반환
+        return grad_x, grad_weight, grad_bias, None
 
 class DynamicMobiusAdd(Function):
     """동적 곡률을 사용한 Möbius 덧셈"""
@@ -837,10 +852,12 @@ def create_advanced_config(
 ) -> AdvancedConfig:
     """사전 정의된 설정으로 AdvancedConfig 생성"""
     if preset == "mnist_fix":
+        # MNIST NaN 문제 해결을 위한 설정
+        # 동적 곡률도 사용하여 더 나은 수치 안정성 확보
         return AdvancedConfig(
             enable_regularization=True,
-            enable_dynamic_curvature=False,
-            enable_fused_ops=False,
+            enable_dynamic_curvature=True,  # 기본값 사용
+            enable_fused_ops=True,  # 성능 향상
             enable_geodesic_activation=False,
             enable_chebyshev_approximation=True,  # 수치 안정성
             enable_laplace_beltrami=False,
@@ -851,9 +868,10 @@ def create_advanced_config(
             **kwargs
         )
     elif preset == "performance":
+        # 최고 성능을 위한 설정
         return AdvancedConfig(
             enable_regularization=False,
-            enable_dynamic_curvature=False,
+            enable_dynamic_curvature=True,  # 동적 곡률도 성능에 도움
             enable_fused_ops=True,
             enable_geodesic_activation=False,
             enable_chebyshev_approximation=True,  # 빠른 근사
@@ -862,6 +880,7 @@ def create_advanced_config(
             **kwargs
         )
     elif preset == "research":
+        # 모든 고급 기능 활성화
         return AdvancedConfig(
             enable_regularization=True,
             enable_dynamic_curvature=True,
@@ -870,6 +889,18 @@ def create_advanced_config(
             enable_chebyshev_approximation=True,
             enable_laplace_beltrami=True,
             enable_hyperbolic_fft=True,
+            **kwargs
+        )
+    elif preset == "minimal":
+        # 최소 기능만 사용 (디버깅/테스트용)
+        return AdvancedConfig(
+            enable_regularization=False,
+            enable_dynamic_curvature=False,  # 명시적 비활성화
+            enable_fused_ops=False,
+            enable_geodesic_activation=False,
+            enable_chebyshev_approximation=False,
+            enable_laplace_beltrami=False,
+            enable_hyperbolic_fft=False,
             **kwargs
         )
     else:

@@ -20,10 +20,10 @@ pub fn lorentz_scalar<'py>(
     py: Python<'py>,
     u: PyReadonlyArray2<f32>,
     r: f32,
-    c: f32,
+    _c: f32,
 ) -> &'py PyArray2<f32> {
     let u_arr = u.as_array();
-    let result = lorentz::lorentz_scalar(&u_arr, c, r);
+    let result = lorentz::lorentz_scalar(&u_arr, _c, r);
     result.into_pyarray(py)
 }
 

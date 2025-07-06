@@ -26,7 +26,7 @@ class GeodesicMLP(nn.Module):
         h = x @ self.weights1 + self.bias1
         h = torch.tanh(h)  
         u = h @ self.weights2 + self.bias2
-        u = torch.tanh(u)  # sigmoid -> tanh로 변경
+        u = torch.tanh(u) 
         z = rs.poincare_ball_layer(h, u, self.c, self.t)
         if torch.isnan(z).any():
             z = h

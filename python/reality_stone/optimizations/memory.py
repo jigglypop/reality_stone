@@ -238,18 +238,6 @@ def benchmark_model_performance(model: nn.Module,
                                device: str = "cuda",
                                num_warmup: int = 10,
                                num_iterations: int = 100) -> Dict[str, float]:
-    """모델 성능 벤치마크
-    
-    Args:
-        model: 테스트할 모델
-        input_shape: 입력 텐서 모양
-        device: 디바이스 ("cuda" or "cpu")
-        num_warmup: 워밍업 반복 횟수
-        num_iterations: 측정 반복 횟수
-        
-    Returns:
-        Dict[str, float]: 성능 지표들
-    """
     model.eval()
     model = model.to(device)
     

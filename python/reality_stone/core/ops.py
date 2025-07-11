@@ -1,6 +1,4 @@
 import torch
-import numpy as np
-
 _has_rust_ext = False
 _has_cuda = False
 
@@ -35,28 +33,15 @@ except Exception as e:
     print("-----------------")
 
 def mobius_add(x: torch.Tensor, y: torch.Tensor, c: float) -> torch.Tensor:
-    """Möbius addition in hyperbolic space
-    
-    Args:
-        x: First tensor [B, D]
-        y: Second tensor [B, D]
-        c: Curvature
-        
-    Returns:
-        x ⊕_c y
-    """
     if not _has_rust_ext:
         raise RuntimeError("Reality Stone's Rust extension is not installed. Please build it first.")
-
     if x.device.type == 'cuda':
         if not _has_cuda:
             raise RuntimeError("Reality Stone was not built with CUDA support, but the input tensor is on a CUDA device.")
         if not x.is_contiguous() or not y.is_contiguous():
             raise ValueError("Input tensors must be contiguous for CUDA operations.")
-        
         out = torch.empty_like(x)
         batch_size, dim = x.shape
-        
         mobius_add_cuda(
             x.data_ptr(),
             y.data_ptr(),
@@ -73,16 +58,6 @@ def mobius_add(x: torch.Tensor, y: torch.Tensor, c: float) -> torch.Tensor:
         return torch.from_numpy(result_np).to(x.device)
 
 def mobius_scalar(x: torch.Tensor, r: float, c: float) -> torch.Tensor:
-    """Möbius scalar multiplication
-    
-    Args:
-        x: Input tensor [B, D]
-        r: Scalar
-        c: Curvature
-        
-    Returns:
-        r ⊗_c x
-    """
     if not _has_rust_ext:
         raise RuntimeError("Reality Stone's Rust extension is not installed. Please build it first.")
     if x.device.type == 'cuda':
@@ -107,28 +82,15 @@ def mobius_scalar(x: torch.Tensor, r: float, c: float) -> torch.Tensor:
         return torch.from_numpy(result_np).to(x.device)
 
 def poincare_distance(x: torch.Tensor, y: torch.Tensor, c: float) -> torch.Tensor:
-    """Poincaré distance between points
-    
-    Args:
-        x: First tensor [B, D]
-        y: Second tensor [B, D]
-        c: Curvature
-        
-    Returns:
-        Distance tensor [B]
-    """
     if not _has_rust_ext:
         raise RuntimeError("Reality Stone's Rust extension is not installed. Please build it first.")
-
     if x.device.type == 'cuda':
         if not _has_cuda:
             raise RuntimeError("Reality Stone was not built with CUDA support, but the input tensor is on a CUDA device.")
         if not x.is_contiguous() or not y.is_contiguous():
             raise ValueError("Input tensors must be contiguous for CUDA operations.")
-        
         out = torch.empty(x.shape[0], device=x.device, dtype=x.dtype)
         batch_size, dim = x.shape
-        
         poincare_distance_cuda(
             x.data_ptr(),
             y.data_ptr(),
@@ -145,29 +107,15 @@ def poincare_distance(x: torch.Tensor, y: torch.Tensor, c: float) -> torch.Tenso
         return torch.from_numpy(result_np).to(x.device)
 
 def poincare_ball_layer(u: torch.Tensor, v: torch.Tensor, c: float, t: float) -> torch.Tensor:
-    """Poincaré ball layer operation
-    
-    Args:
-        u: First tensor [B, D]
-        v: Second tensor [B, D]
-        c: Curvature
-        t: Interpolation parameter
-        
-    Returns:
-        Output tensor [B, D]
-    """
     if not _has_rust_ext:
         raise RuntimeError("Reality Stone's Rust extension is not installed. Please build it first.")
-
     if u.device.type == 'cuda':
         if not _has_cuda:
             raise RuntimeError("Reality Stone was not built with CUDA support, but the input tensor is on a CUDA device.")
         if not u.is_contiguous() or not v.is_contiguous():
             raise ValueError("Input tensors must be contiguous for CUDA operations.")
-        
         out = torch.empty_like(u)
         batch_size, dim = u.shape
-        
         poincare_ball_layer_cuda(
             u.data_ptr(),
             v.data_ptr(),

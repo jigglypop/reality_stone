@@ -7,8 +7,14 @@ import torchvision.transforms as transforms
 import faulthandler; faulthandler.enable()
 import reality_stone as rs
 
+def project_to_ball(x, epsilon=1e-5):
+    norm = torch.norm(x, p=2, dim=1, keepdim=True)
+    max_norm = 1.0 - epsilon
+    scale = torch.where(norm > max_norm, max_norm / norm, torch.ones_like(norm))
+    return x * scale
+
 class PoincareMLP(nn.Module):
-    def __init__(self, in_dim=784, hid=128, out_dim=10, c=1e-3, L=2, t=0.7, use_dynamic=False, c_min=-2.0, c_max=-0.1):
+    def __init__(self, in_dim=784, hid=128, out_dim=10, c=1e-3, L=2, t=0.7, use_dynamic=False, c_min=1e-4, c_max=0.05):
         super().__init__()
         self.c = c
         self.L = L
@@ -24,14 +30,16 @@ class PoincareMLP(nn.Module):
         self.out_bias = nn.Parameter(torch.zeros(out_dim))
         
         if use_dynamic:
-            self.kappas = nn.Parameter(torch.randn(1) * 0.1)
+            self.kappas = nn.Parameter(torch.tensor(-1.0))
 
     def forward(self, x):
         x = x.view(x.size(0), -1)
         h = x @ self.weights1 + self.bias1
-        h = torch.tanh(h)  
+        h = torch.tanh(h)
+        h = project_to_ball(h)
         u = h @ self.weights2 + self.bias2
-        u = torch.tanh(u)  
+        u = torch.tanh(u)
+        u = project_to_ball(u)
         
         if self.use_dynamic:
             z = rs.poincare_ball_layer(h, u, c=None, t=self.t, kappas=self.kappas, layer_idx=0, c_min=self.c_min, c_max=self.c_max)
@@ -114,11 +122,11 @@ if __name__ == "__main__":
     test_loader = torch.utils.data.DataLoader(test_ds, batch_size=batch_size, shuffle=False)
     
     print("=== Dynamic Curvature Test ===")
-    dynamic_model = PoincareMLP(use_dynamic=True, c_min=-2.0, c_max=-0.1, t=0.5).to(device)
+    dynamic_model = PoincareMLP(use_dynamic=True, t=0.7).to(device)
     
     params = [
         {'params': [p for n, p in dynamic_model.named_parameters() if 'kappas' not in n], 'lr': lr},
-        {'params': dynamic_model.kappas, 'lr': lr * 10}
+        {'params': dynamic_model.kappas, 'lr': lr}
     ]
     
     optimizer = optim.Adam(params)

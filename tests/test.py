@@ -7,7 +7,7 @@ import torchvision.transforms as transforms
 import faulthandler; faulthandler.enable()
 import reality_stone as rs
 
-class GeodesicMLP(nn.Module):
+class PoincareMLP(nn.Module):
     def __init__(self, in_dim=784, hid=128, out_dim=10, c=1e-3, L=2, t=0.7):
         super().__init__()
         self.c = c
@@ -25,7 +25,7 @@ class GeodesicMLP(nn.Module):
         h = x @ self.weights1 + self.bias1
         h = torch.tanh(h)  
         u = h @ self.weights2 + self.bias2
-        u = torch.tanh(u)  # sigmoid -> tanh로 변경
+        u = torch.tanh(u)  
         z = rs.poincare_ball_layer(h, u, self.c, self.t)
         if torch.isnan(z).any():
             z = h
@@ -88,11 +88,11 @@ if __name__ == "__main__":
     t_values = [-0.5, -1.0, -100.0, 0.5, 1.0, 100.0]
     geodesic_results = {}
     for t in t_values:
-        model = GeodesicMLP(c=1e-3, L=2, t=t).to(device)
-        acc = train_model(f"GeodesicMLP", model, train_loader, test_loader, epochs=epochs, lr=lr, device=device)
+        model = PoincareMLP(c=1e-3, L=2, t=t).to(device)
+        acc = train_model(f"PoincareMLP", model, train_loader, test_loader, epochs=epochs, lr=lr, device=device)
         geodesic_results[t] = acc
     print("\n=== 결과 요약 ===")
-    print("\nGeodesicMLP 정확도 (t값에 따른 비교):")
+    print("\nPoincareMLP 정확도 (t값에 따른 비교):")
     for t, acc in sorted(geodesic_results.items()):
         print(f"t = {t}: {acc:.2f}%")
     best_t = max(geodesic_results.items(), key=lambda x: x[1])[0]

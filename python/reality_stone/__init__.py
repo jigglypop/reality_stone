@@ -1,5 +1,4 @@
 import torch
-import os
 import sys
 from pathlib import Path
 
@@ -26,8 +25,7 @@ else:
     print("   Please build the project first (e.g., `maturin develop`).")
 
 
-from .core.ops import PoincareBallLayer, mobius_add, mobius_scalar, poincare_distance
-from .models import *
+from .core.poincare import PoincareBallLayer, poincare_add, poincare_scalar_mul, poincare_distance
 from .optimizations import *
 
 def poincare_ball_layer(u: torch.Tensor, v: torch.Tensor, c: float, t: float) -> torch.Tensor:
@@ -36,9 +34,7 @@ def poincare_ball_layer(u: torch.Tensor, v: torch.Tensor, c: float, t: float) ->
 # Re-export
 __all__ = [
     # Core operations
-    'mobius_add', 'mobius_scalar', 'poincare_distance', 'poincare_ball_layer',
-    # Models
-    'LorentzMLP', 'KleinMLP',
+    'poincare_add', 'poincare_scalar_mul', 'poincare_distance', 'poincare_ball_layer',
     # Optimizations
     'OptimizationConfig', 'PerformanceProfiler', 'OptimizedModel',
     'AdaptiveBatchSize', 'MemoryOptimizer',

@@ -23,6 +23,42 @@ pub fn poincare_ball_layer_backward_cpu<'py>(
 }
 
 #[pyfunction]
+pub fn mobius_add_vjp_cpu<'py>(
+    py: Python<'py>,
+    grad_output: PyReadonlyArray2<f32>,
+    x: PyReadonlyArray2<f32>,
+    y: PyReadonlyArray2<f32>,
+    c: f32,
+) -> (&'py PyArray2<f32>, &'py PyArray2<f32>) {
+    let grad_output_arr = grad_output.as_array();
+    let x_arr = x.as_array();
+    let y_arr = y.as_array();
+    
+    // This function needs to exist in `src/ops/poincare.rs` or be imported.
+    // Assuming it's moved or accessible via `poincare::` namespace.
+    let (grad_x, grad_y) = poincare::mobius_add_vjp(&grad_output_arr, &x_arr, &y_arr, c);
+
+    (grad_x.into_pyarray(py), grad_y.into_pyarray(py))
+}
+
+#[pyfunction]
+pub fn mobius_scalar_vjp_cpu<'py>(
+    py: Python<'py>,
+    grad_output: PyReadonlyArray2<f32>,
+    x: PyReadonlyArray2<f32>,
+    c: f32,
+    r: f32,
+) -> &'py PyArray2<f32> {
+    let grad_output_arr = grad_output.as_array();
+    let x_arr = x.as_array();
+    
+    // This function needs to exist in `src/ops/poincare.rs` or be imported.
+    let grad_x = poincare::mobius_scalar_vjp(&grad_output_arr, &x_arr, c, r);
+
+    grad_x.into_pyarray(py)
+}
+
+#[pyfunction]
 pub fn poincare_distance_cpu<'py>(
     py: Python<'py>,
     u: PyReadonlyArray2<f32>,
@@ -152,6 +188,8 @@ pub fn register(m: &PyModule) -> PyResult<()> {
     #[cfg(feature = "cuda")]
     m.add_function(wrap_pyfunction!(poincare_distance_cuda, m)?)?;
     m.add_function(wrap_pyfunction!(poincare_ball_layer_cpu, m)?)?;
+    m.add_function(wrap_pyfunction!(mobius_add_vjp_cpu, m)?)?;
+    m.add_function(wrap_pyfunction!(mobius_scalar_vjp_cpu, m)?)?;
     #[cfg(feature = "cuda")]
     m.add_function(wrap_pyfunction!(poincare_ball_layer_cuda, m)?)?;
     #[cfg(feature = "cuda")]

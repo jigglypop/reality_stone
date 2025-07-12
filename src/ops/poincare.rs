@@ -2,7 +2,7 @@ use crate::ops::mobius;
 use crate::ops::utils::{dot_batched, norm_sq_batched, EPS};
 use ndarray::{s, Array1, Array2, ArrayView2, Axis};
 
-fn mobius_scalar_vjp(
+pub fn mobius_scalar_vjp(
     grad_output: &ArrayView2<f32>,
     x: &ArrayView2<f32>,
     c: f32,
@@ -24,7 +24,7 @@ fn mobius_scalar_vjp(
     grad_x
 }
 
-fn mobius_add_vjp(
+pub fn mobius_add_vjp(
     grad_output: &ArrayView2<f32>,
     x: &ArrayView2<f32>,
     y: &ArrayView2<f32>,

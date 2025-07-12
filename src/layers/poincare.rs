@@ -1,5 +1,5 @@
-use crate::ops::mobius;
-use crate::ops::utils::{dot_batched, norm_sq_batched, EPS};
+use crate::layers::mobius;
+use crate::layers::utils::{dot_batched, norm_sq_batched, EPS};
 use ndarray::{s, Array1, Array2, ArrayView2, Axis};
 
 pub fn mobius_scalar_vjp(

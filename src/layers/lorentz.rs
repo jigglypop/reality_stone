@@ -1,7 +1,6 @@
-use ndarray::{Array1, Array2, ArrayView2, Axis};
+use crate::layers::utils::{norm_sq_batched, EPS};
+use ndarray::{s, Array1, Array2, ArrayView2, Axis};
 use rayon::prelude::*;
-
-const EPS: f32 = 1e-7;
 
 pub fn lorentz_inner(u: &ArrayView2<f32>, v: &ArrayView2<f32>) -> Array1<f32> {
     let batch_size = u.nrows();
@@ -306,4 +305,34 @@ pub mod cuda {
             );
         }
     }
+} 
+
+pub fn from_poincare(x: &ArrayView2<f32>, c: f32) -> Array2<f32> {
+    let mut result = Array2::zeros((x.nrows(), x.ncols() + 1));
+    let x_norm_sq = norm_sq_batched(x).insert_axis(Axis(1));
+    let factor = 1.0 / (1.0 - c * &x_norm_sq).mapv(|v| v.max(EPS));
+    
+    result.slice_mut(s![.., 0..1]).assign(&(&factor * (1.0 + c * &x_norm_sq) / c.sqrt()));
+    result.slice_mut(s![.., 1..]).assign(&(&factor * 2.0 * x / c.sqrt()));
+    result
+}
+
+pub fn from_poincare_grad_c(x: &ArrayView2<f32>, c: f32) -> Array2<f32> {
+    let mut grad_result = Array2::zeros((x.nrows(), x.ncols() + 1));
+    let x_norm_sq = norm_sq_batched(x).insert_axis(Axis(1));
+    let den = (1.0 - c * &x_norm_sq).mapv(|v| v.max(EPS));
+    let sqrt_c = c.sqrt();
+
+    // Time component gradient
+    let d_time_den_dc = -&x_norm_sq;
+    let d_time_num_dc = &x_norm_sq;
+    let time_num = 1.0 + c * &x_norm_sq;
+    let d_time_dc = (d_time_num_dc * &den - &time_num * d_time_den_dc) / (&den * &den);
+    grad_result.slice_mut(s![.., 0..1]).assign(&(&d_time_dc / sqrt_c - &time_num / (2.0 * c * sqrt_c * &den)));
+
+    // Space component gradient
+    let d_factor_dc = &x_norm_sq / (&den * &den);
+    grad_result.slice_mut(s![.., 1..]).assign(&(x * (&d_factor_dc / sqrt_c - 1.0 / (c * sqrt_c * &den))));
+    
+    grad_result
 } 

@@ -1,4 +1,4 @@
-use crate::ops::utils::{dot_batched, norm_sq_batched, EPS};
+use crate::layers::utils::{dot_batched, norm_sq_batched, EPS};
 use ndarray::{Array2, ArrayView2, Axis};
 
 const BOUNDARY_EPS: f32 = 1e-5;
@@ -80,14 +80,9 @@ pub fn mobius_scalar_grad_c(
         // d(beta)/d(alpha) = r * (1 - tanh^2(r*alpha))
         let tanh_r_alpha = (r * &alpha).mapv(|v| v.tanh());
         let d_beta_dalpha = r * (1.0 - &tanh_r_alpha * &tanh_r_alpha);
-        
         // Chain rule
         let d_beta_dc = &d_beta_dalpha * &d_alpha_dscn * &norm_clamped * d_sqrt_c_dc;
-        
-        // d(scale)/dc
-        let scale = &beta / (sqrt_c * &norm_clamped);
         let d_scale_dc = (&d_beta_dc * sqrt_c - &beta * d_sqrt_c_dc) / (c * &norm_clamped);
-        
         &d_scale_dc * u
     } else {
         // 음수 곡률
@@ -95,24 +90,17 @@ pub fn mobius_scalar_grad_c(
         let scn = sqrt_abs_c * &norm_clamped;
         let alpha = scn.mapv(|v| v.atan());
         let beta = (r * &alpha).mapv(|v| v.tan());
-        
         // d(sqrt(|c|))/dc = -0.5/sqrt(|c|) (c가 음수이므로)
         let d_sqrt_abs_c_dc = -0.5 / sqrt_abs_c;
-        
         // d(alpha)/d(scn) = 1/(1 + scn^2)
         let d_alpha_dscn = 1.0 / (1.0 + &scn * &scn);
-        
         // d(beta)/d(alpha) = r * (1 + tan^2(r*alpha))
         let tan_r_alpha = (r * &alpha).mapv(|v| v.tan());
         let d_beta_dalpha = r * (1.0 + &tan_r_alpha * &tan_r_alpha);
-        
         // Chain rule
         let d_beta_dc = &d_beta_dalpha * &d_alpha_dscn * &norm_clamped * d_sqrt_abs_c_dc;
-        
         // d(scale)/dc
-        let scale = &beta / (sqrt_abs_c * &norm_clamped);
         let d_scale_dc = (&d_beta_dc * sqrt_abs_c - &beta * d_sqrt_abs_c_dc) / ((-c) * &norm_clamped);
-        
         &d_scale_dc * u
     }
 }
@@ -223,7 +211,7 @@ pub fn mobius_add_dynamic_backward(
     let dc_dkappa = dynamic_c.compute_dc_dkappa();
     let grad_kappa = grad_c * dc_dkappa;
     
-    use crate::ops::poincare::mobius_add_vjp;
+    use crate::layers::poincare::mobius_add_vjp;
     let (grad_u, grad_v) = mobius_add_vjp(grad_output, u, v, c);
     
     (grad_u, grad_v, grad_kappa)
@@ -255,7 +243,7 @@ pub fn mobius_add_layerwise_backward(
     let dc_dkappa = layer_curvatures.compute_dc_dkappa(layer_idx);
     let grad_kappa = grad_c * dc_dkappa;
     
-    use crate::ops::poincare::mobius_add_vjp;
+    use crate::layers::poincare::mobius_add_vjp;
     let (grad_u, grad_v) = mobius_add_vjp(grad_output, u, v, c);
     
     (grad_u, grad_v, grad_kappa)

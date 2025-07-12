@@ -65,3 +65,43 @@ def klein_to_poincare(x: Tensor, c: float) -> Tensor:
 def klein_to_lorentz(x: Tensor, c: float) -> Tensor:
     result_np = _rust.klein_to_lorentz(x.cpu().numpy(), c)
     return torch.from_numpy(result_np).to(x.device) 
+
+class KleinFromPoincare(Function):
+    @staticmethod
+    def forward(ctx, x: Tensor, c: float = None, kappas: Tensor = None, c_min: float = -2.0, c_max: float = -0.1) -> Tensor:
+        if kappas is not None:
+            ctx.use_dynamic = True
+            ctx.c_min = c_min
+            ctx.c_max = c_max
+            ctx.save_for_backward(x, kappas)
+            
+            output_np, c_val = _rust.klein.from_poincare_dynamic_cpu(
+                x.cpu().numpy(), kappas.item(), c_min, c_max
+            )
+            ctx.c_val = c_val
+            return torch.from_numpy(output_np).to(x.device)
+        else:
+            ctx.use_dynamic = False
+            ctx.c = c if c is not None else 1.0
+            output_np = _rust.klein.from_poincare_cpu(x.cpu().numpy(), ctx.c)
+            ctx.save_for_backward(x)
+            return torch.from_numpy(output_np).to(x.device)
+
+    @staticmethod
+    def backward(ctx, grad_output: Tensor) -> tuple[Tensor | None, ...]:
+        if ctx.use_dynamic:
+            x, kappas = ctx.saved_tensors
+            grad_x_np, grad_kappa_val = _rust.klein.from_poincare_dynamic_backward_cpu(
+                grad_output.cpu().numpy(), x.cpu().numpy(), kappas.item(), ctx.c_min, ctx.c_max
+            )
+            grad_x = torch.from_numpy(grad_x_np).to(grad_output.device)
+            grad_kappas = torch.tensor(grad_kappa_val, device=kappas.device)
+            return grad_x, None, grad_kappas, None, None
+        else:
+            # VJP for non-dynamic version is not implemented yet.
+            x, = ctx.saved_tensors
+            grad_x = torch.zeros_like(x)
+            return grad_x, None, None, None, None
+
+def from_poincare(x: Tensor, c: float = None, kappas: Tensor = None, c_min: float = -2.0, c_max: float = -0.1) -> Tensor:
+    return KleinFromPoincare.apply(x, c, kappas, c_min, c_max) 

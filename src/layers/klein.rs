@@ -1,4 +1,4 @@
-use crate::ops::utils::{dot_batched, norm_sq_batched, EPS};
+use crate::layers::utils::{dot_batched, norm_sq_batched, EPS};
 use ndarray::{s, Array1, Array2, ArrayView2, Axis};
 
 const BOUNDARY_EPS: f32 = 1e-5;
@@ -227,4 +227,36 @@ pub mod cuda {
             );
         }
     }
+} 
+
+pub fn to_poincare_grad_c(x: &ArrayView2<f32>, c: f32) -> Array2<f32> {
+    let x_norm_sq = norm_sq_batched(x).insert_axis(Axis(1));
+    let den = 1.0 + c * &x_norm_sq;
+    let den_clamped = den.mapv_into(|v| v.max(EPS));
+    
+    let numerator = -2.0 * x * &x_norm_sq;
+    let denominator = &den_clamped * &den_clamped;
+    
+    numerator / denominator
+}
+
+pub fn from_poincare(x: &ArrayView2<f32>, c: f32) -> Array2<f32> {
+    let x_norm_sq = norm_sq_batched(x).insert_axis(Axis(1));
+    let den = (1.0 + (1.0 - c * x_norm_sq).mapv(|v| v.max(0.0).sqrt())).mapv(|v| v.max(EPS));
+    x / &den
+}
+
+pub fn from_poincare_grad_c(x: &ArrayView2<f32>, c: f32) -> Array2<f32> {
+    let x_norm_sq = norm_sq_batched(x).insert_axis(Axis(1));
+    let sqrt_expr = (1.0 - c * &x_norm_sq).mapv_into(|v| v.max(EPS)).mapv(f32::sqrt);
+    let den = 1.0 + &sqrt_expr;
+    let den_clamped = den.mapv_into(|v| v.max(EPS));
+    
+    let d_sqrt_expr_dc = -0.5 * &x_norm_sq / &sqrt_expr;
+    let d_den_dc = &d_sqrt_expr_dc;
+    
+    let numerator = -x * d_den_dc;
+    let denominator = &den_clamped * &den_clamped;
+    
+    numerator / denominator
 } 

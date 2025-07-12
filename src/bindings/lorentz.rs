@@ -1,6 +1,7 @@
+use crate::layers::{lorentz, mobius};
+use ndarray::Array2;
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray2};
 use pyo3::prelude::*;
-use crate::ops::lorentz;
 
 #[pyfunction]
 pub fn lorentz_add<'py>(
@@ -175,6 +176,45 @@ pub fn lorentz_ball_layer_backward_cuda(
     Ok(())
 }
 
+#[pyfunction]
+fn from_poincare_dynamic_cpu<'py>(
+    py: Python<'py>,
+    x: PyReadonlyArray2<'py, f32>,
+    kappa: f32,
+    c_min: f32,
+    c_max: f32,
+) -> (&'py PyArray2<f32>, f32) {
+    let x_view = x.as_array();
+    let dynamic_c = mobius::DynamicCurvature::new(kappa, c_min, c_max);
+    let c = dynamic_c.compute_c();
+    let result = lorentz::from_poincare(&x_view, c);
+    (result.into_pyarray(py), c)
+}
+
+#[pyfunction]
+fn from_poincare_dynamic_backward_cpu<'py>(
+    py: Python<'py>,
+    grad_output: PyReadonlyArray2<'py, f32>,
+    x: PyReadonlyArray2<'py, f32>,
+    kappa: f32,
+    c_min: f32,
+    c_max: f32,
+) -> (Py<PyArray2<f32>>, f32) {
+    let grad_output_view = grad_output.as_array();
+    let x_view = x.as_array();
+    let dynamic_c = mobius::DynamicCurvature::new(kappa, c_min, c_max);
+    let c = dynamic_c.compute_c();
+
+    let grad_x = Array2::zeros(x.dims());
+
+    let grad_c_tensor = lorentz::from_poincare_grad_c(&x_view, c);
+    let grad_c = (&grad_output_view * &grad_c_tensor).sum();
+    let dc_dkappa = dynamic_c.compute_dc_dkappa();
+    let grad_kappa = grad_c * dc_dkappa;
+
+    (grad_x.into_pyarray(py).to_owned(), grad_kappa)
+}
+
 pub fn register(m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(lorentz_add, m)?)?;
     m.add_function(wrap_pyfunction!(lorentz_scalar, m)?)?;
@@ -184,6 +224,8 @@ pub fn register(m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(lorentz_to_klein, m)?)?;
     m.add_function(wrap_pyfunction!(lorentz_layer_forward, m)?)?;
     m.add_function(wrap_pyfunction!(lorentz_ball_layer_backward_cpu, m)?)?;
+    m.add_function(wrap_pyfunction!(from_poincare_dynamic_cpu, m)?)?;
+    m.add_function(wrap_pyfunction!(from_poincare_dynamic_backward_cpu, m)?)?;
 
     #[cfg(feature = "cuda")]
     {

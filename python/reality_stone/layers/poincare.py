@@ -4,6 +4,10 @@ from torch.autograd import Function
 from .. import _rust, _has_cuda
 from ..core.mobius import MobiusAdd, MobiusScalarMul
 
+def project_to_ball(x: Tensor, epsilon: float = 1e-5) -> Tensor:
+    output_np = _rust.poincare.project_to_ball_cpu(x.cpu().numpy(), epsilon)
+    return torch.from_numpy(output_np).to(x.device)
+
 class PoincareBallLayer(Function):
 
     @staticmethod

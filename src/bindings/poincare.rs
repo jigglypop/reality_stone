@@ -1,6 +1,6 @@
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray2};
 use pyo3::prelude::*;
-use crate::layers::{poincare, utils};
+use crate::{layers::poincare, ops::{mobius, project}};
 
 #[pyfunction]
 pub fn poincare_ball_layer_backward_cpu<'py>(
@@ -83,7 +83,7 @@ pub fn poincare_distance_cuda(
     let v_ptr_f32 = v_ptr as *const f32;
     let out_ptr_f32 = out_ptr as *mut f32;
     unsafe {
-        crate::layers::poincare::cuda::poincare_distance_cuda(out_ptr_f32, u_ptr_f32, v_ptr_f32, c, batch_size, dim);
+        poincare::cuda::poincare_distance_cuda(out_ptr_f32, u_ptr_f32, v_ptr_f32, c, batch_size, dim);
     }
     Ok(())
 }
@@ -114,7 +114,7 @@ pub fn poincare_ball_layer_dynamic_cpu<'py>(
 ) -> (&'py PyArray2<f32>, f32) {
     let u_arr = u.as_array();
     let v_arr = v.as_array();
-    let dynamic_c = crate::layers::mobius::DynamicCurvature::new(kappa, c_min, c_max);
+    let dynamic_c = mobius::DynamicCurvature::new(kappa, c_min, c_max);
     let (result, c) = poincare::poincare_ball_layer_dynamic(&u_arr, &v_arr, &dynamic_c, t);
     (result.into_pyarray(py), c)
 }
@@ -133,7 +133,7 @@ pub fn poincare_ball_layer_dynamic_backward_cpu<'py>(
     let grad_output_arr = grad_output.as_array();
     let u_arr = u.as_array();
     let v_arr = v.as_array();
-    let dynamic_c = crate::layers::mobius::DynamicCurvature::new(kappa, c_min, c_max);
+    let dynamic_c = mobius::DynamicCurvature::new(kappa, c_min, c_max);
     let (grad_u, grad_v, grad_kappa) = poincare::poincare_ball_layer_dynamic_backward(
         &grad_output_arr, &u_arr, &v_arr, &dynamic_c, t
     );
@@ -153,7 +153,7 @@ pub fn poincare_ball_layer_layerwise_cpu<'py>(
 ) -> (&'py PyArray2<f32>, f32) {
     let u_arr = u.as_array();
     let v_arr = v.as_array();
-    let layer_curvatures = crate::layers::mobius::LayerWiseDynamicCurvature::from_kappas(vec![kappa], c_min, c_max);
+    let layer_curvatures = mobius::LayerWiseDynamicCurvature::from_kappas(vec![kappa], c_min, c_max);
     let (result, c) = poincare::poincare_ball_layer_layerwise(&u_arr, &v_arr, &layer_curvatures, 0, t);
     (result.into_pyarray(py), c)
 }
@@ -173,7 +173,7 @@ pub fn poincare_ball_layer_layerwise_backward_cpu<'py>(
     let grad_output_arr = grad_output.as_array();
     let u_arr = u.as_array();
     let v_arr = v.as_array();
-    let layer_curvatures = crate::layers::mobius::LayerWiseDynamicCurvature::from_kappas(vec![kappa], c_min, c_max);
+    let layer_curvatures = mobius::LayerWiseDynamicCurvature::from_kappas(vec![kappa], c_min, c_max);
     let (grad_u, grad_v, grad_kappa) = poincare::poincare_ball_layer_layerwise_backward(
         &grad_output_arr, &u_arr, &v_arr, &layer_curvatures, 0, t
     );
@@ -193,7 +193,7 @@ pub fn poincare_ball_layer_cuda(
     t: f32,
 ) -> PyResult<()> {
     unsafe {
-        crate::layers::poincare::cuda::poincare_ball_layer_cuda(
+        poincare::cuda::poincare_ball_layer_cuda(
             out_ptr as *mut f32,
             u_ptr as *const f32,
             v_ptr as *const f32,
@@ -221,7 +221,7 @@ pub fn poincare_ball_layer_backward_cuda(
     dim: i64,
 ) -> PyResult<()> {
     unsafe {
-        crate::layers::poincare::cuda::poincare_ball_layer_backward_cuda(
+        poincare::cuda::poincare_ball_layer_backward_cuda(
             grad_output_ptr as *const f32,
             u_ptr as *const f32,
             v_ptr as *const f32,
@@ -265,7 +265,7 @@ pub fn project_to_ball_cpu<'py>(
     epsilon: f32,
 ) -> &'py PyArray2<f32> {
     let x_view = x.as_array();
-    let output = utils::project_to_ball(&x_view, epsilon);
+    let output = project::project_to_ball(&x_view, epsilon);
     output.into_pyarray(py)
 }
 

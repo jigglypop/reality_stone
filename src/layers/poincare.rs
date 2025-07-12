@@ -1,6 +1,7 @@
-use crate::layers::mobius;
-use crate::layers::utils::{dot_batched, norm_sq_batched, EPS};
+
 use ndarray::{s, Array1, Array2, ArrayView2, Axis};
+
+use crate::ops::{batch::EPS, dot_batched, mobius, norm_sq_batched};
 
 pub fn mobius_scalar_vjp(
     grad_output: &ArrayView2<f32>,
@@ -212,28 +213,20 @@ pub fn poincare_ball_layer_layerwise_backward(
     let c = layer_curvatures.compute_c(layer_idx);
     let u_prime = mobius::mobius_scalar(u, c, 1.0 - t);
     let v_prime = mobius::mobius_scalar(v, c, t);
-
     let (grad_u_prime, grad_v_prime) = mobius_add_vjp(
         grad_output, &u_prime.view(), &v_prime.view(), c
     );
-
     let grad_u = mobius_scalar_vjp(&grad_u_prime.view(), u, c, 1.0 - t);
     let grad_v = mobius_scalar_vjp(&grad_v_prime.view(), v, c, t);
-
     let grad_c_from_add_tensor = mobius::mobius_add_grad_c(&u_prime.view(), &v_prime.view(), c);
     let grad_c_add = (grad_output * &grad_c_from_add_tensor).sum();
-
     let grad_c_from_scalar_u_tensor = mobius::mobius_scalar_grad_c(u, c, 1.0 - t);
     let grad_c_scalar_u = (&grad_u_prime * &grad_c_from_scalar_u_tensor).sum();
-
     let grad_c_from_scalar_v_tensor = mobius::mobius_scalar_grad_c(v, c, t);
     let grad_c_scalar_v = (&grad_v_prime * &grad_c_from_scalar_v_tensor).sum();
-
     let grad_c_total = grad_c_add + grad_c_scalar_u + grad_c_scalar_v;
-
     let dc_dkappa = layer_curvatures.compute_dc_dkappa(layer_idx);
     let grad_kappa = grad_c_total * dc_dkappa;
-    
     (grad_u, grad_v, grad_kappa)
 }
 

@@ -1,6 +1,7 @@
-use crate::layers::utils::{norm_sq_batched, EPS};
 use ndarray::{s, Array1, Array2, ArrayView2, Axis};
 use rayon::prelude::*;
+
+use crate::ops::{batch::EPS, norm_sq_batched};
 
 pub fn lorentz_inner(u: &ArrayView2<f32>, v: &ArrayView2<f32>) -> Array1<f32> {
     let batch_size = u.nrows();

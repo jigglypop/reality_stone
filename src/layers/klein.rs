@@ -1,5 +1,6 @@
-use crate::layers::utils::{dot_batched, norm_sq_batched, EPS};
 use ndarray::{s, Array1, Array2, ArrayView2, Axis};
+
+use crate::ops::{batch::EPS, dot_batched, norm_sq_batched};
 
 const BOUNDARY_EPS: f32 = 1e-5;
 
@@ -49,7 +50,6 @@ pub fn klein_to_poincare(x: &ArrayView2<f32>, c: f32) -> Array2<f32> {
 pub fn klein_to_lorentz(x: &ArrayView2<f32>, c: f32) -> Array2<f32> {
     let x_norm_sq = norm_sq_batched(x).insert_axis(Axis(1));
     let x0 = 1.0 / (1.0 - c * &x_norm_sq).mapv(|v| v.max(EPS).sqrt());
-
     let mut result = Array2::zeros((x.nrows(), x.ncols() + 1));
     result.slice_mut(s![.., 0..1]).assign(&x0);
     result.slice_mut(s![.., 1..]).assign(&(x * &x0));

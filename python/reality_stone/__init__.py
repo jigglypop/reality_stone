@@ -25,7 +25,8 @@ else:
     print("   Please build the project first (e.g., `maturin develop`).")
 
 
-from .core.poincare import PoincareBallLayer, poincare_add, poincare_scalar_mul, poincare_distance
+from .layers.poincare import PoincareBallLayer, poincare_add, poincare_scalar_mul, poincare_distance
+from .core.mobius import MobiusAdd, MobiusScalarMul
 from .optimizations import *
 
 def poincare_ball_layer(u: torch.Tensor, v: torch.Tensor, c: float, t: float) -> torch.Tensor:
@@ -33,8 +34,13 @@ def poincare_ball_layer(u: torch.Tensor, v: torch.Tensor, c: float, t: float) ->
 
 # Re-export
 __all__ = [
-    # Core operations
-    'poincare_add', 'poincare_scalar_mul', 'poincare_distance', 'poincare_ball_layer',
+    # Mobius
+    'MobiusAdd',
+    'MobiusScalarMul',
+    'poincare_add', 
+    'poincare_scalar_mul', 
+    'poincare_distance', 
+    'poincare_ball_layer',
     # Optimizations
     'OptimizationConfig', 'PerformanceProfiler', 'OptimizedModel',
     'AdaptiveBatchSize', 'MemoryOptimizer',

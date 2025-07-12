@@ -3,14 +3,36 @@
 #include <cmath>
 
 __device__ void mobius_scalar_kernel_impl(const float* x, float* out, int dim, float c, float r, float eps) {
-    float sqrt_c = sqrtf(c);
     float x_norm_sq = 0;
     for (int i = 0; i < dim; ++i) {
         x_norm_sq += x[i] * x[i];
     }
     float x_norm = fmaxf(sqrtf(x_norm_sq), eps);
-    float tanh_arg = r * atanhf(fminf(sqrt_c * x_norm, 1.0f - eps));
-    float scale = tanhf(tanh_arg) / (sqrt_c * x_norm);
+    
+    if (fabsf(c) < eps) {
+        // c = 0: 유클리드 경우
+        for (int i = 0; i < dim; ++i) {
+            out[i] = r * x[i];
+        }
+        return;
+    }
+    
+    float scale;
+    if (c > 0.0f) {
+        // 양수 곡률
+        float sqrt_c = sqrtf(c);
+        float scn = fminf(sqrt_c * x_norm, 1.0f - eps);
+        float alpha = atanhf(scn);
+        float beta = tanhf(r * alpha);
+        scale = beta / (sqrt_c * x_norm);
+    } else {
+        // 음수 곡률
+        float sqrt_abs_c = sqrtf(-c);
+        float scn = sqrt_abs_c * x_norm;
+        float alpha = atanf(scn);
+        float beta = tanf(r * alpha);
+        scale = beta / (sqrt_abs_c * x_norm);
+    }
 
     for (int i = 0; i < dim; ++i) {
         out[i] = scale * x[i];
@@ -54,26 +76,54 @@ __device__ void mobius_scalar_vjp(
     const float* grad_output_prime, const float* x, float c, float r,
     float* grad_x, int dim, float eps) {
 
-    float sqrt_c = sqrtf(c);
     float x_norm_sq = 0;
-    for (int i = 0; i < dim; ++i) x_norm_sq += x[i] * x[i];
+    for (int i = 0; i < dim; ++i) {
+        x_norm_sq += x[i] * x[i];
+    }
     float x_norm = fmaxf(sqrtf(x_norm_sq), eps);
-
-    float atanh_arg = fminf(sqrt_c * x_norm, 1.0f - eps);
-    float atanh_val = atanhf(atanh_arg);
-    float tanh_val = tanhf(r * atanh_val);
-    float scale = tanh_val / (sqrt_c * x_norm);
+    
+    if (fabsf(c) < eps) {
+        // c = 0: 유클리드 경우
+        for (int i = 0; i < dim; ++i) {
+            grad_x[i] = r * grad_output_prime[i];
+        }
+        return;
+    }
+    
+    float scale;
+    float grad_scale_factor;
+    
+    if (c > 0.0f) {
+        // 양수 곡률
+        float sqrt_c = sqrtf(c);
+        float scn = fminf(sqrt_c * x_norm, 1.0f - eps);
+        float alpha = atanhf(scn);
+        float beta = tanhf(r * alpha);
+        scale = beta / (sqrt_c * x_norm);
+        
+        float inner_deriv_atanh = r * (1.0f - beta * beta);
+        float inner_deriv_norm = (1.0f / fmaxf(1.0f - scn * scn, eps)) * (sqrt_c / x_norm);
+        grad_scale_factor = inner_deriv_atanh * inner_deriv_norm / (sqrt_c * x_norm) - scale / x_norm;
+    } else {
+        // 음수 곡률
+        float sqrt_abs_c = sqrtf(-c);
+        float scn = sqrt_abs_c * x_norm;
+        float alpha = atanf(scn);
+        float beta = tanf(r * alpha);
+        scale = beta / (sqrt_abs_c * x_norm);
+        
+        float inner_deriv_atan = r * (1.0f + beta * beta);
+        float inner_deriv_norm = (1.0f / (1.0f + scn * scn)) * (sqrt_abs_c / x_norm);
+        grad_scale_factor = inner_deriv_atan * inner_deriv_norm / (sqrt_abs_c * x_norm) - scale / x_norm;
+    }
 
     float grad_scale = 0;
-    for (int i = 0; i < dim; ++i) grad_scale += grad_output_prime[i] * x[i];
-
-    float inner_deriv_atanh = r * (1.0f - tanh_val * tanh_val);
-    float inner_deriv_norm = (1.0f / (1.0f - atanh_arg * atanh_arg)) * (sqrt_c / x_norm);
-    float inner_deriv = inner_deriv_atanh * inner_deriv_norm;
-    float grad_scale_b = grad_scale * (inner_deriv - scale / x_norm);
+    for (int i = 0; i < dim; ++i) {
+        grad_scale += grad_output_prime[i] * x[i];
+    }
 
     for (int i = 0; i < dim; ++i) {
-        grad_x[i] = grad_output_prime[i] * scale + (grad_scale_b / x_norm) * x[i];
+        grad_x[i] = scale * grad_output_prime[i] + grad_scale_factor * grad_scale * x[i];
     }
 }
 

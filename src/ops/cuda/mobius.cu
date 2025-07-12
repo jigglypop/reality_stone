@@ -71,15 +71,31 @@ __global__ void mobius_scalar_kernel(float* out, const float* u, float c, float 
         }
 
         float norm = sqrtf(norm_sq);
-        float sqrtc = sqrtf(c);
-        float scn = sqrtc * norm;
-        if (scn > 1.0f - BOUNDARY_EPS) {
-            scn = 1.0f - BOUNDARY_EPS;
+        
+        if (fabsf(c) < EPS) {
+            // c = 0: 유클리드 경우
+            for (int j = 0; j < dim; ++j) {
+                out_row[j] = r * u_row[j];
+            }
+            return;
         }
         
-        float alpha = atanhf(scn);
-        float beta = tanhf(r * alpha);
-        float scale = beta / (sqrtc * norm);
+        float scale;
+        if (c > 0.0f) {
+            // 양수 곡률
+            float sqrt_c = sqrtf(c);
+            float scn = fminf(sqrt_c * norm, 1.0f - BOUNDARY_EPS);
+            float alpha = atanhf(scn);
+            float beta = tanhf(r * alpha);
+            scale = beta / (sqrt_c * norm);
+        } else {
+            // 음수 곡률: 복소수 수식을 실수로 계산
+            float sqrt_abs_c = sqrtf(-c);
+            float scn = sqrt_abs_c * norm;
+            float alpha = atanf(scn);
+            float beta = tanf(r * alpha);
+            scale = beta / (sqrt_abs_c * norm);
+        }
 
         for (int j = 0; j < dim; ++j) {
             out_row[j] = scale * u_row[j];

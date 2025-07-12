@@ -27,8 +27,8 @@ else:
 from .core.mobius import MobiusAdd, MobiusScalarMul
 from .layers import *
 
-def poincare_ball_layer(u: torch.Tensor, v: torch.Tensor, c: float, t: float) -> torch.Tensor:
-    return PoincareBallLayer.apply(u, v, c, t)
+def poincare_ball_layer(u: torch.Tensor, v: torch.Tensor, c: float = None, t: float = 0.5, kappas: torch.Tensor = None, layer_idx: int = None, c_min: float = -2.0, c_max: float = -0.1) -> torch.Tensor:
+    return PoincareBallLayer.apply(u, v, c, t, kappas, layer_idx, c_min, c_max)
 
 def klein_layer(u: torch.Tensor, v: torch.Tensor, c: float, t: float) -> torch.Tensor:
     return KleinLayer.apply(u, v, c, t)
@@ -47,6 +47,8 @@ __all__ = [
     'poincare_distance', 
     'poincare_ball_layer',
     'PoincareBallLayer',
+    'poincare_to_lorentz',
+    'poincare_to_klein',
     # Lorentz
     'lorentz_add',
     'lorentz_scalar_mul',
@@ -54,7 +56,7 @@ __all__ = [
     'lorentz_inner',
     'lorentz_to_poincare',
     'lorentz_to_klein',
-    'lorentz_ball_layer',
+    'lorentz_layer',
     'LorentzLayer',
     # Klein
     'klein_add',
@@ -62,7 +64,7 @@ __all__ = [
     'klein_distance',
     'klein_to_poincare',
     'klein_to_lorentz',
-    'klein_ball_layer',
+    'klein_layer',
     'KleinLayer',
     # Status
     '_has_rust_ext', '_has_cuda'

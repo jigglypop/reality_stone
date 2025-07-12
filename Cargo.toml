@@ -14,11 +14,10 @@ name = "_rust"
 crate-type = ["cdylib"]
 
 [dependencies]
-numpy = "0.20"
+pyo3 = { version = "0.19", features = ["extension-module"] }
+numpy = "0.19"
 ndarray = { version = "0.15", features = ["rayon"] }
-rayon = "1.8"
-pyo3 = { version = "0.20.3", features = ["extension-module"] }
-num-complex = "0.4"
+rayon = "1.7"
 num-traits = "0.2"
 num-integer = "0.1"
 num-rational = "0.4"

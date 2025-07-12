@@ -8,20 +8,45 @@ pub fn mobius_scalar_vjp(
     c: f32,
     r: f32,
 ) -> Array2<f32> {
-    let sqrt_c = c.sqrt();
     let x_norm = norm_sq_batched(&x).mapv(f32::sqrt).insert_axis(Axis(1));
     let x_norm_clamp = x_norm.mapv(|v| v.max(EPS));
-    let atanh_arg = (sqrt_c * &x_norm_clamp).mapv(|v| v.min(1.0 - EPS));
-    let atanh_val = atanh_arg.mapv(|v| v.atanh());
-    let tanh_val = (r * &atanh_val).mapv(|v| v.tanh());
-    let scale = &tanh_val / (sqrt_c * &x_norm_clamp);
-    let grad_scale = (grad_output * x).sum_axis(Axis(1)).insert_axis(Axis(1));
-    let inner_deriv_atanh = r * (1.0 - &tanh_val * &tanh_val);
-    let inner_deriv_norm = (1.0 / (1.0 - &atanh_arg * &atanh_arg)) * (sqrt_c / &x_norm_clamp);
-    let inner_deriv = inner_deriv_atanh * inner_deriv_norm;
-    let grad_scale_b = grad_scale * (inner_deriv - &scale / &x_norm_clamp);
-    let grad_x = grad_output * &scale + (grad_scale_b / &x_norm_clamp) * x;
-    grad_x
+    
+    if c.abs() < EPS {
+        // c = 0: 유클리드 경우
+        return grad_output * r;
+    }
+    
+    if c > 0.0 {
+        // 양수 곡률
+        let sqrt_c = c.sqrt();
+        let scn = (sqrt_c * &x_norm_clamp).mapv(|v| v.min(1.0 - EPS));
+        let alpha = scn.mapv(|v| v.atanh());
+        let beta = (r * &alpha).mapv(|v| v.tanh());
+        let scale = &beta / (sqrt_c * &x_norm_clamp);
+        
+        let grad_scale = (grad_output * x).sum_axis(Axis(1)).insert_axis(Axis(1));
+        let inner_deriv_atanh = r * (1.0 - &beta * &beta);
+        let inner_deriv_norm = (1.0 / (1.0 - &scn * &scn).mapv(|v| v.max(EPS))) * (sqrt_c / &x_norm_clamp);
+        
+        let grad_scale_b = &grad_scale * (&inner_deriv_atanh * &inner_deriv_norm - &scale * sqrt_c);
+        
+        grad_output * &scale + x * &grad_scale_b / (sqrt_c * &x_norm_clamp)
+    } else {
+        // 음수 곡률
+        let sqrt_abs_c = (-c).sqrt();
+        let scn = sqrt_abs_c * &x_norm_clamp;
+        let alpha = scn.mapv(|v| v.atan());
+        let beta = (r * &alpha).mapv(|v| v.tan());
+        let scale = &beta / (sqrt_abs_c * &x_norm_clamp);
+        
+        let grad_scale = (grad_output * x).sum_axis(Axis(1)).insert_axis(Axis(1));
+        let inner_deriv_atan = r * (1.0 + &beta * &beta);
+        let inner_deriv_norm = (1.0 / (1.0 + &scn * &scn)) * (sqrt_abs_c / &x_norm_clamp);
+        
+        let grad_scale_b = &grad_scale * (&inner_deriv_atan * &inner_deriv_norm - &scale * sqrt_abs_c);
+        
+        grad_output * &scale + x * &grad_scale_b / (sqrt_abs_c * &x_norm_clamp)
+    }
 }
 
 pub fn mobius_add_vjp(
@@ -70,16 +95,13 @@ pub fn poincare_ball_layer_backward(
     c: f32,
     t: f32,
 ) -> (Array2<f32>, Array2<f32>) {
-    // 1. Recompute u_prime and v_prime
     let u_prime = mobius::mobius_scalar(u, c, 1.0 - t);
     let v_prime = mobius::mobius_scalar(v, c, t);
 
-    // 2. Compute VJPs for mobius_add
     let (grad_u_prime, grad_v_prime) = mobius_add_vjp(
         grad_output, &u_prime.view(), &v_prime.view(), c
     );
 
-    // 3. Compute VJPs for mobius_scalar
     let grad_u = mobius_scalar_vjp(
         &grad_u_prime.view(), &u.view(), c, 1.0 - t
     );
@@ -129,6 +151,90 @@ pub fn poincare_ball_layer(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32, t: 
     let u_prime = mobius::mobius_scalar(u, c, 1.0 - t);
     let v_prime = mobius::mobius_scalar(v, c, t);
     mobius::mobius_add(&u_prime.view(), &v_prime.view(), c)
+}
+
+pub fn poincare_ball_layer_dynamic(
+    u: &ArrayView2<f32>, 
+    v: &ArrayView2<f32>, 
+    dynamic_c: &mobius::DynamicCurvature, 
+    t: f32
+) -> (Array2<f32>, f32) {
+    let c = dynamic_c.compute_c();
+    let u_prime = mobius::mobius_scalar(u, c, 1.0 - t);
+    let v_prime = mobius::mobius_scalar(v, c, t);
+    let (result, _) = mobius::mobius_add_dynamic(&u_prime.view(), &v_prime.view(), dynamic_c);
+    (result, c)
+}
+
+pub fn poincare_ball_layer_dynamic_backward(
+    grad_output: &ArrayView2<f32>,
+    u: &ArrayView2<f32>,
+    v: &ArrayView2<f32>,
+    dynamic_c: &mobius::DynamicCurvature,
+    t: f32,
+) -> (Array2<f32>, Array2<f32>, f32) {
+    let c = dynamic_c.compute_c();
+    let u_prime = mobius::mobius_scalar(u, c, 1.0 - t);
+    let v_prime = mobius::mobius_scalar(v, c, t);
+    
+    let (grad_u_prime, grad_v_prime, grad_kappa) = mobius::mobius_add_dynamic_backward(
+        grad_output, &u_prime.view(), &v_prime.view(), dynamic_c
+    );
+    
+    let grad_u = mobius_scalar_vjp(&grad_u_prime.view(), u, c, 1.0 - t);
+    let grad_v = mobius_scalar_vjp(&grad_v_prime.view(), v, c, t);
+    
+    (grad_u, grad_v, grad_kappa)
+}
+
+pub fn poincare_ball_layer_layerwise(
+    u: &ArrayView2<f32>, 
+    v: &ArrayView2<f32>, 
+    layer_curvatures: &mobius::LayerWiseDynamicCurvature, 
+    layer_idx: usize,
+    t: f32
+) -> (Array2<f32>, f32) {
+    let c = layer_curvatures.compute_c(layer_idx);
+    let u_prime = mobius::mobius_scalar(u, c, 1.0 - t);
+    let v_prime = mobius::mobius_scalar(v, c, t);
+    let (result, _) = mobius::mobius_add_layerwise(&u_prime.view(), &v_prime.view(), layer_curvatures, layer_idx);
+    (result, c)
+}
+
+pub fn poincare_ball_layer_layerwise_backward(
+    grad_output: &ArrayView2<f32>,
+    u: &ArrayView2<f32>,
+    v: &ArrayView2<f32>,
+    layer_curvatures: &mobius::LayerWiseDynamicCurvature,
+    layer_idx: usize,
+    t: f32,
+) -> (Array2<f32>, Array2<f32>, f32) {
+    let c = layer_curvatures.compute_c(layer_idx);
+    let u_prime = mobius::mobius_scalar(u, c, 1.0 - t);
+    let v_prime = mobius::mobius_scalar(v, c, t);
+
+    let (grad_u_prime, grad_v_prime) = mobius_add_vjp(
+        grad_output, &u_prime.view(), &v_prime.view(), c
+    );
+
+    let grad_u = mobius_scalar_vjp(&grad_u_prime.view(), u, c, 1.0 - t);
+    let grad_v = mobius_scalar_vjp(&grad_v_prime.view(), v, c, t);
+
+    let grad_c_from_add_tensor = mobius::mobius_add_grad_c(&u_prime.view(), &v_prime.view(), c);
+    let grad_c_add = (grad_output * &grad_c_from_add_tensor).sum();
+
+    let grad_c_from_scalar_u_tensor = mobius::mobius_scalar_grad_c(u, c, 1.0 - t);
+    let grad_c_scalar_u = (&grad_u_prime * &grad_c_from_scalar_u_tensor).sum();
+
+    let grad_c_from_scalar_v_tensor = mobius::mobius_scalar_grad_c(v, c, t);
+    let grad_c_scalar_v = (&grad_v_prime * &grad_c_from_scalar_v_tensor).sum();
+
+    let grad_c_total = grad_c_add + grad_c_scalar_u + grad_c_scalar_v;
+
+    let dc_dkappa = layer_curvatures.compute_dc_dkappa(layer_idx);
+    let grad_kappa = grad_c_total * dc_dkappa;
+    
+    (grad_u, grad_v, grad_kappa)
 }
 
 #[cfg(feature = "cuda")]

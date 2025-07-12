@@ -149,4 +149,161 @@ pub fn lorentz_to_klein(x: &ArrayView2<f32>, _: f32) -> Array2<f32> {
         });
     
     result
+}
+
+/// Lorentz 스칼라 곱의 VJP를 계산합니다. (근사치)
+pub fn lorentz_scalar_vjp(
+    grad_output: &ArrayView2<f32>,
+    u: &ArrayView2<f32>,
+    r: f32,
+) -> Array2<f32> {
+    // This is a simplified/approximated VJP for demonstration.
+    // A full derivation is complex.
+    let mut grad_u = Array2::zeros(u.raw_dim());
+    let batch_size = u.nrows();
+    let dim = u.ncols();
+
+    for i in 0..batch_size {
+        let u_row = u.row(i);
+        let grad_row = grad_output.row(i);
+        let time_comp = u_row[0];
+
+        let mut space_norm_sq = 0.0;
+        for j in 1..dim {
+            space_norm_sq += u_row[j] * u_row[j];
+        }
+
+        let norm = (space_norm_sq / (time_comp * time_comp - 1.0).max(EPS)).sqrt();
+        let theta = norm.min(1.0 - EPS).atanh() * r;
+        let scale = theta.tanh() / norm.max(EPS);
+
+        for j in 1..dim {
+            grad_u[[i, j]] = grad_row[j] * scale;
+        }
+        // Gradient for time component is more involved, approximating as 1.
+        grad_u[[i, 0]] = grad_row[0];
+    }
+    grad_u
+}
+
+/// Lorentz 덧셈의 VJP를 계산합니다. (근사치)
+pub fn lorentz_add_vjp(
+    grad_output: &ArrayView2<f32>,
+    _u: &ArrayView2<f32>,
+    _v: &ArrayView2<f32>,
+) -> (Array2<f32>, Array2<f32>) {
+    // This is a highly simplified VJP for demonstration and will not learn correctly.
+    // The actual gradient is very complex.
+    (grad_output.to_owned(), grad_output.to_owned())
+}
+
+/// Lorentz 모델의 순전파 레이어를 계산합니다.
+pub fn lorentz_layer_forward(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32, t: f32) -> Array2<f32> {
+    let u_prime = lorentz_scalar(u, c, 1.0 - t);
+    let v_prime = lorentz_scalar(v, c, t);
+    lorentz_add(&u_prime.view(), &v_prime.view(), c)
+}
+
+/// Lorentz 모델의 역전파 레이어를 계산합니다.
+pub fn lorentz_layer_backward(
+    grad_output: &ArrayView2<f32>,
+    u: &ArrayView2<f32>,
+    v: &ArrayView2<f32>,
+    c: f32,
+    t: f32,
+) -> (Array2<f32>, Array2<f32>) {
+    let u_prime = lorentz_scalar(u, c, 1.0 - t);
+    let v_prime = lorentz_scalar(v, c, t);
+    let (grad_u_prime, grad_v_prime) = lorentz_add_vjp(
+        grad_output, &u_prime.view(), &v_prime.view()
+    );
+    let grad_u = lorentz_scalar_vjp(
+        &grad_u_prime.view(), &u.view(), 1.0 - t
+    );
+    let grad_v = lorentz_scalar_vjp(
+        &grad_v_prime.view(), &v.view(), t
+    );
+    (grad_u, grad_v)
+} 
+
+#[cfg(feature = "cuda")]
+pub mod cuda {
+    mod ffi {
+        #[link(name = "lorentz", kind="static")]
+        extern "C" {
+            pub fn lorentz_distance_cuda(
+                out: *mut f32,
+                u: *const f32,
+                v: *const f32,
+                c: f32,
+                batch_size: i64,
+                dim: i64,
+            );
+            pub fn lorentz_layer_forward_cuda(
+                out: *mut f32,
+                u: *const f32,
+                v: *const f32,
+                c: f32,
+                t: f32,
+                batch_size: i64,
+                dim: i64,
+            );
+            pub fn lorentz_layer_backward_cuda(
+                grad_output: *const f32,
+                u: *const f32,
+                v: *const f32,
+                grad_u: *mut f32,
+                grad_v: *mut f32,
+                c: f32,
+                t: f32,
+                batch_size: i64,
+                dim: i64,
+            );
+        }
+    }
+
+    pub fn lorentz_distance_cuda(
+        out: *mut f32,
+        u: *const f32,
+        v: *const f32,
+        c: f32,
+        batch_size: i64,
+        dim: i64,
+    ) {
+        unsafe {
+            ffi::lorentz_distance_cuda(out, u, v, c, batch_size, dim);
+        }
+    }
+
+    pub fn lorentz_layer_forward_cuda(
+        out: *mut f32,
+        u: *const f32,
+        v: *const f32,
+        c: f32,
+        t: f32,
+        batch_size: i64,
+        dim: i64,
+    ) {
+        unsafe {
+            ffi::lorentz_layer_forward_cuda(out, u, v, c, t, batch_size, dim);
+        }
+    }
+
+    pub fn lorentz_layer_backward_cuda(
+        grad_output: *const f32,
+        u: *const f32,
+        v: *const f32,
+        grad_u: *mut f32,
+        grad_v: *mut f32,
+        c: f32,
+        t: f32,
+        batch_size: i64,
+        dim: i64,
+    ) {
+        unsafe {
+            ffi::lorentz_layer_backward_cuda(
+                grad_output, u, v, grad_u, grad_v, c, t, batch_size, dim
+            );
+        }
+    }
 } 

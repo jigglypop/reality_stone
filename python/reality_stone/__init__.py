@@ -11,39 +11,59 @@ _has_cuda = False
 
 if _so_file:
     try:
-        # sys.path에 .so 파일이 있는 디렉토리를 추가하여 임포트 보장
         if str(_lib_path) not in sys.path:
             sys.path.insert(0, str(_lib_path))
         from . import _rust
         _has_rust_ext = True
         _has_cuda = torch.cuda.is_available()
     except ImportError as e:
-        print(f"🔥 Reality Stone: Found .so file, but failed to import: {_so_file[0]}")
-        print(f"   Error: {e}")
+        print(f" Reality Stone: Found .so file, but failed to import: {_so_file[0]}")
+        print(f" Error: {e}")
 else:
-    print("⚠️ Reality Stone: Rust extension (.so file) not found in package directory.")
-    print("   Please build the project first (e.g., `maturin develop`).")
+    print(" Reality Stone: Rust extension (.so file) not found in package directory.")
+    print(" Please build the project first (e.g., `maturin develop`).")
 
 
-from .layers.poincare import PoincareBallLayer, poincare_add, poincare_scalar_mul, poincare_distance
 from .core.mobius import MobiusAdd, MobiusScalarMul
-from .optimizations import *
+from .layers import *
 
 def poincare_ball_layer(u: torch.Tensor, v: torch.Tensor, c: float, t: float) -> torch.Tensor:
     return PoincareBallLayer.apply(u, v, c, t)
 
+def klein_layer(u: torch.Tensor, v: torch.Tensor, c: float, t: float) -> torch.Tensor:
+    return KleinLayer.apply(u, v, c, t)
+
+def lorentz_layer(u: torch.Tensor, v: torch.Tensor, c: float, t: float) -> torch.Tensor:
+    return LorentzLayer.apply(u, v, c, t)
+
 # Re-export
 __all__ = [
-    # Mobius
+    # Core
     'MobiusAdd',
     'MobiusScalarMul',
+    # Poincare
     'poincare_add', 
     'poincare_scalar_mul', 
     'poincare_distance', 
     'poincare_ball_layer',
-    # Optimizations
-    'OptimizationConfig', 'PerformanceProfiler', 'OptimizedModel',
-    'AdaptiveBatchSize', 'MemoryOptimizer',
+    'PoincareBallLayer',
+    # Lorentz
+    'lorentz_add',
+    'lorentz_scalar_mul',
+    'lorentz_distance',
+    'lorentz_inner',
+    'lorentz_to_poincare',
+    'lorentz_to_klein',
+    'lorentz_ball_layer',
+    'LorentzLayer',
+    # Klein
+    'klein_add',
+    'klein_scalar_mul',
+    'klein_distance',
+    'klein_to_poincare',
+    'klein_to_lorentz',
+    'klein_ball_layer',
+    'KleinLayer',
     # Status
     '_has_rust_ext', '_has_cuda'
 ]

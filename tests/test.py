@@ -85,7 +85,7 @@ if __name__ == "__main__":
     test_ds = datasets.MNIST('.', train=False, download=True, transform=transform)
     train_loader = torch.utils.data.DataLoader(train_ds, batch_size=batch_size, shuffle=True)
     test_loader = torch.utils.data.DataLoader(test_ds, batch_size=batch_size, shuffle=False)
-    t_values = [0.5, 0.7, 1.0, 10.0, 100.0, 1000.0, 10000.0]
+    t_values = [-0.5, -1.0, -100.0, 0.5, 1.0, 100.0]
     geodesic_results = {}
     for t in t_values:
         model = GeodesicMLP(c=1e-3, L=2, t=t).to(device)

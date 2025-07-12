@@ -1,10 +1,11 @@
+pub mod klein;
+pub mod lorentz;
 pub mod mobius;
 pub mod poincare;
-pub mod lorentz;
-pub mod klein;
 pub mod utils;
 
-pub use self::mobius::*;
-pub use self::poincare::*;
-pub use self::lorentz::*;
-pub use self::klein::*; 
+pub use self::mobius::{mobius_add, mobius_scalar};
+pub use self::poincare::{
+    poincare_ball_layer, poincare_ball_layer_backward, poincare_distance, poincare_to_klein,
+    poincare_to_lorentz,
+}; 

@@ -41,7 +41,7 @@ __global__ void mobius_add_kernel(float* out, const float* u, const float* v, fl
 }
 
 extern "C" {
-    void mobius_add_cuda_launcher(float* out, const float* u, const float* v, float c, int64_t batch_size, int64_t dim) {
+    void mobius_add_cuda(float* out, const float* u, const float* v, float c, int64_t batch_size, int64_t dim) {
         int threads_per_block = 256;
         int blocks_per_grid = (batch_size + threads_per_block - 1) / threads_per_block;
         mobius_add_kernel<<<blocks_per_grid, threads_per_block>>>(out, u, v, c, batch_size, dim);
@@ -88,7 +88,7 @@ __global__ void mobius_scalar_kernel(float* out, const float* u, float c, float 
 }
 
 extern "C" {
-    void mobius_scalar_cuda_launcher(float* out, const float* u, float c, float r, int64_t batch_size, int64_t dim) {
+    void mobius_scalar_cuda(float* out, const float* u, float c, float r, int64_t batch_size, int64_t dim) {
         int threads_per_block = 256;
         int blocks_per_grid = (batch_size + threads_per_block - 1) / threads_per_block;
         mobius_scalar_kernel<<<blocks_per_grid, threads_per_block>>>(out, u, c, r, batch_size, dim);

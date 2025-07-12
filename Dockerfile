@@ -1,88 +1,83 @@
-# Stage 1: Build the wheel in a full development environment
+# 빠른 빌드를 위한 최적화된 Dockerfile
 FROM nvidia/cuda:12.1.1-devel-ubuntu22.04 AS builder
 
-# Set non-interactive frontend to avoid prompts during build
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install essential system dependencies: build tools, Python, and curl
+# 필수 패키지만 설치
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     python3.10 \
+    python3.10-dev \
     python3-pip \
+    python3-venv \
     curl \
     ca-certificates \
-    python3-venv \
-    git \
-    bash \
-    coreutils \
+    pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
-# Install uv (fast Python package installer)
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/root/.local/bin:${PATH}"
-
-# Install Rust toolchain using rustup and set CUDA_PATH
+# Rust 설치
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
-    PATH=/usr/local/cargo/bin:/root/.local/bin:$PATH \
-    CUDA_PATH=/usr/local/cuda
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    PATH=/usr/local/cargo/bin:$PATH
 
-# Create a working directory inside the container
-WORKDIR /app
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --default-toolchain stable --profile minimal
 
-# Copy the entire project context into the container
-COPY . .
+# Python 가상환경 생성 및 기본 패키지 설치
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
-# Install maturin, the build tool for this project
-RUN pip3 install maturin
+# pip 업그레이드 및 uv 설치
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install uv
 
-# Build the Python wheel in release mode.
-# The output will be placed in the `dist` directory.
-RUN maturin build --release --out dist
+# uv로 maturin 설치
+RUN uv pip install maturin patchelf
 
+# CUDA 환경 설정
+ENV CUDA_PATH=/usr/local/cuda \
+    CUDA_HOME=/usr/local/cuda \
+    LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 
-# Stage 2: Create a lightweight final image with only the runtime dependencies
-FROM nvidia/cuda:12.1.1-base-ubuntu22.04
+WORKDIR /workspace
 
-# Set non-interactive frontend
+# 의존성 파일 복사
+COPY Cargo.toml Cargo.lock pyproject.toml ./
+
+# 더미 src 디렉토리로 Rust 의존성 빌드
+RUN mkdir src && \
+    echo "fn main() {}" > src/lib.rs && \
+    cargo fetch && \
+    rm -rf src
+
+# Python 의존성 설치
+COPY requirements.txt* ./
+RUN pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121 && \
+    pip install numpy
+
+# 개발 도구 설치
+RUN pip install pytest ipython jupyter notebook
+
+# Runtime stage
+FROM nvidia/cuda:12.1.1-base-ubuntu22.04 AS runtime
+
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install Python and other runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.10 \
     python3-pip \
+    python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the built wheel from the builder stage
-COPY --from=builder /app/dist /tmp/dist
+# Python 환경 복사
+COPY --from=builder /opt/venv /opt/venv
 
-# Install Python dependencies using a more optimized method
-# 1. Install PyTorch specifically for CUDA 12.1 from its official index.
-# 2. Install numpy.
-# 3. Install our wheel without its dependencies (as they are already installed).
-# 4. Clean up the pip cache in the same layer to reduce final image size.
-RUN pip3 install torch --index-url https://download.pytorch.org/whl/cu121 && \
-    pip3 install numpy && \
-    pip3 install /tmp/dist/*.whl --no-deps && \
-    rm -rf /root/.cache/pip
+# 환경 변수 설정
+ENV PATH="/opt/venv/bin:$PATH"
+ENV VIRTUAL_ENV="/opt/venv"
+ENV CUDA_HOME=/usr/local/cuda
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 
-# Clean up temporary files
-RUN rm -rf /tmp/dist
+WORKDIR /workspace
 
-# Set a working directory
-WORKDIR /app
-
-# The final image is now ready and contains the installed package.
-# You can run it and import 'reality_stone' in Python.
-# Example: docker run -it --rm --gpus all <image_name> python3
-CMD ["python3"]
-
-# uv 설치
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# PATH 설정 (uv, cargo)
-ENV PATH="/root/.local/bin:/root/.cargo/bin:${PATH}"
-
-# PyTorch 및 기타 Python 종속성 설치
-# RUN pip3 install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 
+CMD ["/bin/bash"]

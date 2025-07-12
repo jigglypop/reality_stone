@@ -15,22 +15,16 @@ class OptimizationConfig:
     cuda_memory_fraction: float = 0.8
     cudnn_benchmark: bool = True
     cudnn_deterministic: bool = False
-    
     # Fused 연산 최적화
     prefer_fused_ops: bool = True
-    fused_threshold_size: int = 1000  # 이 크기 이상일 때 fused 사용
-    
-    # Compilation 최적화 (PyTorch 2.0+)
+    fused_threshold_size: int = 1000  
     use_torch_compile: bool = False
-    compile_mode: str = "default"  # "default", "reduce-overhead", "max-autotune"
-    
-    # 배치 최적화
+    compile_mode: str = "default"  
     adaptive_batch_size: bool = False
     max_batch_size: int = 512
     min_batch_size: int = 32
 
 class PerformanceProfiler:
-    """성능 프로파일링 도구"""
     
     def __init__(self):
         self.timings: Dict[str, List[float]] = {}
@@ -45,21 +39,15 @@ class PerformanceProfiler:
         
     @contextmanager
     def profile(self, name: str):
-        """성능 측정 컨텍스트 매니저"""
         if not self.enabled:
             yield
             return
-            
-        # 메모리 사용량 측정 (CUDA)
         if torch.cuda.is_available():
             torch.cuda.synchronize()
             start_memory = torch.cuda.memory_allocated()
         else:
             start_memory = 0
-            
-        # 시간 측정
         start_time = time.perf_counter()
-        
         try:
             yield
         finally:
@@ -69,26 +57,19 @@ class PerformanceProfiler:
                 memory_used = end_memory - start_memory
             else:
                 memory_used = 0
-                
             end_time = time.perf_counter()
             elapsed = (end_time - start_time) * 1000  # ms
-            
-            # 기록
             if name not in self.timings:
                 self.timings[name] = []
                 self.memory_usage[name] = []
-                
             self.timings[name].append(elapsed)
             self.memory_usage[name].append(memory_used)
     
     def get_stats(self, name: str) -> Dict[str, float]:
-        """통계 반환"""
         if name not in self.timings:
             return {}
-            
         timings = self.timings[name]
         memory = self.memory_usage[name]
-        
         return {
             'avg_time_ms': sum(timings) / len(timings),
             'min_time_ms': min(timings),

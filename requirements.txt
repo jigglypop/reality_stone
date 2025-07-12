@@ -1,0 +1,16 @@
+# Core dependencies
+torch>=2.0.0
+torchvision>=0.15.0
+numpy>=1.21.0,<2.0.0
+
+# Development tools
+maturin>=1.4.0
+pytest>=7.0.0
+ipython>=8.0.0
+jupyter>=1.0.0
+watchdog[watchmedo]>=3.0.0
+
+# Optional tools for optimization
+tensorboard>=2.0.0
+matplotlib>=3.5.0
+tqdm>=4.65.0 

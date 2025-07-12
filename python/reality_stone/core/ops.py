@@ -1,133 +1,71 @@
 import torch
-_has_rust_ext = False
-_has_cuda = False
+from torch.autograd import Function
+from .. import _rust, _has_rust_ext, _has_cuda
 
-try:
-    from .._rust import (
-        mobius_add_cpu,
-        mobius_scalar_cpu,
-        poincare_distance_cpu,
-        poincare_ball_layer_cpu,
-    )
-    _has_rust_ext = True
+class PoincareBallLayer(Function):
+    @staticmethod
+    def forward(ctx, u, v, c, t):
+        ctx.c = c
+        ctx.t = t
+        if u.is_cuda and _has_cuda:
+            output = torch.empty_like(u)
+            _rust.poincare_ball_layer_cuda(
+                u.data_ptr(),
+                v.data_ptr(),
+                output.data_ptr(),
+                u.shape[0],
+                u.shape[1],
+                c,
+                t
+            )
+            ctx.save_for_backward(u.clone(), v.clone())
+        else:
+            output = torch.from_numpy(_rust.poincare_ball_layer_cpu(u.cpu().numpy(), v.cpu().numpy(), c, t))
+            ctx.save_for_backward(u.clone(), v.clone())
+        return output
 
-    if torch.cuda.is_available():
-        from .._rust import (
-            mobius_add_cuda, 
-            mobius_scalar_cuda, 
-            poincare_distance_cuda,
-            poincare_ball_layer_cuda
-        )
-        _has_cuda = True
-
-except ImportError:
-    print("⚠️ Reality Stone: Rust extension (.so file) not found.")
-    print("   Please build the project first (e.g., `maturin develop`).")
-except Exception as e:
-    import traceback
-    print("🔥 Reality Stone: An unexpected error occurred while importing the Rust extension.")
-    print(f"   Error Type: {type(e).__name__}")
-    print(f"   Error Details: {e}")
-    print("--- Traceback ---")
-    traceback.print_exc()
-    print("-----------------")
+    @staticmethod
+    def backward(ctx, grad_output):
+        u, v = ctx.saved_tensors
+        c, t = ctx.c, ctx.t
+        grad_u = grad_v = None
+        if grad_output.is_cuda and _has_cuda:
+            grad_u = torch.empty_like(u)
+            grad_v = torch.empty_like(v)
+            _rust.poincare_ball_layer_backward_cuda(
+                grad_output.data_ptr(),
+                u.data_ptr(),
+                v.data_ptr(),
+                grad_u.data_ptr(),
+                grad_v.data_ptr(),
+                c,
+                t,
+                u.shape[0],
+                u.shape[1]
+            )
+        else:
+            grad_u_np, grad_v_np = _rust.poincare_ball_layer_backward_cpu(grad_output.cpu().numpy(), u.cpu().numpy(), v.cpu().numpy(), c, t)
+            grad_u = torch.from_numpy(grad_u_np).to(grad_output.device)
+            grad_v = torch.from_numpy(grad_v_np).to(grad_output.device)
+        return grad_u, grad_v, None, None
 
 def mobius_add(x: torch.Tensor, y: torch.Tensor, c: float) -> torch.Tensor:
-    if not _has_rust_ext:
-        raise RuntimeError("Reality Stone's Rust extension is not installed. Please build it first.")
-    if x.device.type == 'cuda':
-        if not _has_cuda:
-            raise RuntimeError("Reality Stone was not built with CUDA support, but the input tensor is on a CUDA device.")
-        if not x.is_contiguous() or not y.is_contiguous():
-            raise ValueError("Input tensors must be contiguous for CUDA operations.")
-        out = torch.empty_like(x)
-        batch_size, dim = x.shape
-        mobius_add_cuda(
-            x.data_ptr(),
-            y.data_ptr(),
-            out.data_ptr(),
-            batch_size,
-            dim,
-            c
-        )
-        return out
-    else:
-        x_np = x.detach().cpu().numpy()
-        y_np = y.detach().cpu().numpy()
-        result_np = mobius_add_cpu(x_np, y_np, c)
-        return torch.from_numpy(result_np).to(x.device)
+    if x.is_cuda and _has_cuda:
+        output = torch.empty_like(x)
+        _rust.mobius_add_cuda(x.data_ptr(), y.data_ptr(), output.data_ptr(), x.shape[0], x.shape[1], c)
+        return output
+    return torch.from_numpy(_rust.mobius_add_cpu(x.cpu().numpy(), y.cpu().numpy(), c))
 
 def mobius_scalar(x: torch.Tensor, r: float, c: float) -> torch.Tensor:
-    if not _has_rust_ext:
-        raise RuntimeError("Reality Stone's Rust extension is not installed. Please build it first.")
-    if x.device.type == 'cuda':
-        if not _has_cuda:
-            raise RuntimeError("Reality Stone was not built with CUDA support, but the input tensor is on a CUDA device.")
-        if not x.is_contiguous():
-            raise ValueError("Input tensor must be contiguous for CUDA operations.")
-        out = torch.empty_like(x)
-        batch_size, dim = x.shape
-        mobius_scalar_cuda(
-            x.data_ptr(),
-            out.data_ptr(),
-            batch_size,
-            dim,
-            r,
-            c
-        )
-        return out
-    else:
-        x_np = x.detach().cpu().numpy()
-        result_np = mobius_scalar_cpu(x_np, r, c)
-        return torch.from_numpy(result_np).to(x.device)
+    if x.is_cuda and _has_cuda:
+        output = torch.empty_like(x)
+        _rust.mobius_scalar_cuda(x.data_ptr(), output.data_ptr(), x.shape[0], x.shape[1], r, c)
+        return output
+    return torch.from_numpy(_rust.mobius_scalar_cpu(x.cpu().numpy(), r, c))
 
 def poincare_distance(x: torch.Tensor, y: torch.Tensor, c: float) -> torch.Tensor:
-    if not _has_rust_ext:
-        raise RuntimeError("Reality Stone's Rust extension is not installed. Please build it first.")
-    if x.device.type == 'cuda':
-        if not _has_cuda:
-            raise RuntimeError("Reality Stone was not built with CUDA support, but the input tensor is on a CUDA device.")
-        if not x.is_contiguous() or not y.is_contiguous():
-            raise ValueError("Input tensors must be contiguous for CUDA operations.")
-        out = torch.empty(x.shape[0], device=x.device, dtype=x.dtype)
-        batch_size, dim = x.shape
-        poincare_distance_cuda(
-            x.data_ptr(),
-            y.data_ptr(),
-            out.data_ptr(),
-            batch_size,
-            dim,
-            c
-        )
-        return out
-    else:
-        x_np = x.detach().cpu().numpy()
-        y_np = y.detach().cpu().numpy()
-        result_np = poincare_distance_cpu(x_np, y_np, c)
-        return torch.from_numpy(result_np).to(x.device)
-
-def poincare_ball_layer(u: torch.Tensor, v: torch.Tensor, c: float, t: float) -> torch.Tensor:
-    if not _has_rust_ext:
-        raise RuntimeError("Reality Stone's Rust extension is not installed. Please build it first.")
-    if u.device.type == 'cuda':
-        if not _has_cuda:
-            raise RuntimeError("Reality Stone was not built with CUDA support, but the input tensor is on a CUDA device.")
-        if not u.is_contiguous() or not v.is_contiguous():
-            raise ValueError("Input tensors must be contiguous for CUDA operations.")
-        out = torch.empty_like(u)
-        batch_size, dim = u.shape
-        poincare_ball_layer_cuda(
-            u.data_ptr(),
-            v.data_ptr(),
-            out.data_ptr(),
-            batch_size,
-            dim,
-            c,
-            t
-        )
-        return out
-    else:
-        u_np = u.detach().cpu().numpy()
-        v_np = v.detach().cpu().numpy()
-        result_np = poincare_ball_layer_cpu(u_np, v_np, c, t)
-        return torch.from_numpy(result_np).to(u.device) 
+    if x.is_cuda and _has_cuda:
+        output = torch.empty(x.shape[0], dtype=x.dtype, device=x.device)
+        _rust.poincare_distance_cuda(x.data_ptr(), y.data_ptr(), output.data_ptr(), x.shape[0], x.shape[1], c)
+        return output
+    return torch.from_numpy(_rust.poincare_distance_cpu(x.cpu().numpy(), y.cpu().numpy(), c)) 

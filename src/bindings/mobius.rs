@@ -30,7 +30,9 @@ pub fn mobius_add_cuda(
     let v_ptr_f32 = v_ptr as *const f32;
     let out_ptr_f32 = out_ptr as *mut f32;
 
-    crate::ops::mobius::cuda::mobius_add_cuda(out_ptr_f32, u_ptr_f32, v_ptr_f32, c, batch_size, dim);
+    unsafe {
+        crate::ops::mobius::cuda::mobius_add_cuda(out_ptr_f32, u_ptr_f32, v_ptr_f32, c, batch_size, dim);
+    }
     Ok(())
 }
 
@@ -60,7 +62,9 @@ pub fn mobius_scalar_cuda(
     let u_ptr_f32 = u_ptr as *const f32;
     let out_ptr_f32 = out_ptr as *mut f32;
 
-    crate::ops::mobius::cuda::mobius_scalar_cuda(out_ptr_f32, u_ptr_f32, c, r, batch_size, dim);
+    unsafe {
+        crate::ops::mobius::cuda::mobius_scalar_cuda(out_ptr_f32, u_ptr_f32, c, r, batch_size, dim);
+    }
     Ok(())
 }
 

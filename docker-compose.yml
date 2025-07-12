@@ -1,28 +1,31 @@
-version: '3.8'
-
 services:
   dev:
     build:
       context: .
       target: builder
     volumes:
-      # 로컬 .venv를 제외하고 마운트
-      - .:/workspace
+      # 소스 코드 마운트
+      - .:/workspace:cached
+      # Python 패키지 설치 위치 제외 (중요!)
       - /workspace/.venv
-      - /workspace/target
-      - /workspace/dist
-      - /workspace/.git
+      - /workspace/python/reality_stone.egg-info
+      # 빌드 캐시
+      - cargo-cache:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - target-cache:/workspace/target
     working_dir: /workspace
     environment:
       - CUDA_HOME=/usr/local/cuda
       - LD_LIBRARY_PATH=/usr/local/cuda/lib64
-    command: |
-      bash -c "
-        uv venv /opt/venv --seed &&
-        source /opt/venv/bin/activate &&
-        uv pip install --no-cache-dir maturin 'watchdog[watchmedo]' &&
-        watchmedo auto-restart --directory=./src --pattern='*.rs' --recursive -- maturin develop
-      "
+      - CARGO_HOME=/usr/local/cargo
+      - RUSTUP_HOME=/usr/local/rustup
+      # Python이 로컬 소스보다 설치된 패키지를 우선 사용하도록 설정
+      - PYTHONPATH=/opt/venv/lib/python3.10/site-packages
+      # maturin이 로컬 디렉토리에 직접 설치하도록 설정
+      - MATURIN_PEP517_ARGS=--compatibility linux
+      # PATH에 가상환경 경로 추가 (nvcc 포함)
+      - PATH=/opt/venv/bin:/usr/local/cuda/bin:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    command: tail -f /dev/null
     stdin_open: true
     tty: true
     deploy:
@@ -32,27 +35,30 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+              
   # 예제 실행을 위한 서비스
   run:
     build:
       context: .
-      target: builder
+      target: runtime
     volumes:
-      - .:/workspace
+      - .:/workspace:cached
       - /workspace/.venv
-      - /workspace/target
-      - /workspace/dist
-      - /workspace/.git
+      - /workspace/python/reality_stone.egg-info
     working_dir: /workspace
     environment:
       - CUDA_HOME=/usr/local/cuda
       - LD_LIBRARY_PATH=/usr/local/cuda/lib64
+      - PYTHONPATH=/workspace/python:/opt/venv/lib/python3.10/site-packages
+      - PATH=/opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     command: |
       bash -c "
-        uv venv /opt/venv --seed &&
         source /opt/venv/bin/activate &&
-        uv pip install --no-cache-dir maturin &&
-        maturin develop &&
+        # 로컬에 .so 파일이 없으면 빌드
+        if [ ! -f /workspace/python/reality_stone/_rust*.so ]; then
+          echo 'Building Reality Stone extension...' &&
+          cd /workspace && maturin develop --release
+        fi &&
         exec bash
       "
     stdin_open: true
@@ -63,4 +69,9 @@ services:
           devices:
             - driver: nvidia
               count: all
-              capabilities: [gpu] 
+              capabilities: [gpu]
+
+volumes:
+  cargo-cache:
+  cargo-git:
+  target-cache:

@@ -36,6 +36,126 @@ class BitfieldLinearFunction(Function):
         return grad_input, None
 
 
+class BitfieldFunction(Function):
+    """GPU 최적화를 위한 커스텀 autograd Function"""
+    
+    @staticmethod
+    def forward(ctx, input, rust_layer, bias):
+        ctx.rust_layer = rust_layer
+        ctx.save_for_backward(input)
+        ctx.has_bias = bias is not None
+        
+        # GPU 텐서 직접 처리
+        if input.is_cuda and rust_layer.use_cuda():
+            # GPU 포인터와 메타데이터 추출
+            batch_size = input.shape[0]
+            in_features = input.shape[-1]
+            out_features = rust_layer.get_m()
+            
+            # 출력 텐서를 미리 할당
+            output = torch.empty(
+                (*input.shape[:-1], out_features), 
+                device=input.device, 
+                dtype=input.dtype
+            )
+            
+            # 입력이 2D가 아닌 경우 reshape
+            if input.dim() > 2:
+                input_2d = input.view(-1, in_features)
+                output_2d = output.view(-1, out_features)
+            else:
+                input_2d = input
+                output_2d = output
+            
+            # GPU 메모리 포인터 직접 전달
+            try:
+                # GPU 버퍼 초기화 (필요한 경우만)
+                try:
+                    rust_layer.init_gpu_memory()
+                except:
+                    pass  # 이미 초기화된 경우 무시
+                
+                # CUDA 커널 직접 호출 (복사 없음)
+                if hasattr(rust_layer, 'forward_cuda_direct'):
+                    rust_layer.forward_cuda_direct(
+                        input_2d.data_ptr(),
+                        output_2d.data_ptr(),
+                        batch_size,
+                        in_features,
+                        out_features
+                    )
+                else:
+                    # forward_cuda_direct가 없으면 기존 방식 사용
+                    output = rust_layer.forward(input)
+                    return output
+                
+            except Exception as e:
+                # GPU 처리 실패 시 기존 방식 사용
+                print(f"[경고] GPU 직접 처리 실패: {e}")
+                output = rust_layer.forward(input)
+        else:
+            # CPU 경로 또는 CUDA 비활성화
+            output = rust_layer.forward(input)
+        
+        # bias 추가 (in-place 연산으로 메모리 효율성 개선)
+        if bias is not None:
+            output.add_(bias)
+            
+        return output
+    
+    @staticmethod
+    def backward(ctx, grad_output):
+        input, = ctx.saved_tensors
+        rust_layer = ctx.rust_layer
+        
+        grad_input = None
+        grad_bias = None
+        
+        if ctx.needs_input_grad[0]:
+            # GPU 텐서 직접 처리
+            if grad_output.is_cuda and rust_layer.use_cuda():
+                batch_size = grad_output.shape[0]
+                out_features = grad_output.shape[-1]
+                in_features = input.shape[-1]
+                
+                # 그라디언트 텐서를 미리 할당
+                grad_input = torch.empty_like(input)
+                
+                # 다차원 텐서 처리
+                if grad_output.dim() > 2:
+                    grad_output_2d = grad_output.view(-1, out_features)
+                    grad_input_2d = grad_input.view(-1, in_features)
+                else:
+                    grad_output_2d = grad_output
+                    grad_input_2d = grad_input
+                
+                try:
+                    # CUDA 커널 직접 호출
+                    if hasattr(rust_layer, 'backward_cuda_direct'):
+                        rust_layer.backward_cuda_direct(
+                            grad_output_2d.data_ptr(),
+                            grad_input_2d.data_ptr(),
+                            batch_size,
+                            in_features,
+                            out_features
+                        )
+                    else:
+                        grad_input = rust_layer.backward(grad_output)
+                except Exception as e:
+                    print(f"[경고] GPU backward 실패: {e}")
+                    grad_input = rust_layer.backward(grad_output)
+            else:
+                # CPU 경로
+                grad_input = rust_layer.backward(grad_output)
+        
+        # bias gradient (필요한 경우만)
+        if ctx.needs_input_grad[2] and ctx.has_bias:
+            # 모든 배치에 대해 합산
+            grad_bias = grad_output.sum(dim=list(range(grad_output.dim() - 1)))
+        
+        return grad_input, None, grad_bias
+
+
 class BitfieldLinear(nn.Module):
     """
     비트필드 기반 압축 선형 레이어.
@@ -152,10 +272,8 @@ class BitfieldLinear(nn.Module):
         return bitfield
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # BitfieldLinearFunction을 통해 순전파 수행
-        output = BitfieldLinearFunction.apply(x, self)
-        
-        return output
+        # 새로운 최적화된 BitfieldFunction 사용
+        return BitfieldFunction.apply(x, self.rust_layer, self.bias)
     
     def to(self, *args, **kwargs):
         """

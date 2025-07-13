@@ -274,6 +274,164 @@ __global__ void gemm_hyper_bit_optimized_kernel(
     output[batch_idx * output_dim + out_idx] = result;
 }
 
+// 간단한 잔차 디코딩 함수
+__device__ inline float decode_residual_gpu(uint32_t res_code, float residual_delta) {
+    // 간단한 예시: 코드를 부동소수점으로 변환
+    return (float)(res_code & 0xFFFF) * residual_delta - 0.5f;
+}
+
+// 공유 메모리를 활용하는 최적화된 직접 포인터 커널
+__global__ void gemm_hyper_bit_direct_kernel(
+    const float* __restrict__ input,       // PyTorch 입력 텐서의 GPU 포인터
+    const uint32_t* __restrict__ codes,
+    const float* __restrict__ basis_table,
+    const uint32_t* __restrict__ residual_codes,
+    float delta,
+    float residual_delta,
+    float* __restrict__ output,           // PyTorch 출력 텐서의 GPU 포인터
+    int batch_size,
+    int input_dim,
+    int output_dim,
+    int basis_size
+) {
+    // 공유 메모리 선언 (타일 크기는 블록 크기에 맞춤)
+    extern __shared__ float shared_mem[];
+    float* shared_input = shared_mem;  // [TILE_SIZE][input_dim]
+    
+    const int TILE_SIZE = blockDim.x;
+    const int tid = threadIdx.x;
+    const int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    if (global_idx >= batch_size * output_dim) return;
+    
+    const int batch_idx = global_idx / output_dim;
+    const int out_idx = global_idx % output_dim;
+    
+    // 1. 입력을 공유 메모리로 로드 (coalesced access)
+    if (tid < TILE_SIZE && batch_idx < batch_size) {
+        for (int i = 0; i < input_dim; i += TILE_SIZE) {
+            if (i + tid < input_dim) {
+                shared_input[tid * input_dim + i + tid] = input[batch_idx * input_dim + i + tid];
+            }
+        }
+    }
+    __syncthreads();
+    
+    // 2. 비트필드 디코딩 (레지스터에 저장)
+    uint32_t code = codes[out_idx];
+    uint8_t cat = (code >> 24) & 0xFF;
+    uint8_t sub = (code >> 21) & 0x07;
+    uint8_t idx = (code >> 13) & 0xFF;
+    uint8_t sign = (code >> 12) & 0x01;
+    uint8_t d = (code >> 9) & 0x07;
+    uint8_t amp = (code >> 2) & 0x7F;
+    uint8_t amp_fine = code & 0x03;
+    uint8_t phase = (code >> 11) & 0x01;
+    
+    // 3. r 값 계산
+    float r = float(amp * 4 + amp_fine) * delta;
+    if (sign == 1) r = -r;
+    
+    // 4. 스케일 팩터 계산 (인라인 최적화)
+    float scale = lookup_and_apply_gpu(cat, sub, d, r, phase);
+    
+    // 5. 기저 벡터와의 내적 (공유 메모리 활용)
+    float sum = 0.0f;
+    const float* basis_row = basis_table + idx * input_dim;
+    
+    // Vectorized load (float4 사용)
+    const int vec_size = 4;
+    const int vec_dim = input_dim / vec_size;
+    
+    if (batch_idx < batch_size) {
+        // 벡터화된 연산
+        for (int i = 0; i < vec_dim; i++) {
+            float4 a = reinterpret_cast<const float4*>(&shared_input[tid * input_dim])[i];
+            float4 b = reinterpret_cast<const float4*>(basis_row)[i];
+            sum += a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+        }
+        
+        // 남은 요소 처리
+        for (int i = vec_dim * vec_size; i < input_dim; i++) {
+            sum += shared_input[tid * input_dim + i] * basis_row[i];
+        }
+        
+        // 6. 스케일 적용
+        float result = sum * scale;
+        
+        // 7. 잔차 추가 (있는 경우) - Fused operation
+        if (residual_codes != nullptr) {
+            uint32_t res_code = residual_codes[out_idx];
+            // 간단한 잔차 디코딩 및 적용
+            float res_val = decode_residual_gpu(res_code, residual_delta);
+            result += res_val * sum;  // 잔차도 입력과의 내적에 비례
+        }
+        
+        // 8. 결과 저장 (coalesced write)
+        output[batch_idx * output_dim + out_idx] = result;
+    }
+}
+
+// Backward 커널 (최적화된 버전)
+__global__ void gemm_hyper_bit_backward_direct_kernel(
+    const float* __restrict__ grad_output,
+    const uint32_t* __restrict__ codes,
+    const float* __restrict__ basis_table,
+    const uint32_t* __restrict__ residual_codes,
+    float delta,
+    float residual_delta,
+    float* __restrict__ grad_input,
+    int batch_size,
+    int input_dim,
+    int output_dim,
+    int basis_size
+) {
+    const int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    if (global_idx >= batch_size * input_dim) return;
+    
+    const int batch_idx = global_idx / input_dim;
+    const int in_idx = global_idx % input_dim;
+    
+    float grad_sum = 0.0f;
+    
+    // 모든 출력 차원에 대해 역전파 계산
+    for (int out_idx = 0; out_idx < output_dim; out_idx++) {
+        // 비트필드 디코딩
+        uint32_t code = codes[out_idx];
+        uint8_t cat = (code >> 24) & 0xFF;
+        uint8_t sub = (code >> 21) & 0x07;
+        uint8_t idx = (code >> 13) & 0xFF;
+        uint8_t sign = (code >> 12) & 0x01;
+        uint8_t d = (code >> 9) & 0x07;
+        uint8_t amp = (code >> 2) & 0x7F;
+        uint8_t amp_fine = code & 0x03;
+        uint8_t phase = (code >> 11) & 0x01;
+        
+        // r 값과 스케일 계산
+        float r = float(amp * 4 + amp_fine) * delta;
+        if (sign == 1) r = -r;
+        float scale = lookup_and_apply_gpu(cat, sub, d, r, phase);
+        
+        // 기저 벡터 가중치
+        float basis_weight = basis_table[idx * input_dim + in_idx];
+        
+        // 그래디언트 기여도 계산
+        float grad_out = grad_output[batch_idx * output_dim + out_idx];
+        grad_sum += grad_out * scale * basis_weight;
+        
+        // 잔차 항목의 기여도
+        if (residual_codes != nullptr) {
+            uint32_t res_code = residual_codes[out_idx];
+            float res_val = decode_residual_gpu(res_code, residual_delta);
+            grad_sum += grad_out * res_val * basis_weight;
+        }
+    }
+    
+    // 최종 그래디언트 저장
+    grad_input[batch_idx * input_dim + in_idx] = grad_sum;
+}
+
 // C++ 인터페이스 함수들
 extern "C" {
     void launch_gemm_hyper_bit_kernel(const float* x, const uint32_t* codes,
@@ -367,3 +525,61 @@ extern "C" void launch_gemm_hyper_bit_optimized_kernel(
         delta, residual_delta, output, batch_size, input_dim, output_dim, basis_size
     );
 }
+
+// C++ 인터페이스 함수
+extern "C" void launch_gemm_hyper_bit_direct_kernel(
+    const float* x_gpu,
+    const uint32_t* codes_gpu,
+    const float* basis_table_gpu,
+    const uint32_t* residual_codes_gpu,
+    float delta,
+    float residual_delta,
+    float* output_gpu,
+    int batch_size,
+    int input_dim,
+    int output_dim,
+    int basis_size,
+    void* stream
+) {
+    // 블록과 그리드 크기 계산
+    const int BLOCK_SIZE = 256;
+    const int total_threads = batch_size * output_dim;
+    const int grid_size = (total_threads + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    
+    // 공유 메모리 크기 계산
+    const int shared_mem_size = BLOCK_SIZE * input_dim * sizeof(float);
+    
+    // 커널 실행
+    gemm_hyper_bit_direct_kernel<<<grid_size, BLOCK_SIZE, shared_mem_size, (cudaStream_t)stream>>>(
+        x_gpu, codes_gpu, basis_table_gpu, residual_codes_gpu,
+        delta, residual_delta, output_gpu,
+        batch_size, input_dim, output_dim, basis_size
+    );
+}
+
+extern "C" void launch_gemm_hyper_bit_backward_direct_kernel(
+    const float* grad_output_gpu,
+    const uint32_t* codes_gpu,
+    const float* basis_table_gpu,
+    const uint32_t* residual_codes_gpu,
+    float delta,
+    float residual_delta,
+    float* grad_input_gpu,
+    int batch_size,
+    int input_dim,
+    int output_dim,
+    int basis_size,
+    void* stream
+) {
+    const int BLOCK_SIZE = 256;
+    const int total_threads = batch_size * input_dim;
+    const int grid_size = (total_threads + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    
+    gemm_hyper_bit_backward_direct_kernel<<<grid_size, BLOCK_SIZE, 0, (cudaStream_t)stream>>>(
+        grad_output_gpu, codes_gpu, basis_table_gpu, residual_codes_gpu,
+        delta, residual_delta, grad_input_gpu,
+        batch_size, input_dim, output_dim, basis_size
+    );
+}
+
+

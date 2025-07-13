@@ -606,6 +606,107 @@ pub fn gemm_hyper_bit_cpu_2d_as_nd(
     output_nd.into_dimensionality::<ndarray::Ix2>().unwrap()
 } 
 
+/// GPU 포인터 직접 사용 forward (복사 없음)
+#[cfg(feature = "cuda")]
+pub unsafe fn gemm_hyper_bit_gpu_direct(
+    input_ptr: *const f32,      // PyTorch 텐서의 GPU 포인터
+    output_ptr: *mut f32,        // PyTorch 텐서의 GPU 포인터
+    codes_gpu: *const u32,       // 이미 GPU에 있는 codes
+    basis_table_gpu: *const f32, // 이미 GPU에 있는 basis
+    residual_codes_gpu: *const u32, // 이미 GPU에 있는 residual
+    delta: f32,
+    residual_delta: f32,
+    batch_size: i32,
+    input_dim: i32,
+    output_dim: i32,
+    basis_size: i32,
+    stream: *mut std::ffi::c_void,
+) {
+    // CUDA 커널 실행 (데이터 복사 없음)
+    launch_gemm_hyper_bit_direct_kernel(
+        input_ptr,
+        codes_gpu,
+        basis_table_gpu,
+        residual_codes_gpu,
+        delta,
+        residual_delta,
+        output_ptr,
+        batch_size,
+        input_dim,
+        output_dim,
+        basis_size,
+        stream,
+    );
+}
+
+/// GPU 포인터 직접 사용 backward (복사 없음)
+#[cfg(feature = "cuda")]
+pub unsafe fn gemm_hyper_bit_backward_gpu_direct(
+    grad_output_ptr: *const f32,  // PyTorch grad_output의 GPU 포인터
+    grad_input_ptr: *mut f32,      // PyTorch grad_input의 GPU 포인터
+    codes_gpu: *const u32,
+    basis_table_gpu: *const f32,
+    residual_codes_gpu: *const u32,
+    delta: f32,
+    residual_delta: f32,
+    batch_size: i32,
+    input_dim: i32,
+    output_dim: i32,
+    basis_size: i32,
+    stream: *mut std::ffi::c_void,
+) {
+    // Backward 커널 실행
+    launch_gemm_hyper_bit_backward_direct_kernel(
+        grad_output_ptr,
+        codes_gpu,
+        basis_table_gpu,
+        residual_codes_gpu,
+        delta,
+        residual_delta,
+        grad_input_ptr,
+        batch_size,
+        input_dim,
+        output_dim,
+        basis_size,
+        stream,
+    );
+}
+
+// 외부 CUDA 함수 선언
+#[cfg(feature = "cuda")]
+extern "C" {
+    // 직접 포인터 사용 커널
+    fn launch_gemm_hyper_bit_direct_kernel(
+        x_gpu: *const f32,
+        codes_gpu: *const u32,
+        basis_table_gpu: *const f32,
+        residual_codes_gpu: *const u32,
+        delta: f32,
+        residual_delta: f32,
+        output_gpu: *mut f32,
+        batch_size: i32,
+        input_dim: i32,
+        output_dim: i32,
+        basis_size: i32,
+        stream: *mut std::ffi::c_void,
+    );
+    
+    fn launch_gemm_hyper_bit_backward_direct_kernel(
+        grad_output_gpu: *const f32,
+        codes_gpu: *const u32,
+        basis_table_gpu: *const f32,
+        residual_codes_gpu: *const u32,
+        delta: f32,
+        residual_delta: f32,
+        grad_input_gpu: *mut f32,
+        batch_size: i32,
+        input_dim: i32,
+        output_dim: i32,
+        basis_size: i32,
+        stream: *mut std::ffi::c_void,
+    );
+}
+
 /// 최적화된 GPU 추론 (버퍼 풀과 스트림 사용)
 #[cfg(feature = "cuda")]
 pub fn gemm_hyper_bit_gpu_optimized<S>(

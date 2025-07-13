@@ -94,6 +94,114 @@ impl PyBitfieldLinear {
         Ok(())
     }
 
+    /// GPU 메모리 직접 처리 - forward (복사 없음)
+    #[cfg(feature = "cuda")]
+    #[pyo3(name = "forward_cuda_direct")]
+    pub fn forward_cuda_direct(
+        &mut self,
+        input_ptr: usize,
+        output_ptr: usize,
+        batch_size: usize,
+        in_features: usize,
+        out_features: usize,
+    ) -> PyResult<()> {
+        // GPU 메모리 초기화 확인
+        if self.inner.get_gpu_buffers().is_none() {
+            self.inner.init_gpu_memory();
+        }
+        
+        let buffers = self.inner.get_gpu_buffers()
+            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("GPU not initialized"))?;
+        
+        // 안전성 검사
+        if in_features != self.inner.get_n() || out_features != self.inner.get_m() {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                format!("Dimension mismatch: expected ({}, {}), got ({}, {})", 
+                    self.inner.get_n(), self.inner.get_m(), in_features, out_features)
+            ));
+        }
+        
+        unsafe {
+            // 입력/출력 포인터를 직접 사용 (복사 없음)
+            kernel::gemm_hyper_bit_gpu_direct(
+                input_ptr as *const f32,
+                output_ptr as *mut f32,
+                buffers.codes_gpu,
+                buffers.basis_table_gpu,
+                buffers.residual_codes_gpu,
+                self.inner.get_delta(),
+                self.inner.get_residual_delta().unwrap_or(0.0),
+                batch_size as i32,
+                in_features as i32,
+                out_features as i32,
+                self.inner.get_basis_table_shape().0 as i32,
+                buffers.stream,
+            );
+            
+            // 스트림 동기화 (계산 완료 보장)
+            kernel::cuda_stream_synchronize(buffers.stream);
+        }
+        
+        Ok(())
+    }
+    
+    /// GPU 메모리 직접 처리 - backward (복사 없음)
+    #[cfg(feature = "cuda")]
+    #[pyo3(name = "backward_cuda_direct")]
+    pub fn backward_cuda_direct(
+        &self,
+        grad_output_ptr: usize,
+        grad_input_ptr: usize,
+        batch_size: usize,
+        in_features: usize,
+        out_features: usize,
+    ) -> PyResult<()> {
+        let buffers = self.inner.get_gpu_buffers()
+            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("GPU not initialized"))?;
+        
+        // 안전성 검사
+        if in_features != self.inner.get_n() || out_features != self.inner.get_m() {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                format!("Dimension mismatch in backward: expected ({}, {}), got ({}, {})", 
+                    self.inner.get_n(), self.inner.get_m(), in_features, out_features)
+            ));
+        }
+        
+        unsafe {
+            // GPU에서 직접 backward 계산
+            kernel::gemm_hyper_bit_backward_gpu_direct(
+                grad_output_ptr as *const f32,
+                grad_input_ptr as *mut f32,
+                buffers.codes_gpu,
+                buffers.basis_table_gpu,
+                buffers.residual_codes_gpu,
+                self.inner.get_delta(),
+                self.inner.get_residual_delta().unwrap_or(0.0),
+                batch_size as i32,
+                in_features as i32,
+                out_features as i32,
+                self.inner.get_basis_table_shape().0 as i32,
+                buffers.stream,
+            );
+            
+            // 스트림 동기화
+            kernel::cuda_stream_synchronize(buffers.stream);
+        }
+        
+        Ok(())
+    }
+    
+    /// 내부 차원 정보 반환 (Python에서 사용)
+    #[pyo3(name = "get_m")]
+    pub fn get_m(&self) -> usize {
+        self.inner.get_m()
+    }
+    
+    #[pyo3(name = "get_n")]
+    pub fn get_n(&self) -> usize {
+        self.inner.get_n()
+    }
+
     /// CPU forward
     pub fn forward_cpu<'py>(&mut self, py: Python<'py>, x: PyReadonlyArray2<'py, f32>) -> &'py PyArray2<f32> {
         let x_owned = x.as_array().to_owned();
@@ -112,8 +220,12 @@ impl PyBitfieldLinear {
     pub fn forward(&mut self, input: PyObject) -> PyResult<PyObject> {
         Python::with_gil(|py| {
             let device = input.getattr(py, "device")?;
+            let device_type = device.getattr(py, "type")?.extract::<String>(py)?;
+            
+            // GPU 텐서인 경우 - 현재는 기존 경로 사용
+            // TODO: GPU 직접 처리 최적화 필요
 
-            // PyTorch 텐서를 ndarray로 변환 (to_owned()로 복사하여 수명 문제 해결)
+            // CPU 경로 또는 CUDA 비활성화 시 기존 로직 사용
             let x_arr_owned = input
                 .call_method0(py, "cpu")?
                 .call_method0(py, "numpy")?

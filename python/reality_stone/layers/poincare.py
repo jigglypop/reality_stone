@@ -4,9 +4,25 @@ from torch.autograd import Function
 from .. import _rust, _has_cuda
 from ..core.mobius import MobiusAdd, MobiusScalarMul
 
+class ProjectToBall(Function):
+    @staticmethod
+    def forward(ctx, x: Tensor, epsilon: float = 1e-5) -> Tensor:
+        ctx.epsilon = epsilon
+        ctx.save_for_backward(x)
+        output_np = _rust.project_to_ball_cpu(x.detach().cpu().numpy(), epsilon)
+        return torch.from_numpy(output_np).to(x.device)
+    
+    @staticmethod
+    def backward(ctx, grad_output: Tensor) -> tuple[Tensor, None]:
+        x, = ctx.saved_tensors
+        norm = torch.norm(x, p=2, dim=-1, keepdim=True)
+        # 노름이 1-epsilon보다 작으면 gradient 그대로 통과
+        mask = (norm < 1.0 - ctx.epsilon).float()
+        grad_x = grad_output * mask
+        return grad_x, None
+
 def project_to_ball(x: Tensor, epsilon: float = 1e-5) -> Tensor:
-    output_np = _rust.poincare.project_to_ball_cpu(x.cpu().numpy(), epsilon)
-    return torch.from_numpy(output_np).to(x.device)
+    return ProjectToBall.apply(x, epsilon)
 
 class PoincareBallLayer(Function):
 

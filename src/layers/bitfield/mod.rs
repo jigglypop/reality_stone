@@ -13,7 +13,7 @@ pub mod decoder;
 pub mod kernel;
 pub mod ops;
 
-use ndarray::{Array1, Array2, Axis};
+use ndarray::{Array1, Array2, ArrayView, IxDyn};
 
 /// 가중치가 압축된 비트필드 형태로 저장되는 선형 레이어입니다.
 ///
@@ -27,8 +27,8 @@ pub struct BitfieldLinear {
     n: usize,
     // 학습 가능한 스케일 파라미터 (정밀도 향상용)
     scale_factors: Option<Array1<f32>>,
-    // 잔차 연결을 위한 작은 가중치 행렬
-    residual_weights: Option<Array2<f32>>,
+    // 잔차 가중치는 정확도 향상보다 복잡성을 증가시켜 제거함
+    // residual_weights: Option<Array2<f32>>,
 }
 
 impl BitfieldLinear {
@@ -57,7 +57,7 @@ impl BitfieldLinear {
             m,
             n,
             scale_factors: None,
-            residual_weights: None,
+            // residual_weights: None,
         }
     }
 
@@ -104,7 +104,7 @@ impl BitfieldLinear {
         let mut codes = Array1::<u32>::zeros(m);
         let delta = r_max / 255.0;
         let mut scale_factors = Array1::<f32>::ones(m);
-        let mut residual_weights = Array2::<f32>::zeros((m, n));
+        // let mut residual_weights = Array2::<f32>::zeros((m, n));
         let mut total_error = 0.0f32;
         
         for i in 0..m {
@@ -142,70 +142,38 @@ impl BitfieldLinear {
             // 푸앵카레 볼에서의 반지름 계산
             // w = tanh(r/2) · u 이므로, r = 2 * atanh(||w||)
             let r = 2.0 * norm_clamped.atanh();
-            let r_adjusted = r * best_sign; // 부호 정보 포함
             
-            // cat과 sub를 활용하여 더 많은 정보 인코딩
-            let (cat, sub, d) = if r_adjusted >= 0.0 {
-                // 양의 스케일
-                if best_dot > 0.98 {
-                    // 매우 정확한 매칭 - 기본 함수 사용
-                    (0, 0, 0) // Poincaré tanh(r/2)
-                } else if best_dot > 0.95 {
-                    // 좋은 매칭 - 쌍곡 함수
-                    (0, 1, (i % 4) as u8) // sinh, cosh 변형들
-                } else if best_dot > 0.9 {
-                    // 보통 매칭 - 삼각 함수
-                    (0, 2, (i % 4) as u8) // sin, cos 변형들
-                } else {
-                    // 낮은 매칭 - 특수 함수
-                    let cat_choice = (i / 4) % 4;
-                    (cat_choice as u8, (i % 4) as u8, (i / 16) as u8 % 4)
-                }
+            // 부호 비트 결정 (0: 양수, 1: 음수)
+            let sign_bit = if best_sign > 0.0 { 0 } else { 1 };
+            
+            // cat과 sub, d를 결정하는 로직 단순화
+            let (cat, sub, d) = if best_dot > 0.95 {
+                (0, i as u8 % 4, 0)
+            } else if best_dot > 0.9 {
+                (1, i as u8 % 4, 0)
+            } else if best_dot > 0.8 {
+                (2, i as u8 % 4, 0)
             } else {
-                // 음의 스케일
-                if best_dot > 0.98 {
-                    (0, 0, 1) // -tanh(r/2)
-                } else if best_dot > 0.95 {
-                    (1, 0, (i % 4) as u8) // Lorentz 함수들
-                } else if best_dot > 0.9 {
-                    (1, 1, (i % 4) as u8) // 수정된 쌍곡 함수
-                } else {
-                    // Klein 또는 특수 함수
-                    let choice = i % 3;
-                    match choice {
-                        0 => (2, 0, (i % 4) as u8), // Klein 기본
-                        1 => (2, 1, (i % 4) as u8), // Klein 투영
-                        _ => (3, (i % 4) as u8, (i / 4) as u8 % 4), // 특수 함수
-                    }
-                }
+                (3, i as u8 % 4, 0)
             };
-            
-            let r_abs = r_adjusted.abs().min(r_max);
+
+            let r_abs = r.abs().min(r_max);
             let amp = ((r_abs / delta) as u32).min(255);
             
-            // 더 정교한 인코딩
-            codes[i] = decoder::encode(cat, sub, best_idx as u8, d, amp as u8);
+            // 새로운 인코딩 함수 호출
+            codes[i] = decoder::encode(cat, sub, best_idx as u8, sign_bit, d, amp as u8);
             
-            // 재구성 오차 계산 및 잔차 저장
-            let reconstructed_r = (amp as f32) * delta;
-            let reconstructed_scale = if sub == 0 {
-                (reconstructed_r * 0.5).tanh()
-            } else {
-                -(reconstructed_r * 0.5).tanh()
-            };
+            // 재구성 오차 계산
+            let signed_r = if sign_bit == 0 { r_abs } else { -r_abs };
+            let reconstructed_scale = ops::lookup_and_apply(cat, sub, d, signed_r);
             let reconstructed = &basis_table.row(best_idx) * reconstructed_scale;
             let error = &w_row - &reconstructed;
-            residual_weights.row_mut(i).assign(&error);
             
             // 적응적 스케일 팩터 (재구성 품질에 따라)
             let error_norm = error.dot(&error).sqrt();
             total_error += error_norm;
-            scale_factors[i] = 1.0 + error_norm.min(0.1); // 오차가 클수록 스케일 증가
+            scale_factors[i] = 1.0 - error_norm.min(0.5); // 오차가 클수록 스케일 감소 (보정)
         }
-        
-        // 평균 오차가 너무 크면 잔차 가중치 사용
-        let avg_error = total_error / m as f32;
-        let use_residual = avg_error > 0.05;
         
         Self {
             codes,
@@ -214,7 +182,7 @@ impl BitfieldLinear {
             m,
             n,
             scale_factors: Some(scale_factors),
-            residual_weights: if use_residual { Some(residual_weights) } else { None },
+            // residual_weights: None,
         }
     }
 
@@ -239,11 +207,7 @@ impl BitfieldLinear {
             }
         }
         
-        // 잔차 추가
-        if let Some(ref residual) = self.residual_weights {
-            let residual_output = x.dot(&residual.t());
-            output = output + residual_output * 0.1; // 작은 가중치로 추가
-        }
+        // 잔차 로직 제거됨
         
         output
     }
@@ -260,10 +224,12 @@ impl BitfieldLinear {
         let mut w_matrix = Array2::<f32>::zeros((self.m, self.n));
         for i in 0..self.m {
             let code = self.codes[i];
-            let (cat, sub, idx, d, amp) = decoder::decode(code);
+            let (cat, sub, idx, sign, d, amp) = decoder::decode(code);
 
             let r_val = (amp as f32) * self.delta;
-            let mut scale_factor = ops::lookup_and_apply(cat, sub, d, r_val);
+            let signed_r_val = if sign == 0 { r_val } else { -r_val };
+            
+            let mut scale_factor = ops::lookup_and_apply(cat, sub, d, signed_r_val);
             
             // 스케일 팩터 적용
             if let Some(ref scale_factors) = self.scale_factors {
@@ -276,12 +242,106 @@ impl BitfieldLinear {
             w_matrix.row_mut(i).assign(&weight_row);
         }
         
-        // 잔차 가중치 추가
-        if let Some(ref residual) = self.residual_weights {
-            w_matrix = w_matrix + residual * 0.1;
-        }
+        // 잔차 로직 제거됨
 
         // 2. grad_input = grad_output @ W 를 계산합니다.
         grad_output.dot(&w_matrix)
+    }
+
+    /// 다차원 텐서 순전파 `y = xW^T`를 수행합니다.
+    ///
+    /// 임의의 차원을 가진 입력 텐서를 처리하되, 마지막 차원을 feature 차원으로 간주합니다.
+    ///
+    /// # 인자
+    /// * `x` - `[..., n]` 형태의 입력 텐서 (마지막 차원이 feature 차원).
+    ///
+    /// # 반환
+    /// `[..., m]` 형태의 출력 텐서.
+    pub fn forward_nd(&self, x: &ArrayView<f32, IxDyn>) -> ndarray::Array<f32, IxDyn> {
+        let x_shape = x.shape();
+        let x_ndim = x_shape.len();
+        assert!(x_ndim > 0, "입력 텐서는 최소 1차원 이상이어야 합니다.");
+        
+        let input_features = x_shape[x_ndim - 1];
+        assert_eq!(input_features, self.n, "입력 차원이 일치하지 않습니다.");
+        
+        // 최적화된 비트필드 추론 커널 사용
+        let mut output = kernel::gemm_hyper_bit_cpu_nd(x, &self.codes, &self.basis_table, self.delta);
+        
+        // 스케일 팩터 적용
+        if let Some(ref scale_factors) = self.scale_factors {
+            let output_shape = output.shape();
+            let output_ndim = output_shape.len();
+            let total_batch_size: usize = output_shape[..output_ndim - 1].iter().product();
+            
+            // 출력을 2D로 reshape하여 스케일 적용
+            let mut output_2d = output.to_shape((total_batch_size, self.m)).unwrap().to_owned();
+            for i in 0..self.m {
+                let scale = scale_factors[i];
+                output_2d.column_mut(i).mapv_inplace(|v| v * scale);
+            }
+            
+            // 다시 원래 형태로 reshape
+            output = output_2d.into_shape(output_shape).unwrap().into_dyn();
+        }
+        
+        output
+    }
+
+    /// 다차원 텐서 역전파 `grad_input = grad_output @ W`를 수행합니다.
+    ///
+    /// # 인자
+    /// * `grad_output` - `[..., m]` 형태의 출력 그래디언트 텐서.
+    ///
+    /// # 반환
+    /// `[..., n]` 형태의 입력 그래디언트 텐서.
+    pub fn backward_nd(&self, grad_output: &ArrayView<f32, IxDyn>) -> ndarray::Array<f32, IxDyn> {
+        let grad_shape = grad_output.shape();
+        let grad_ndim = grad_shape.len();
+        
+        if grad_ndim == 0 {
+            panic!("그래디언트 텐서는 최소 1차원 이상이어야 합니다.");
+        }
+        
+        let output_features = grad_shape[grad_ndim - 1];
+        assert_eq!(output_features, self.m, "그래디언트 출력 차원이 일치하지 않습니다.");
+        
+        // 1. 압축된 코드로부터 완전한 가중치 행렬 W (`[m, n]`)를 복원합니다.
+        let mut w_matrix = Array2::<f32>::zeros((self.m, self.n));
+        for i in 0..self.m {
+            let code = self.codes[i];
+            let (cat, sub, idx, sign, d, amp) = decoder::decode(code);
+
+            let r_val = (amp as f32) * self.delta;
+            let signed_r_val = if sign == 0 { r_val } else { -r_val };
+            
+            let mut scale_factor = ops::lookup_and_apply(cat, sub, d, signed_r_val);
+            
+            // 스케일 팩터 적용
+            if let Some(ref scale_factors) = self.scale_factors {
+                scale_factor *= scale_factors[i];
+            }
+
+            let basis_vector = self.basis_table.row(idx as usize);
+            let weight_row = &basis_vector * scale_factor;
+            
+            w_matrix.row_mut(i).assign(&weight_row);
+        }
+        
+        // 잔차 로직 제거됨
+
+        // 2. grad_input = grad_output @ W 를 계산합니다.
+        let total_batch_size: usize = grad_shape[..grad_ndim - 1].iter().product();
+        
+        // 그래디언트를 2D로 reshape
+        let grad_reshaped = grad_output.to_shape((total_batch_size, self.m)).unwrap();
+        let grad_input_2d = grad_reshaped.dot(&w_matrix);
+        
+        // 입력 그래디언트를 원래 형태로 reshape
+        let mut input_shape = grad_shape.to_vec();
+        input_shape[grad_ndim - 1] = self.n;
+        let grad_input_nd = grad_input_2d.into_shape(input_shape.as_slice()).unwrap().into_dyn();
+        
+        grad_input_nd
     }
 } 

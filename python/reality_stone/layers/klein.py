@@ -75,7 +75,7 @@ class KleinFromPoincare(Function):
             ctx.c_max = c_max
             ctx.save_for_backward(x, kappas)
             
-            output_np, c_val = _rust.klein.from_poincare_dynamic_cpu(
+            output_np, c_val = _rust.from_poincare_dynamic_cpu(
                 x.cpu().numpy(), kappas.item(), c_min, c_max
             )
             ctx.c_val = c_val
@@ -83,7 +83,7 @@ class KleinFromPoincare(Function):
         else:
             ctx.use_dynamic = False
             ctx.c = c if c is not None else 1.0
-            output_np = _rust.klein.from_poincare_cpu(x.cpu().numpy(), ctx.c)
+            output_np = _rust.from_poincare_cpu(x.cpu().numpy(), ctx.c)
             ctx.save_for_backward(x)
             return torch.from_numpy(output_np).to(x.device)
 
@@ -91,7 +91,7 @@ class KleinFromPoincare(Function):
     def backward(ctx, grad_output: Tensor) -> tuple[Tensor | None, ...]:
         if ctx.use_dynamic:
             x, kappas = ctx.saved_tensors
-            grad_x_np, grad_kappa_val = _rust.klein.from_poincare_dynamic_backward_cpu(
+            grad_x_np, grad_kappa_val = _rust.from_poincare_dynamic_backward_cpu(
                 grad_output.cpu().numpy(), x.cpu().numpy(), kappas.item(), ctx.c_min, ctx.c_max
             )
             grad_x = torch.from_numpy(grad_x_np).to(grad_output.device)

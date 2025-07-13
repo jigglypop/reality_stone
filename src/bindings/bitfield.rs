@@ -6,8 +6,8 @@
 //! Python에서 직접 사용할 수 있는 클래스로 노출합니다.
 
 use pyo3::prelude::*;
-use numpy::{PyArray2, PyReadonlyArray2};
-use ndarray::Array2;
+use numpy::{PyArray2, PyReadonlyArray2, PyArray, PyReadonlyArray, IxDyn};
+use ndarray::{Array2, ArrayView, IxDyn as NdIxDyn};
 
 use crate::layers::bitfield::BitfieldLinear as RustBitfieldLinear;
 
@@ -58,5 +58,41 @@ impl PyBitfieldLinear {
         let grad_output_owned: Array2<f32> = grad_output.as_array().to_owned();
         let grad_input: Array2<f32> = self.inner.backward(&grad_output_owned);
         PyArray2::from_array(py, &grad_input)
+    }
+
+    /// 다차원 텐서를 지원하는 순전파
+    ///
+    /// # 인자
+    /// * `x` - `[..., n]` 형태의 numpy 배열 (마지막 차원이 feature 차원)
+    ///
+    /// # 반환
+    /// `[..., m]` 형태의 numpy 배열
+    pub fn forward_nd<'py>(&self, py: Python<'py>, x: PyReadonlyArray<'py, f32, IxDyn>) -> &'py PyArray<f32, IxDyn> {
+        // PyReadonlyArray를 ndarray 뷰로 변환
+        let x_view: ArrayView<f32, NdIxDyn> = x.as_array().into_dyn();
+        
+        // Rust 다차원 forward 호출
+        let result = self.inner.forward_nd(&x_view);
+        
+        // 결과를 PyArray로 변환
+        PyArray::from_array(py, &result)
+    }
+
+    /// 다차원 텐서를 지원하는 역전파
+    ///
+    /// # 인자
+    /// * `grad_output` - `[..., m]` 형태의 numpy 배열
+    ///
+    /// # 반환
+    /// `[..., n]` 형태의 numpy 배열
+    pub fn backward_nd<'py>(&self, py: Python<'py>, grad_output: PyReadonlyArray<'py, f32, IxDyn>) -> &'py PyArray<f32, IxDyn> {
+        // PyReadonlyArray를 ndarray 뷰로 변환
+        let grad_view: ArrayView<f32, NdIxDyn> = grad_output.as_array().into_dyn();
+        
+        // Rust 다차원 backward 호출
+        let result = self.inner.backward_nd(&grad_view);
+        
+        // 결과를 PyArray로 변환
+        PyArray::from_array(py, &result)
     }
 } 

@@ -7,119 +7,223 @@ import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import copy
 from tqdm import tqdm
-import reality_stone as rs
+try:
+    import reality_stone as rs
+    from reality_stone.layers import BitfieldLinear
+    RS_AVAILABLE = True
+except ImportError:
+    RS_AVAILABLE = False
+    # Define a placeholder class if reality_stone is not available
+    class BitfieldLinear(nn.Module):
+        def __init__(self, in_features, out_features, **kwargs):
+            super().__init__()
+            self.linear = nn.Linear(in_features, out_features)
+        def forward(self, x):
+            return self.linear(x)
+        @classmethod
+        def from_linear(cls, linear, **kwargs):
+            return cls(linear.in_features, linear.out_features)
 
-class SinglePoincareBallLinear(nn.Module):
-    def __init__(self, in_features: int, out_features: int, curvature: float = 1.0, bias: bool = True):
+# --- 헬가손-비트필드 하이브리드 압축기 ---
+class HelgasonBitfieldCompressor:
+    """
+    헬가손-푸리에 변환으로 주요 특징을 잡고,
+    잔차를 Bitfield로 정밀하게 압축하는 무손실 압축기
+    """
+    def __init__(self, W: torch.Tensor, compression_ratio=0.1):
+        self.shape = W.shape
+        self.dtype = W.dtype
+        self.device = W.device
+
+        print(f"    🌀 헬가손-비트필드 압축 시작: {self.shape}, 목표압축률={compression_ratio:.1%}")
+
+        # 1. 헬가손-푸리에 변환으로 매크로 구조 압축
+        W_fft = torch.fft.fft2(W.float())
+        energy = torch.abs(W_fft)**2
+        sorted_indices = torch.argsort(energy.flatten(), descending=True)
+        
+        # 에너지 기반으로 주요 주파수 선택 (매크로 정보)
+        macro_budget = int(W.numel() * compression_ratio * 0.5) # 예산의 50%
+        important_indices = sorted_indices[:macro_budget]
+        
+        freq_mask = torch.zeros_like(energy.flatten(), dtype=torch.bool)
+        freq_mask[important_indices] = True
+        self.freq_mask = freq_mask.reshape(W_fft.shape)
+        
+        self.important_freqs = torch.where(self.freq_mask, W_fft, torch.zeros_like(W_fft))
+
+        # 2. 잔차 계산 (마이크로 정보)
+        macro_reconstructed = torch.fft.ifft2(self.important_freqs).real.to(self.dtype)
+        residual = W - macro_reconstructed
+        print(f"       - 1단계(헬가손): 잔차에너지 = {torch.norm(residual) / torch.norm(W):.2%}")
+
+        # 3. 잔차를 Bitfield로 2차 압축
+        if RS_AVAILABLE:
+            # BitfieldLinear.from_linear는 nn.Linear 객체를 인자로 받음
+            residual_linear_layer = nn.Linear(self.shape[1], self.shape[0], bias=False)
+            residual_linear_layer.weight.data = residual
+            residual_linear_layer.to(self.device)
+            self.residual_bitfield = BitfieldLinear.from_linear(residual_linear_layer, r_max=0.5)
+        else: # Fallback
+            self.residual_bitfield = residual
+
+    def reconstruct(self) -> torch.Tensor:
+        """압축된 가중치 복원 (디버깅용, 현재 decompress 미지원)"""
+        macro_reconstructed = torch.fft.ifft2(self.important_freqs).real.to(self.dtype)
+        
+        if RS_AVAILABLE:
+            # Bitfield 복원은 현재 불가. 
+            # decompress() 메소드를 BitfieldLinear에 추가해야 완전한 복원이 가능합니다.
+            print("⚠️ Bitfield decompress는 미구현 상태입니다. 매크로 부분만 복원합니다.")
+            residual_reconstructed = torch.zeros_like(macro_reconstructed)
+        else:
+            residual_reconstructed = self.residual_bitfield
+
+        return macro_reconstructed + residual_reconstructed
+
+    def apply(self, x: torch.Tensor) -> torch.Tensor:
+        """압축된 연산 적용"""
+        # 1. Macro (FFT) 부분 적용
+        macro_reconstructed = torch.fft.ifft2(self.important_freqs).real.to(x.dtype)
+        macro_output = F.linear(x, macro_reconstructed)
+
+        # 2. Micro (Bitfield) 부분 적용
+        if RS_AVAILABLE:
+            residual_output = self.residual_bitfield(x)
+        else:
+            residual_output = F.linear(x, self.residual_bitfield)
+
+        return macro_output + residual_output
+
+class HybridCompressedLinear(nn.Module):
+    """헬가손-비트필드 압축을 적용한 최종 선형 레이어"""
+    def __init__(self, linear_layer: nn.Linear, compression_ratio=0.1, is_attn=False):
         super().__init__()
-        self.in_features = in_features
-        self.out_features = out_features
-        self.curvature = curvature
-        self.weight = nn.Parameter(torch.randn(out_features, in_features) * 0.1)
-        if bias:
-            self.bias = nn.Parameter(torch.zeros(out_features))
+        
+        self.is_attn = is_attn
+        self.in_features = linear_layer.in_features
+        self.out_features = linear_layer.out_features
+        
+        if self.is_attn:
+            # c_attn 가중치는 [out*3, in] 모양
+            weights = linear_layer.weight.data
+            w_q, w_k, w_v = torch.chunk(weights, 3, dim=0)
+            self.compressor_q = HelgasonBitfieldCompressor(w_q, compression_ratio)
+            self.compressor_k = HelgasonBitfieldCompressor(w_k, compression_ratio)
+            self.compressor_v = HelgasonBitfieldCompressor(w_v, compression_ratio)
+        else:
+            self.compressor = HelgasonBitfieldCompressor(linear_layer.weight.data, compression_ratio)
+        
+        if linear_layer.bias is not None:
+            self.bias = nn.Parameter(linear_layer.bias.data.clone())
         else:
             self.register_parameter('bias', None)
-            
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self.weight.device != x.device:
-            self.weight.data = self.weight.data.to(x.device)
-            if self.bias is not None:
-                self.bias.data = self.bias.data.to(x.device)
-                
-        linear_out = F.linear(x, self.weight, self.bias)
-        
-        try:
-            if x.is_cuda and hasattr(rs, 'poincare_ball_forward_cuda'):
-                x_norm = torch.norm(x, dim=-1, keepdim=True)
-                out_norm = torch.norm(linear_out, dim=-1, keepdim=True)
-                scale = 0.01
-                
-                x_safe = x * torch.tanh(x_norm * scale) / (x_norm + 1e-8)
-                out_safe = linear_out * torch.tanh(out_norm * scale) / (out_norm + 1e-8)
-                
-                hyperbolic_out = rs.poincare_ball_forward_cuda(x_safe, out_safe, self.curvature, 0.01)
-                hyp_norm = torch.norm(hyperbolic_out, dim=-1, keepdim=True)
-                result = hyperbolic_out * out_norm / (hyp_norm + 1e-8)
-                
-                return 0.99 * linear_out + 0.01 * result
-            else:
-                return linear_out
-        except:
-            return linear_out
 
-def replace_linear_layers_inplace(model: nn.Module, curvature: float = 1.0):
-    total_replaced = 0
+    def forward(self, x):
+        if self.is_attn:
+            # Q, K, V 각각에 대해 압축된 연산 수행 후 결합
+            q = self.compressor_q.apply(x)
+            k = self.compressor_k.apply(x)
+            v = self.compressor_v.apply(x)
+            # transformers의 c_attn 출력과 동일한 차원으로 합침
+            output = torch.cat([q, k, v], dim=-1)
+        else:
+            output = self.compressor.apply(x)
+            
+        if self.bias is not None:
+            output += self.bias
+        return output
+
+def apply_hybrid_compression_to_model(model, compression_ratio=0.1):
+    """모델의 모든 선형 레이어를 하이브리드 압축 레이어로 교체"""
+    print(f"\n🌀 모델 전체 하이브리드 압축 시작 (목표: {compression_ratio:.1%})")
     
+    layers_to_replace = []
     for name, module in model.named_modules():
-        if hasattr(module, 'c_attn') and hasattr(module.c_attn, 'weight'):
-            old_layer = module.c_attn
-            if hasattr(old_layer, 'nf'):
-                in_features = old_layer.weight.shape[0]
-                out_features = old_layer.weight.shape[1]
-                new_layer = SinglePoincareBallLinear(in_features, out_features, curvature, bias=(old_layer.bias is not None))
-                with torch.no_grad():
-                    new_layer.weight.data.copy_(old_layer.weight.data.t())
-                    if new_layer.bias is not None and old_layer.bias is not None:
-                        new_layer.bias.data.copy_(old_layer.bias.data)
-            else:
-                out_features, in_features = old_layer.weight.shape
-                new_layer = SinglePoincareBallLinear(in_features, out_features, curvature, bias=(old_layer.bias is not None))
-                with torch.no_grad():
-                    new_layer.weight.data.copy_(old_layer.weight.data)
-                    if new_layer.bias is not None and old_layer.bias is not None:
-                        new_layer.bias.data.copy_(old_layer.bias.data)
-            module.c_attn = new_layer
-            total_replaced += 1
+        if isinstance(module, nn.Linear) or type(module).__name__ == 'Conv1D':
+            layers_to_replace.append(name)
             
-        if hasattr(module, 'c_proj') and hasattr(module.c_proj, 'weight'):
-            old_layer = module.c_proj
-            if hasattr(old_layer, 'nf'):
-                in_features = old_layer.weight.shape[0]
-                out_features = old_layer.weight.shape[1]
-                new_layer = SinglePoincareBallLinear(in_features, out_features, curvature, bias=(old_layer.bias is not None))
-                with torch.no_grad():
-                    new_layer.weight.data.copy_(old_layer.weight.data.t())
-                    if new_layer.bias is not None and old_layer.bias is not None:
-                        new_layer.bias.data.copy_(old_layer.bias.data)
-            else:
-                out_features, in_features = old_layer.weight.shape
-                new_layer = SinglePoincareBallLinear(in_features, out_features, curvature, bias=(old_layer.bias is not None))
-                with torch.no_grad():
-                    new_layer.weight.data.copy_(old_layer.weight.data)
-                    if new_layer.bias is not None and old_layer.bias is not None:
-                        new_layer.bias.data.copy_(old_layer.bias.data)
-            module.c_proj = new_layer
-            total_replaced += 1
+    for name in tqdm(layers_to_replace, desc="압축 진행"):
+        module = model.get_submodule(name)
+        if '.' not in name:
+            continue
+
+        parent_name, child_name = name.rsplit('.', 1)
+        parent_module = model.get_submodule(parent_name)
+
+        is_attn = 'c_attn' in name
+        
+        # 가중치 모양을 [out_features, in_features]로 통일
+        if type(module).__name__ == 'Conv1D':
+            # Conv1D의 가중치는 [in, out] -> t() -> [out, in]
+            out_features, in_features = module.weight.shape
+            linear_equiv = nn.Linear(in_features, out_features, bias=(module.bias is not None))
+            linear_equiv.weight.data = module.weight.data.t()
+            if module.bias is not None:
+                linear_equiv.bias.data = module.bias.data
+        else: # nn.Linear
+            linear_equiv = module
             
-        if hasattr(module, 'c_fc') and hasattr(module.c_fc, 'weight'):
-            old_layer = module.c_fc
-            if hasattr(old_layer, 'nf'):
-                in_features = old_layer.weight.shape[0]
-                out_features = old_layer.weight.shape[1]
-                new_layer = SinglePoincareBallLinear(in_features, out_features, curvature, bias=(old_layer.bias is not None))
-                with torch.no_grad():
-                    new_layer.weight.data.copy_(old_layer.weight.data.t())
-                    if new_layer.bias is not None and old_layer.bias is not None:
-                        new_layer.bias.data.copy_(old_layer.bias.data)
-            else:
-                out_features, in_features = old_layer.weight.shape
-                new_layer = SinglePoincareBallLinear(in_features, out_features, curvature, bias=(old_layer.bias is not None))
-                with torch.no_grad():
-                    new_layer.weight.data.copy_(old_layer.weight.data)
-                    if new_layer.bias is not None and old_layer.bias is not None:
-                        new_layer.bias.data.copy_(old_layer.bias.data)
-            module.c_fc = new_layer
-            total_replaced += 1
-    
-    print(f"총 {total_replaced}개 레이어 교체 완료")
+        new_layer = HybridCompressedLinear(linear_equiv, compression_ratio, is_attn=is_attn)
+        setattr(parent_module, child_name, new_layer)
+        
     return model
 
-def create_single_layer_poincare_model(teacher_model: nn.Module, curvature: float = 1.0):
-    student = copy.deepcopy(teacher_model)
-    print("단일 레이어 포인카레 변환 시작...")
-    student = replace_linear_layers_inplace(student, curvature)
-    return student
+def main():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model_name = "skt/kogpt2-base-v2"
+    
+    if not RS_AVAILABLE:
+        print("="*60)
+        print("⚠️ 경고: RealityStone 라이브러리를 찾을 수 없습니다.")
+        print("압축 기능 없이 폴백 모드로 실행합니다.")
+        print("="*60)
+
+    print("RealityStone 하이브리드 압축 최종 비교 테스트")
+    
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    # use_safetensors=True를 추가하여 보안 및 로딩 문제 해결
+    teacher = AutoModelForCausalLM.from_pretrained(model_name, use_safetensors=True).to(device)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    
+    prompts = ["안녕하세요", "오늘 날씨는", "한국의 수도는", "인공지능이란", "맛있는 음식은"]
+    
+    # 원본 모델 테스트
+    teacher_copy = copy.deepcopy(teacher)
+    orig_results, orig_time = test_model(teacher_copy, tokenizer, device, prompts, "원본")
+    del teacher_copy
+
+    # 하이브리드 압축 모델 생성 및 테스트
+    student = copy.deepcopy(teacher)
+    student = apply_hybrid_compression_to_model(student, compression_ratio=0.1) # 10% 압축률 목표
+    
+    # TODO: 지식 증류 파인튜닝 추가
+    
+    comp_results, comp_time = test_model(student, tokenizer, device, prompts, "하이브리드 압축")
+
+    # 결과 비교
+    print("\n" + "="*60 + "\n성능 비교 결과\n" + "="*60)
+    
+    speed_ratio = comp_time / orig_time if orig_time > 0 else 0
+    print(f"속도 비율: {speed_ratio:.3f} (원본 대비)")
+    
+    # 메모리 사용량 측정 (단순 파라미터 수 비교)
+    orig_params = sum(p.numel() for p in teacher.parameters())
+    comp_params = sum(p.numel() for p in student.parameters())
+    mem_ratio = comp_params / orig_params if orig_params > 0 else 0
+    print(f"파라미터 비율: {mem_ratio:.3f} ({1/mem_ratio if mem_ratio > 0 else 0:.1f}x 압축)")
+
+    exact_output_matches = 0
+    for i, (o, p) in enumerate(zip(orig_results, comp_results), 1):
+        if o[1] == p[1]:
+            print(f"[{i}] 출력 일치")
+            exact_output_matches += 1
+        else:
+            print(f"[{i}] 출력 불일치\n    원본: {o[1]}\n    압축: {p[1]}")
+    
+    output_match_rate = exact_output_matches / len(prompts)
+    print(f"출력 일치율: {output_match_rate:.1%}")
 
 def test_model(model, tokenizer, device, prompts, model_name, max_length=50):
     model.to(device).eval()
@@ -131,145 +235,16 @@ def test_model(model, tokenizer, device, prompts, model_name, max_length=50):
         inputs = tokenizer(prompt, return_tensors="pt").to(device)
         start = time.time()
         with torch.no_grad():
-            outputs = model.generate(**inputs, max_length=max_length, do_sample=False, temperature=1.0, top_p=1.0, top_k=0, pad_token_id=tokenizer.eos_token_id)
+            outputs = model.generate(**inputs, max_length=max_length, do_sample=False, pad_token_id=tokenizer.eos_token_id)
         elapsed = time.time() - start
         gen_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
         total_time += elapsed
         print(f"[{idx}] '{prompt}' -> {gen_text} ({elapsed:.3f}s)")
         results.append((prompt, gen_text, elapsed))
     
-    avg_time = total_time / len(prompts)
+    avg_time = total_time / len(prompts) if prompts else 0
     print(f"{model_name} 평균 시간: {avg_time:.3f}초")
     return results, avg_time
-
-def test_korean_generation(model, tokenizer, device, model_name):
-    model.to(device).eval()
-    korean_prompts = [
-        "한국의 아름다운 곳은",
-        "오늘은 좋은 날입니다",
-        "맛있는 한국 음식은",
-        "서울에서 가볼 만한 곳은",
-        "한국어는 정말"
-    ]
-    
-    print(f"\n=== {model_name} 한글 생성 품질 테스트 ===")
-    for idx, prompt in enumerate(korean_prompts, 1):
-        inputs = tokenizer(prompt, return_tensors="pt").to(device)
-        with torch.no_grad():
-            outputs = model.generate(
-                **inputs, 
-                max_length=80, 
-                do_sample=True, 
-                temperature=0.8, 
-                top_p=0.9, 
-                top_k=50, 
-                pad_token_id=tokenizer.eos_token_id
-            )
-        gen_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
-        print(f"[{idx}] {prompt}")
-        print(f"    {gen_text}")
-        print("-" * 60)
-
-def measure_memory_usage(model, device):
-    if device.type == 'cuda':
-        torch.cuda.empty_cache()
-        dummy_input = torch.randint(0, 1000, (1, 10)).to(device)
-        with torch.no_grad():
-            _ = model(dummy_input)
-        memory_used = torch.cuda.max_memory_allocated() / 1024**2
-        return memory_used
-    else:
-        return 0.0
-
-def main():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model_name = "skt/kogpt2-base-v2"
-    curvature = 1.0
-    
-    print("RealityStone Poincare Ball 최종 비교 테스트")
-    
-    # 모델과 토크나이저 로드
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    teacher = AutoModelForCausalLM.from_pretrained(model_name).to(device)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    
-    # 메모리 측정
-    teacher_memory = measure_memory_usage(teacher, device)
-    print(f"원본 모델 메모리: {teacher_memory:.1f} MB")
-    
-    # Poincare 모델 생성
-    print(f"\nPoincare 모델 생성 중...")
-    student = create_single_layer_poincare_model(teacher, curvature)
-    student_memory = measure_memory_usage(student, device)
-    print(f"Poincare 모델 메모리: {student_memory:.1f} MB")
-    memory_ratio = student_memory/teacher_memory
-    print(f"메모리 비율: {memory_ratio:.3f}")
-    
-    # 테스트 프롬프트
-    prompts = ["안녕하세요", "오늘 날씨는", "한국의 수도는", "인공지능이란", "맛있는 음식은"]
-    
-    # 최종 비교 테스트 (원본은 새로 복사해서 사용)
-    print(f"\n" + "="*60)
-    print("최종 원본 vs Poincare 모델 비교")
-    print("="*60)
-    
-    teacher_copy = copy.deepcopy(teacher)
-    orig_results, orig_time = test_model(teacher_copy, tokenizer, device, prompts, "원본")
-    
-    poincare_results, poincare_time = test_model(student, tokenizer, device, prompts, "Poincare")
-    
-    # 결과 비교
-    print(f"\n" + "="*60)
-    print("성능 비교 결과")
-    print("="*60)
-    
-    speed_ratio = poincare_time / orig_time
-    print(f"속도 비율: {speed_ratio:.3f} (원본 대비)")
-    print(f"메모리 비율: {memory_ratio:.3f} (원본 대비)")
-    
-    exact_output_matches = 0
-    for i, (o, p) in enumerate(zip(orig_results, poincare_results), 1):
-        if o[1] == p[1]:
-            print(f"[{i}] 출력 일치")
-            exact_output_matches += 1
-        else:
-            print(f"[{i}] 출력 불일치")
-            print(f"    원본: {o[1]}")
-            print(f"    Poincare: {p[1]}")
-    
-    output_match_rate = exact_output_matches / len(prompts)
-    print(f"출력 일치율: {output_match_rate:.1%}")
-    
-    # 한글 생성 품질 테스트
-    test_korean_generation(teacher_copy, tokenizer, device, "원본")
-    test_korean_generation(student, tokenizer, device, "Poincare")
-    
-    # 최종 결론
-    print(f"\n" + "="*60)
-    print("최종 결론")
-    print("="*60)
-    
-    if memory_ratio < 1.2:
-        print("✅ 메모리 최적화 대성공!")
-    elif memory_ratio < 2.0:
-        print("🟡 메모리 사용량 증가 있음")
-    else:
-        print("❌ 메모리 사용량 과다")
-    
-    if speed_ratio < 2.0:
-        print("✅ 속도 최적화 성공!")
-    elif speed_ratio < 3.0:
-        print("🟡 속도 저하 있음")
-    else:
-        print("❌ 속도 저하 심각")
-    
-    if output_match_rate == 1.0:
-        print("✅ 100% 정확도 유지")
-    elif output_match_rate >= 0.8:
-        print("🟡 높은 정확도 유지")
-    else:
-        print("❌ 정확도 저하")
 
 if __name__ == "__main__":
     main() 

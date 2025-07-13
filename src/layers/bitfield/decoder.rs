@@ -13,16 +13,18 @@
 //! | `21..=20` | `cat`     | 기하학 카테고리 (예: 푸앵카레, 로렌츠)                      |
 //! | `19..=18` | `sub`     | 기저 함수 족 (예: exp/log, sinh/cosh)                     |
 //! | `17..=10` | `idx`     | 공유 기저 벡터 테이블의 인덱스 (최대 256개)               |
-//! | `9..=8`   | `d`       | 도함수 차수 (주기적 도함수를 갖는 C∞ 함수용)              |
+//! | `9`       | `sign`    | 반지름(크기)의 부호 (0: 양수, 1: 음수)                    |
+//! | `8`       | `d`       | 함수 내 변형 코드 (이제 1비트, 2종류)                     |
 //! | `7..=0`   | `amp`     | 8비트로 양자화된 접선 벡터의 크기(반지름)                 |
 
 pub const CAT_MASK: u32 = 0b11 << 20;
 pub const SUB_MASK: u32 = 0b11 << 18;
 pub const IDX_MASK: u32 = 0xFF << 10;
-pub const D_MASK:   u32 = 0b11 << 8;
+pub const SIGN_MASK: u32 = 0b1 << 9;
+pub const D_MASK: u32 = 0b1 << 8;
 pub const AMP_MASK: u32 = 0xFF;
 
-/// 22비트 정수 코드를 5개의 구성 파라미터 필드로 디코딩합니다.
+/// 22비트 정수 코드를 6개의 구성 파라미터 필드로 디코딩합니다.
 ///
 /// 이 함수는 직접 추론 커널과 같이 반복이 많은 루프에서
 /// 최고의 성능을 내기 위해 인라인되도록 설계되었습니다.
@@ -31,15 +33,16 @@ pub const AMP_MASK: u32 = 0xFF;
 /// * `code` - 압축된 22비트 코드를 담고 있는 32비트 정수.
 ///
 /// # 반환
-/// `(cat, sub, idx, d, amp)` 튜플.
+/// `(cat, sub, idx, sign, d, amp)` 튜플.
 #[inline(always)]
-pub fn decode(code: u32) -> (u8, u8, u8, u8, u8) {
+pub fn decode(code: u32) -> (u8, u8, u8, u8, u8, u8) {
     let cat = ((code & CAT_MASK) >> 20) as u8;
     let sub = ((code & SUB_MASK) >> 18) as u8;
     let idx = ((code & IDX_MASK) >> 10) as u8;
-    let d   = ((code & D_MASK) >> 8) as u8;
+    let sign = ((code & SIGN_MASK) >> 9) as u8;
+    let d = ((code & D_MASK) >> 8) as u8;
     let amp = (code & AMP_MASK) as u8;
-    (cat, sub, idx, d, amp)
+    (cat, sub, idx, sign, d, amp)
 }
 
 /// 개별 필드를 하나의 u32 코드로 인코딩합니다.
@@ -48,16 +51,18 @@ pub fn decode(code: u32) -> (u8, u8, u8, u8, u8) {
 /// * `cat` - 카테고리 (0-3)
 /// * `sub` - 서브카테고리 (0-3)
 /// * `idx` - 기저 인덱스 (0-255)
-/// * `d` - 추가 파라미터 (0-3)
+/// * `sign` - 부호 비트 (0: 양수, 1: 음수)
+/// * `d` - 추가 파라미터 (0-1)
 /// * `amp` - 진폭/반지름 (0-255)
 ///
 /// # 반환
 /// 22비트 인코딩된 u32 값
 #[inline]
-pub fn encode(cat: u8, sub: u8, idx: u8, d: u8, amp: u8) -> u32 {
-    ((cat as u32 & 0x3) << 20) |
-    ((sub as u32 & 0x3) << 18) |
-    ((idx as u32 & 0xFF) << 10) |
-    ((d as u32 & 0x3) << 8) |
-    (amp as u32 & 0xFF)
+pub fn encode(cat: u8, sub: u8, idx: u8, sign: u8, d: u8, amp: u8) -> u32 {
+    ((cat as u32 & 0x3) << 20)
+        | ((sub as u32 & 0x3) << 18)
+        | ((idx as u32 & 0xFF) << 10)
+        | ((sign as u32 & 0x1) << 9)
+        | ((d as u32 & 0x1) << 8)
+        | (amp as u32 & 0xFF)
 } 

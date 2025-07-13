@@ -60,3 +60,9 @@ maturin develop --release
 # 4. 테스트
 python tests/test.py
 ```
+
+
+```bash
+docker compose exec -it dev bash
+source ./.venv/bin/activate
+```

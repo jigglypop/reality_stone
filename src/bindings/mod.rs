@@ -2,6 +2,7 @@ pub mod mobius;
 pub mod poincare;
 pub mod lorentz;
 pub mod klein;
+pub mod bitfield;
 
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
@@ -18,5 +19,7 @@ pub fn _rust(_py: Python, m: &PyModule) -> PyResult<()> {
     lorentz::register(m)?;
     // Klein operations
     klein::register(m)?;
+    // Bitfield Linear Layer
+    m.add_class::<bitfield::PyBitfieldLinear>()?;
     Ok(())
 } 

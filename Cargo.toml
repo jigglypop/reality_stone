@@ -15,8 +15,8 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pyo3 = { version = "0.19", features = ["extension-module"] }
-numpy = "0.19"
 ndarray = { version = "0.15", features = ["rayon"] }
+numpy = "0.19"
 rayon = "1.7"
 num-traits = "0.2"
 num-integer = "0.1"
@@ -25,6 +25,7 @@ simba = "0.8"
 approx = "0.5"
 anyhow = "1.0"
 thiserror = "1.0"
+ndarray-rand = "0.15.0"
 
 [build-dependencies]
 cc = "1.0"

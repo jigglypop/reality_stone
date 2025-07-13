@@ -1,1 +1,9 @@
+MNIST
+.venv
+.ruff_cache
+.mypy_cache
+dist
+uv.lock
+Cargo.lock
 
+target

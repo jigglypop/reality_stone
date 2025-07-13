@@ -64,13 +64,15 @@ class BitfieldLinear(nn.Module):
     """
     
     def __init__(self, in_features: int, out_features: int, 
-                 basis_size: int = 256, r_max: float = 1.0):
+                 basis_size: int = 256, r_max: float = 1.0,
+                 use_bias: bool = True):
         """
         Args:
             in_features: 입력 피처 수
             out_features: 출력 피처 수  
             basis_size: 기저 벡터 테이블 크기 (기본값: 256)
             r_max: 최대 반지름 값 (기본값: 1.0)
+            use_bias: 바이어스 사용 여부 (기본값: True)
         """
         super().__init__()
         self.in_features = in_features
@@ -82,6 +84,12 @@ class BitfieldLinear(nn.Module):
         self.rust_layer = RustBitfieldLinear(
             out_features, in_features, basis_size, r_max
         )
+        
+        # 바이어스 (학습 가능)
+        if use_bias:
+            self.bias = nn.Parameter(torch.zeros(out_features))
+        else:
+            self.register_parameter('bias', None)
     
     @classmethod
     def from_linear(cls, linear: nn.Linear, basis_size: int = 256, r_max: float = 1.0):
@@ -98,17 +106,22 @@ class BitfieldLinear(nn.Module):
         """
         in_features = linear.in_features
         out_features = linear.out_features
+        use_bias = linear.bias is not None
         
         # 가중치를 numpy 배열로 변환
         weights = linear.weight.detach().cpu().numpy().astype(np.float32)
         
         # 새 인스턴스 생성
-        bitfield_layer = cls(in_features, out_features, basis_size, r_max)
+        bitfield_layer = cls(in_features, out_features, basis_size, r_max, use_bias)
         
         # Rust에서 가중치 압축
         bitfield_layer.rust_layer = RustBitfieldLinear.from_weights(
             weights, basis_size, r_max
         )
+        
+        # 바이어스 복사
+        if use_bias and linear.bias is not None:
+            bitfield_layer.bias.data = linear.bias.detach().clone()
         
         return bitfield_layer
     
@@ -122,8 +135,15 @@ class BitfieldLinear(nn.Module):
         # 반환
             `[batch_size, out_features]` 형태의 출력 텐서.
         """
-        return BitfieldLinearFunction.apply(x, self)
+        output = BitfieldLinearFunction.apply(x, self)
+        
+        # 바이어스 추가
+        if self.bias is not None:
+            output = output + self.bias
+            
+        return output
 
     def __repr__(self):
         return (f"BitfieldLinear(in_features={self.in_features}, "
-                f"out_features={self.out_features}, basis_size={self.basis_size})") 
+                f"out_features={self.out_features}, basis_size={self.basis_size}, "
+                f"bias={self.bias is not None})") 

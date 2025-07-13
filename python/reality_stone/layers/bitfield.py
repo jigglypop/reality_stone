@@ -5,62 +5,33 @@
 import torch
 import torch.nn as nn
 import numpy as np
+from typing import Optional, Tuple
 from torch.autograd import Function
 from reality_stone._rust import BitfieldLinear as RustBitfieldLinear
 
+# 전역 basis table 캐시 - 모든 레이어가 공유
+_BASIS_TABLE_CACHE = {}
 
 class BitfieldLinearFunction(Function):
     """
-    Rust로 구현된 비트필드 직접 추론 커널을 위한 autograd 함수.
+    Rust의 `tch-rs`를 사용하여 PyTorch 텐서를 직접 처리하는 autograd 함수.
+    GPU 텐서는 복사 없이 그대로 Rust로 전달되어 처리됩니다.
     """
-
     @staticmethod
     def forward(ctx, input, layer_instance):
-        """
-        순전파에서는 Rust 커널을 직접 호출합니다.
-        """
-        # autograd 그래프를 통해 역전파가 가능하도록 layer_instance를 저장합니다.
         ctx.layer_instance = layer_instance
-        ctx.input_shape = input.shape
         
-        # 입력 텐서를 contiguous numpy 배열로 변환하여 Rust 함수에 전달합니다.
-        input_np = input.contiguous().detach().cpu().numpy()
+        # Rust 레이어가 입력 텐서의 device를 자동으로 감지하여 처리
+        output = layer_instance.rust_layer.forward(input)
         
-        # 입력 텐서 차원에 따라 적절한 Rust 함수 호출
-        if input.ndim == 2:
-            # 2D 텐서: 기존 forward 함수 사용
-            output_np = layer_instance.rust_layer.forward(input_np)
-        else:
-            # 3D 이상 텐서: 다차원 지원 forward_nd 함수 사용
-            output_np = layer_instance.rust_layer.forward_nd(input_np)
-        
-        # 결과를 다시 PyTorch 텐서로 변환합니다.
-        output = torch.from_numpy(output_np).to(input.device)
         return output
 
     @staticmethod
     def backward(ctx, grad_output):
-        """
-        역전파에서는 Rust로 구현된 backward 함수를 호출하여
-        입력에 대한 그래디언트를 계산합니다.
-        """
-        # 순전파에서 저장된 layer_instance를 가져옵니다.
         layer_instance = ctx.layer_instance
-        input_shape = ctx.input_shape
         
-        # grad_output을 numpy 배열로 변환합니다.
-        grad_output_np = grad_output.contiguous().detach().cpu().numpy()
-        
-        # 입력 텐서 차원에 따라 적절한 Rust 함수 호출
-        if len(input_shape) == 2:
-            # 2D 텐서: 기존 backward 함수 사용
-            grad_input_np = layer_instance.rust_layer.backward(grad_output_np)
-        else:
-            # 3D 이상 텐서: 다차원 지원 backward_nd 함수 사용
-            grad_input_np = layer_instance.rust_layer.backward_nd(grad_output_np)
-        
-        # 결과를 PyTorch 텐서로 변환하여 반환합니다.
-        grad_input = torch.from_numpy(grad_input_np).to(grad_output.device)
+        # Rust 레이어가 grad_output의 device를 자동으로 감지하여 처리
+        grad_input = layer_instance.rust_layer.backward(grad_output)
         
         return grad_input, None
 
@@ -69,91 +40,155 @@ class BitfieldLinear(nn.Module):
     """
     비트필드 기반 압축 선형 레이어.
     
-    가중치를 22비트 비트필드로 압축하여 저장하고, 
+    가중치를 32비트 비트필드로 압축하여 저장하고, 
     직접 추론 커널로 순전파를 수행합니다.
+    
+    Args:
+        in_features: 입력 특성 수
+        out_features: 출력 특성 수
+        basis_size: 기저 벡터 테이블 크기 (기본값: 256)
+        r_max: 최대 반지름 값 (기본값: 1.0)
+        use_bias: 바이어스 사용 여부 (기본값: True)
+        use_cuda: CUDA 사용 여부 (기본값: None, 자동 감지)
     """
 
     def __init__(self, in_features: int, out_features: int, 
-                 basis_size: int = 256, r_max: float = 1.0,
-                 use_bias: bool = True):
+                 use_bias: bool = True, basis_size: int = 256, r_max: float = 1.0):
         super().__init__()
         
         self.in_features = in_features
         self.out_features = out_features
+        
         self.basis_size = basis_size
         self.r_max = r_max
+        self.rust_layer = None
         
-        # Rust 백엔드 레이어 초기화
+        # GPU 텐서들 (lazy initialization)
+        self.codes_gpu = None
+        self.basis_table_gpu = None
+        self.residual_codes_gpu = None
+        self.residual_int8_gpu = None
+        self.residual_scales_gpu = None
+        self.delta = None
+        self.residual_delta = None
+        
         self.rust_layer = RustBitfieldLinear(out_features, in_features, basis_size, r_max)
         
-        # 바이어스 파라미터 (선택적)
         if use_bias:
             self.bias = nn.Parameter(torch.zeros(out_features))
         else:
             self.register_parameter('bias', None)
 
     @classmethod
-    def from_linear(cls, linear: nn.Linear, basis_size: int = 256, r_max: float = 1.0):
-        """
-        기존 nn.Linear 레이어를 BitfieldLinear로 변환합니다.
+    def from_linear(cls, linear: nn.Linear, basis_size: int = 256, r_max: float = 1.0, 
+                   use_residual: bool = True) -> 'BitfieldLinear':
+        """기존 Linear 레이어를 BitfieldLinear로 변환합니다.
         
-        # 인자
+        Args:
             linear: 변환할 nn.Linear 레이어
-            basis_size: 기저 벡터 테이블 크기 (기본값: 256)
+            basis_size: 기저 벡터 개수 (기본값: 256)
             r_max: 최대 반지름 값 (기본값: 1.0)
-        
-        # 반환
-            변환된 BitfieldLinear 레이어
+            use_cuda: CUDA 사용 여부 (None이면 자동 감지)
+            use_residual: 잔차 가중치 사용 여부 (False면 극한 압축)
+            
+        Returns:
+            압축된 BitfieldLinear 레이어
         """
         use_bias = linear.bias is not None
         
-        # 가중치를 numpy 배열로 변환
+        # 가중치를 numpy로 변환
         weight_np = linear.weight.detach().cpu().numpy()
+        bias_np = linear.bias.detach().cpu().numpy() if use_bias else None
         
-        # Rust 백엔드로 가중치 압축
-        rust_layer = RustBitfieldLinear.from_weights(weight_np, basis_size, r_max)
+        # Rust BitfieldLinear 생성
+        rust_layer = RustBitfieldLinear.from_weights(
+            weight_np, bias_np, basis_size, r_max, use_residual
+        )
+        
+        # CUDA 사용 설정
+        use_cuda = linear.weight.is_cuda
+        rust_layer.set_use_cuda(use_cuda)
+        
+        if use_cuda:
+            print(f"  CUDA 가속 활성화됨")
+            # GPU 메모리 초기화
+            rust_layer.init_gpu_memory()
         
         # 새로운 BitfieldLinear 생성
-        bitfield_layer = cls(linear.in_features, linear.out_features, 
-                           basis_size, r_max, use_bias)
+        bitfield = cls(
+            in_features=linear.in_features,
+            out_features=linear.out_features,
+            basis_size=basis_size,
+            r_max=r_max,
+            use_bias=use_bias,
+            # use_cuda=use_cuda # This line is removed
+        )
         
-        # 압축된 Rust 레이어 할당
-        bitfield_layer.rust_layer = rust_layer
+        bitfield.rust_layer = rust_layer
         
-        # 바이어스 복사
-        if use_bias and linear.bias is not None:
-            bitfield_layer.bias.data = linear.bias.detach().clone()
+        # 원본 bias 저장
+        if use_bias:
+            bitfield.bias.data = torch.from_numpy(bias_np)
         
-        return bitfield_layer
+        # 압축 정보 출력
+        original_size = linear.in_features * linear.out_features * 4 / 1024  # KB
+        
+        if use_residual:
+            # 압축 크기: codes + residuals + scales (basis table은 공유되므로 제외)
+            compressed_size = (
+                linear.out_features * 4 +  # codes
+                linear.out_features * linear.in_features * 1 +  # residual_weights_int8
+                linear.out_features * 4  # residual_scales
+            ) / 1024  # KB
+        else:
+            # 극한 압축: codes만 저장
+            compressed_size = linear.out_features * 4 / 1024  # KB
+        
+        print(f"  압축 정보: original {original_size:.2f} KB -> compressed {compressed_size:.2f} KB")
+        print(f"  압축률: {original_size / compressed_size:.1f}x")
+        if not use_residual:
+            print(f"  극한 압축 모드 활성화 (잔차 없음)")
+        
+        return bitfield
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        순전파를 수행합니다.
-
-        # 인자
-            input: `[batch_size, in_features]` 또는 `[batch_size, seq_len, in_features]` 형태의 입력 텐서.
-
-        # 반환
-            `[batch_size, out_features]` 또는 `[batch_size, seq_len, out_features]` 형태의 출력 텐서.
-        """
-        # 입력 차원 확인
-        if x.ndim < 2:
-            raise ValueError(f"입력 텐서는 최소 2차원이어야 합니다. 현재: {x.ndim}차원")
-        
-        # 마지막 차원이 in_features와 일치하는지 확인
-        if x.shape[-1] != self.in_features:
-            raise ValueError(f"입력 텐서의 마지막 차원은 {self.in_features}이어야 합니다. 현재: {x.shape[-1]}")
-        
         # BitfieldLinearFunction을 통해 순전파 수행
         output = BitfieldLinearFunction.apply(x, self)
         
-        # 바이어스 추가
-        if self.bias is not None:
-            output = output + self.bias
-            
         return output
+    
+    def to(self, *args, **kwargs):
+        """
+        레이어를 특정 장치로 이동시키고, Rust 백엔드의 CUDA 사용 상태를 동기화합니다.
+        """
+        result = super().to(*args, **kwargs)
 
+        device = None
+        if 'device' in kwargs:
+            device = kwargs['device']
+        elif len(args) > 0 and args[0] is not None:
+            device = args[0]
+        
+        if device is not None:
+            device = torch.device(device)
+            if device.type == 'cuda':
+                self.rust_layer.set_use_cuda(True)
+                # GPU로 이동 시 GPU 메모리 초기화
+                try:
+                    self.rust_layer.init_gpu_memory()
+                except Exception as e:
+                    print(f"경고: GPU 메모리 초기화 실패: {e}")
+                    self.rust_layer.set_use_cuda(False)
+            else:
+                self.rust_layer.set_use_cuda(False)
+        
+        return result
+
+    def is_cuda_enabled(self) -> bool:
+        """CUDA 사용 여부를 반환합니다."""
+        return self.rust_layer.use_cuda()
+    
     def __repr__(self):
         return (f"BitfieldLinear(in_features={self.in_features}, "
-                f"out_features={self.out_features}, basis_size={self.basis_size}, "
-                f"bias={self.bias is not None})") 
+                f"out_features={self.out_features}, "
+                f"bias={self.bias is not None}, use_cuda={self.rust_layer.use_cuda()})") 

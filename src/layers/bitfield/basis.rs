@@ -26,19 +26,60 @@ pub fn load_basis_table(b: usize, n: usize) -> Array2<f32> {
         basis[[i, i]] = 1.0;
     }
     
-    // 나머지는 정규화된 벡터로 채움
+    // 나머지는 다양한 패턴의 정규화된 벡터로 채움
     if b > n {
-        // 간단한 패턴으로 생성 (실제로는 SVD나 학습된 기저를 사용해야 함)
+        use std::f32::consts::PI;
+        
         for i in n..b {
-            // 두 개의 차원을 조합하여 새로운 방향 생성
-            let idx1 = i % n;
-            let idx2 = (i / n) % n;
-            if idx1 != idx2 {
-                basis[[i, idx1]] = 0.707107;  // 1/sqrt(2)
-                basis[[i, idx2]] = 0.707107;
-            } else {
-                // 하나의 차원만 사용
-                basis[[i, idx1]] = 1.0;
+            let pattern_idx = (i - n) % 4;
+            match pattern_idx {
+                0 => {
+                    // 두 차원 조합 (균등)
+                    let idx1 = i % n;
+                    let idx2 = (i * 7 + 3) % n;
+                    if idx1 != idx2 {
+                        basis[[i, idx1]] = 0.707107;  // 1/sqrt(2)
+                        basis[[i, idx2]] = 0.707107;
+                    } else {
+                        basis[[i, idx1]] = 1.0;
+                    }
+                },
+                1 => {
+                    // 삼각 함수 패턴
+                    for j in 0..n {
+                        let phase = 2.0 * PI * (i as f32) * (j as f32) / (n as f32);
+                        basis[[i, j]] = phase.cos() / (n as f32).sqrt();
+                    }
+                },
+                2 => {
+                    // 희소 패턴 (3개 차원만 활성)
+                    let idx1 = (i * 5) % n;
+                    let idx2 = (i * 11) % n;
+                    let idx3 = (i * 17) % n;
+                    basis[[i, idx1]] = 0.577;  // 1/sqrt(3)
+                    if idx2 != idx1 {
+                        basis[[i, idx2]] = 0.577;
+                    }
+                    if idx3 != idx1 && idx3 != idx2 {
+                        basis[[i, idx3]] = 0.577;
+                    }
+                },
+                _ => {
+                    // 랜덤 가우시안
+                    let mut sum = 0.0;
+                    for j in 0..n {
+                        let val = ((i * 13 + j * 7) % 100) as f32 / 50.0 - 1.0;
+                        basis[[i, j]] = val;
+                        sum += val * val;
+                    }
+                    // 정규화
+                    if sum > 1e-6 {
+                        let norm = sum.sqrt();
+                        for j in 0..n {
+                            basis[[i, j]] /= norm;
+                        }
+                    }
+                }
             }
         }
     }

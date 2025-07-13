@@ -13,11 +13,13 @@
 /// * `sub` - 기저 함수 족 코드 (0: 기본, 1: 쌍곡, 2: 삼각, 3: 지수/로그)
 /// * `d` - 도함수 차수 또는 변형 코드
 /// * `r` - 반지름을 나타내는 스칼라 `f32` 값.
+/// * `phase` - 위상 값 (0-255를 0-2π로 매핑).
 ///
 /// # 반환
 /// 계산된 스케일링 인자를 담은 스칼라 `f32` 값.
-pub fn lookup_and_apply(cat: u8, sub: u8, d: u8, r: f32) -> f32 {
+pub fn lookup_and_apply(cat: u8, sub: u8, d: u8, r: f32, phase: u8) -> f32 {
     const EPS: f32 = 1e-7;
+    let phase_rad = (phase as f32 / 255.0) * 2.0 * std::f32::consts::PI;
     
     match cat {
         0 => {
@@ -38,10 +40,10 @@ pub fn lookup_and_apply(cat: u8, sub: u8, d: u8, r: f32) -> f32 {
                     }
                 },
                 2 => {
-                    // 삼각 함수족 (sin, cos)
+                    // 삼각 함수족 (sin, cos) - 위상 사용
                     match d {
-                        0 => r.sin() / r.max(EPS),      // sin(r)/r (sinc)
-                        _ => r.cos(),                    // cos(r)
+                        0 => r.sin() * phase_rad.cos() / r.max(EPS),  // sin(r)cos(φ)/r
+                        _ => r.cos() * phase_rad.sin(),               // cos(r)sin(φ)
                     }
                 },
                 _ => {
@@ -71,10 +73,10 @@ pub fn lookup_and_apply(cat: u8, sub: u8, d: u8, r: f32) -> f32 {
                     }
                 },
                 2 => {
-                    // 혼합 함수
+                    // 혼합 함수 - 위상 사용
                     match d {
-                        0 => r.sinh() * r.sin(),        // sinh(r)*sin(r)
-                        _ => (r.sinh() + r.sin()) * 0.5, // (sinh(r)+sin(r))/2
+                        0 => r.sinh() * (r + phase_rad).sin(),        // sinh(r)*sin(r+φ)
+                        _ => (r.sinh() + (r + phase_rad).sin()) * 0.5, // (sinh(r)+sin(r+φ))/2
                     }
                 },
                 _ => {
@@ -120,8 +122,8 @@ pub fn lookup_and_apply(cat: u8, sub: u8, d: u8, r: f32) -> f32 {
                     }
                 },
                 _ => {
-                    // 주기적 변조 (d 사용 안함)
-                    (r * std::f32::consts::PI).sin() // sin(πr)
+                    // 주기적 변조 - 위상 사용
+                    ((r + phase_rad / std::f32::consts::PI) * std::f32::consts::PI).sin() // sin(π(r+φ/π))
                 }
             }
         }

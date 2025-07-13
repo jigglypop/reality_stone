@@ -34,6 +34,12 @@ RUN pip install --upgrade pip setuptools wheel && \
 # uv로 maturin 설치
 RUN uv pip install maturin patchelf
 
+# PyTorch 및 LibTorch 설치 (LibTorch 수동 설치 제거)
+RUN pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+
+# tch가 Python의 PyTorch를 사용하도록 설정
+ENV LIBTORCH_USE_PYTORCH=1
+
 # CUDA 환경 설정
 ENV CUDA_PATH=/usr/local/cuda \
     CUDA_HOME=/usr/local/cuda \
@@ -52,8 +58,7 @@ RUN mkdir src && \
 
 # Python 의존성 설치
 COPY requirements.txt* ./
-RUN pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121 && \
-    pip install numpy
+RUN pip install numpy
 
 # 개발 도구 설치
 RUN pip install pytest ipython jupyter notebook

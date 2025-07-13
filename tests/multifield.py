@@ -5,7 +5,9 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 import numpy as np
+import time
 from reality_stone.layers import BitfieldLinear
+import torch.nn.functional as F
 
 def load_electricity_dataset():
     print("\n=== 전기 소비 시계열 데이터셋 로드 ===")
@@ -390,57 +392,165 @@ def test_action_recognition_4d():
 
 
 def test_compression_performance():
-    """압축 성능 종합 분석"""
-    print("\n=== 압축 성능 종합 분석 ===")
+    """압축 성능을 다차원 텐서에 대해 테스트합니다."""
+    print("\n=== 압축 성능 종합 분석 ===\n")
     
-    # 다양한 설정으로 테스트
-    test_cases = [
-        (128, 64, 2, "Small 2D"),
-        (512, 256, 2, "Large 2D"),
-        (128, 64, 3, "Small 3D"),
-        (256, 128, 4, "Medium 4D"),
+    ndim_configs = [
+        (2, "Small 2D"),
+        (3, "Medium 3D"),
+        (4, "Large 4D")
     ]
     
-    for in_feat, out_feat, ndim, name in test_cases:
+    for ndim, name in ndim_configs:
+        in_feat, out_feat = (128, 64) if ndim == 2 else (64, 32)
         print(f"\n{name} ({in_feat}→{out_feat}, {ndim}D):")
         
-        # 원본 레이어
         linear = nn.Linear(in_feat, out_feat)
         
-        # 테스트할 basis_size들
+        if ndim == 2:
+            x = torch.randn(32, in_feat)
+        elif ndim == 3:
+            x = torch.randn(16, 8, in_feat)
+        else: # ndim == 4
+            x = torch.randn(8, 4, 4, in_feat)
+            
         basis_sizes = [64, 128, 256]
-        
+
         for basis_size in basis_sizes:
             bitfield = BitfieldLinear.from_linear(linear, basis_size=basis_size, r_max=2.0)
             
-            # 적절한 shape 생성
-            if ndim == 2:
-                x = torch.randn(32, in_feat)
-            elif ndim == 3:
-                x = torch.randn(16, 8, in_feat)
-            elif ndim == 4:
-                x = torch.randn(8, 4, 4, in_feat)
+            # GPU로 이동 (가능한 경우)
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            x_device = x.to(device)
+            linear_device = linear.to(device)
+            bitfield_device = bitfield.to(device)
             
-            # 순전파
-            with torch.no_grad():
-                y_orig = linear(x)
-                y_bit = bitfield(x)
+            # 워밍업
+            for _ in range(10):
+                _ = linear_device(x_device)
+                _ = bitfield_device(x_device)
             
-            # 메트릭 계산
-            mse = torch.mean((y_orig - y_bit) ** 2).item()
-            rel_error = (torch.norm(y_orig - y_bit) / torch.norm(y_orig)).item()
-            cosine_sim = torch.cosine_similarity(
-                y_orig.view(-1).unsqueeze(0),
-                y_bit.view(-1).unsqueeze(0)
-            ).item()
+            # 시간 측정
+            torch.cuda.synchronize() if device == 'cuda' else None
+            start = time.time()
+            for _ in range(100):
+                y_orig_timed = linear_device(x_device)
+            torch.cuda.synchronize() if device == 'cuda' else None
+            standard_time = (time.time() - start) / 100
+
+            torch.cuda.synchronize() if device == 'cuda' else None
+            start = time.time()
+            for _ in range(100):
+                y_bit_timed = bitfield_device(x_device)
+            torch.cuda.synchronize() if device == 'cuda' else None
+            bitfield_time = (time.time() - start) / 100
+
+            # 정확도 (MSE) 계산
+            y_orig = linear_device(x_device)
+            y_bit = bitfield_device(x_device)
+            mse = F.mse_loss(y_bit, y_orig).item()
             
-            # 압축률
-            original_params = in_feat * out_feat * 32
-            compressed_params = out_feat * 22
-            compression_ratio = original_params / compressed_params
-            
-            print(f"  basis_size={basis_size}: MSE={mse:.6f}, 상대오차={rel_error:.2%}, "
-                  f"코사인유사도={cosine_sim:.4f}, 압축률={compression_ratio:.1f}x")
+            original_size = in_feat * out_feat * 4
+            compressed_size = out_feat * 4 + out_feat * in_feat * 1 + out_feat * 4
+            compression_ratio = original_size / compressed_size
+            speedup = standard_time / bitfield_time
+
+            print(f"  기저 {basis_size}: MSE={mse:.6f}, "
+                  f"압축률={compression_ratio:.1f}x, 속도={speedup:.2f}x "
+                  f"({standard_time*1000:.3f}ms vs {bitfield_time*1000:.3f}ms)")
+
+
+def test_extreme_compression():
+    """극한 압축 모드 테스트 (잔차 없음)"""
+    print("\n=== 극한 압축 모드 테스트 ===\n")
+    
+    # 다양한 크기의 레이어 테스트
+    test_configs = [
+        (512, 256, "Medium"),
+        (1024, 512, "Large"),
+        (2048, 1024, "XLarge"),
+    ]
+    
+    for in_feat, out_feat, name in test_configs:
+        print(f"\n{name} Layer ({in_feat}→{out_feat}):")
+        
+        # Standard Linear
+        linear = nn.Linear(in_feat, out_feat)
+        
+        # 일반 압축 (잔차 포함)
+        bitfield_with_res = BitfieldLinear.from_linear(
+            linear, basis_size=256, r_max=2.0, use_residual=True
+        )
+        
+        # 극한 압축 (잔차 없음)
+        bitfield_no_res = BitfieldLinear.from_linear(
+            linear, basis_size=256, r_max=2.0, use_residual=False
+        )
+        
+        # 테스트 입력
+        x = torch.randn(32, in_feat)
+        
+        with torch.no_grad():
+            y_orig = linear(x)
+            y_with_res = bitfield_with_res(x)
+            y_no_res = bitfield_no_res(x)
+        
+        # 오차 계산
+        mse_with_res = F.mse_loss(y_with_res, y_orig).item()
+        mse_no_res = F.mse_loss(y_no_res, y_orig).item()
+        
+        print(f"  MSE (잔차 포함): {mse_with_res:.6f}")
+        print(f"  MSE (잔차 없음): {mse_no_res:.6f}")
+        
+        # 이론적 압축률 계산
+        original_size = in_feat * out_feat * 4 / 1024  # KB
+        compressed_with_res = (out_feat * 4 + out_feat * in_feat + out_feat * 4) / 1024
+        compressed_no_res = out_feat * 4 / 1024
+        
+        print(f"  압축률 (잔차 포함): {original_size / compressed_with_res:.1f}x")
+        print(f"  압축률 (잔차 없음): {original_size / compressed_no_res:.1f}x")
+        
+        # 속도 측정
+        import time
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        x_device = x.to(device)
+        linear_device = linear.to(device)
+        bitfield_with_res_device = bitfield_with_res.to(device)
+        bitfield_no_res_device = bitfield_no_res.to(device)
+        
+        # 워밍업
+        for _ in range(10):
+            _ = linear_device(x_device)
+            _ = bitfield_with_res_device(x_device)
+            _ = bitfield_no_res_device(x_device)
+        
+        # Standard Linear 속도
+        torch.cuda.synchronize() if device == 'cuda' else None
+        start = time.time()
+        for _ in range(100):
+            _ = linear_device(x_device)
+        torch.cuda.synchronize() if device == 'cuda' else None
+        linear_time = (time.time() - start) / 100
+        
+        # BitfieldLinear (잔차 포함) 속도
+        torch.cuda.synchronize() if device == 'cuda' else None
+        start = time.time()
+        for _ in range(100):
+            _ = bitfield_with_res_device(x_device)
+        torch.cuda.synchronize() if device == 'cuda' else None
+        bitfield_with_res_time = (time.time() - start) / 100
+        
+        # BitfieldLinear (잔차 없음) 속도
+        torch.cuda.synchronize() if device == 'cuda' else None
+        start = time.time()
+        for _ in range(100):
+            _ = bitfield_no_res_device(x_device)
+        torch.cuda.synchronize() if device == 'cuda' else None
+        bitfield_no_res_time = (time.time() - start) / 100
+        
+        print(f"  속도 (Linear): {linear_time*1000:.3f} ms")
+        print(f"  속도 (잔차 포함): {bitfield_with_res_time*1000:.3f} ms ({linear_time/bitfield_with_res_time:.2f}x)")
+        print(f"  속도 (잔차 없음): {bitfield_no_res_time*1000:.3f} ms ({linear_time/bitfield_no_res_time:.2f}x)")
 
 
 if __name__ == "__main__":
@@ -452,5 +562,6 @@ if __name__ == "__main__":
     
     # 압축 성능 분석
     test_compression_performance()
+    test_extreme_compression()  # 새로운 테스트 추가
     
     print("\n✓ 모든 테스트 완료!") 

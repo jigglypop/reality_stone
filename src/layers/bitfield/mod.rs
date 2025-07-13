@@ -24,6 +24,9 @@ pub struct GpuBuffers {
     // INT8 잔차 GPU 메모리
     pub residual_int8_gpu: *mut i8,
     pub residual_scales_gpu: *mut f32,
+    // INT8 기저 테이블 (새로 추가)
+    pub basis_table_int8_gpu: *mut i8,
+    pub basis_scales_gpu: *mut f32,
     // 입출력 버퍼 풀
     pub input_buffer_gpu: *mut f32,
     pub output_buffer_gpu: *mut f32,
@@ -51,7 +54,11 @@ pub struct BitfieldLinear {
     // INT8 잔차
     residual_int8: Option<Array2<i8>>,   // [m, n]
     residual_scales: Option<Array1<f32>>, // [m]
+    // INT8 기저 테이블 (새로 추가)
+    basis_table_int8: Option<Array2<i8>>,   // [b, n]
+    basis_scales: Option<Array1<f32>>,      // [b] - 각 기저 벡터의 스케일
     pub use_cuda: bool,
+    pub use_int8: bool,  // INT8 최적화 사용 여부
     #[cfg(feature = "cuda")]
     gpu_buffers: Option<GpuBuffers>,
 }
@@ -85,7 +92,10 @@ impl BitfieldLinear {
             residual_delta: None,
             residual_int8: None,
             residual_scales: None,
+            basis_table_int8: None,
+            basis_scales: None,
             use_cuda: false,
+            use_int8: false,
             #[cfg(feature = "cuda")]
             gpu_buffers: None,
         }
@@ -352,7 +362,10 @@ impl BitfieldLinear {
             residual_delta,
             residual_int8,
             residual_scales,
+            basis_table_int8: None,
+            basis_scales: None,
             use_cuda: use_cuda,
+            use_int8: false,
             #[cfg(feature = "cuda")]
             gpu_buffers: None,
         }
@@ -406,6 +419,31 @@ impl BitfieldLinear {
                 (std::ptr::null_mut(), std::ptr::null_mut())
             };
             
+            // INT8 기저 테이블 메모리 할당
+            let (basis_table_int8_gpu, basis_scales_gpu) = if let (Some(ref basis_int8), Some(ref basis_scales)) = 
+                (&self.basis_table_int8, &self.basis_scales) {
+                let int8_size = basis_int8.len() * std::mem::size_of::<i8>();
+                let scales_size = basis_scales.len() * std::mem::size_of::<f32>();
+                let int8_gpu = kernel::cuda_malloc(int8_size) as *mut i8;
+                let scales_gpu = kernel::cuda_malloc(scales_size);
+                
+                // 데이터 복사
+                kernel::cuda_memcpy_h2d(
+                    int8_gpu as *mut f32,
+                    basis_int8.as_ptr() as *const f32,
+                    int8_size,
+                );
+                kernel::cuda_memcpy_h2d(
+                    scales_gpu,
+                    basis_scales.as_ptr(),
+                    scales_size,
+                );
+                
+                (int8_gpu, scales_gpu)
+            } else {
+                (std::ptr::null_mut(), std::ptr::null_mut())
+            };
+            
             // 입력/출력 버퍼 풀 할당 (최대 배치 크기 64 가정)
             let max_batch_size = 64;
             let input_buffer_size = max_batch_size * self.n * std::mem::size_of::<f32>();
@@ -444,6 +482,8 @@ impl BitfieldLinear {
                 residual_codes_gpu,
                 residual_int8_gpu,
                 residual_scales_gpu,
+                basis_table_int8_gpu,
+                basis_scales_gpu,
                 input_buffer_gpu,
                 output_buffer_gpu,
                 stream,
@@ -466,25 +506,46 @@ impl BitfieldLinear {
         if self.use_cuda {
             if self.gpu_buffers.is_none() { self.init_gpu_memory(); }
             if let Some(ref buffers) = self.gpu_buffers {
-                let residual_delta = self.residual_delta.unwrap_or(self.delta);
-                
-                // 최적화된 GPU 추론 사용
-                let output = kernel::gemm_hyper_bit_gpu_optimized(
-                    x,
-                    buffers.codes_gpu,
-                    buffers.basis_table_gpu,
-                    buffers.residual_codes_gpu, // 영구 버퍼 사용
-                    self.delta,
-                    residual_delta,
-                    buffers.input_buffer_gpu,
-                    buffers.output_buffer_gpu,
-                    buffers.stream,
-                    self.m,
-                    self.n,
-                    self.basis_table.shape()[0],
-                );
-                
-                return output;
+                // INT8 최적화 사용 여부 확인
+                if self.use_int8 && !buffers.basis_table_int8_gpu.is_null() {
+                    // INT8 최적화된 커널 사용
+                    let output = kernel::gemm_hyper_bit_gpu_int8_optimized(
+                        x,
+                        buffers.codes_gpu,
+                        buffers.basis_table_int8_gpu,
+                        buffers.basis_scales_gpu,
+                        self.delta,
+                        buffers.input_buffer_gpu,
+                        buffers.output_buffer_gpu,
+                        buffers.stream,
+                        self.m,
+                        self.n,
+                        self.basis_table.shape()[0],
+                    );
+                    
+                    // TODO: INT8 잔차 처리 추가
+                    return output;
+                } else {
+                    // 기존 FP32 커널 사용
+                    let residual_delta = self.residual_delta.unwrap_or(self.delta);
+                    
+                    let output = kernel::gemm_hyper_bit_gpu_optimized(
+                        x,
+                        buffers.codes_gpu,
+                        buffers.basis_table_gpu,
+                        buffers.residual_codes_gpu,
+                        self.delta,
+                        residual_delta,
+                        buffers.input_buffer_gpu,
+                        buffers.output_buffer_gpu,
+                        buffers.stream,
+                        self.m,
+                        self.n,
+                        self.basis_table.shape()[0],
+                    );
+                    
+                    return output;
+                }
             }
         }
         
@@ -663,12 +724,9 @@ impl BitfieldLinear {
         for i in 0..self.m {
             let code = self.codes[i];
             let (cat, sub, idx, sign, d, amp, amp_fine, phase) = decoder::decode(code);
-
             let r_val = (amp as f32 * 4.0 + amp_fine as f32) * self.delta;
             let signed_r_val = if sign == 0 { r_val } else { -r_val };
-            
             let scale_factor = ops::lookup_and_apply(cat, sub, d, signed_r_val, phase);
-            
             let basis_vector = self.basis_table.row(idx as usize);
             let weight_row = &basis_vector * scale_factor;
             
@@ -682,13 +740,14 @@ impl BitfieldLinear {
                 // 비트필드 잔차는 개별 코드당 reconstruct 필요 -> 간략화: 무시(0) 에 대하여 skip
                 let res_code = res_codes[i];
                 if res_code == 0 { continue; }
-                let (cat, sub, idx, sign, d, amp, amp_fine, phase) = decoder::decode(res_code);
-                let r_val = (amp as f32 * 4.0 + amp_fine as f32) * scale;
-                let signed_r_val = if sign == 0 { r_val } else { -r_val };
-                let scale_factor = ops::lookup_and_apply(cat, sub, d, signed_r_val, phase);
-                let basis_vector = self.basis_table.row(idx as usize);
+                
+                let (res_cat, res_sub, res_idx, res_sign, res_d, res_amp, res_amp_fine, res_phase) = decoder::decode(res_code);
+                let res_r_val = (res_amp as f32 * 4.0 + res_amp_fine as f32) * scale;
+                let res_signed_r_val = if res_sign == 0 { res_r_val } else { -res_r_val };
+                let res_scale_factor = ops::lookup_and_apply(res_cat, res_sub, res_d, res_signed_r_val, res_phase);
+                let res_basis_vector = self.basis_table.row(res_idx as usize);
                 for j in 0..self.n {
-                    w_matrix[[i, j]] += basis_vector[j] * scale_factor;
+                    w_matrix[[i, j]] += res_basis_vector[j] * res_scale_factor;
                 }
             }
         } else if let (Some(res_int8), Some(scales)) = (&self.residual_int8, &self.residual_scales) {
@@ -734,6 +793,65 @@ impl BitfieldLinear {
     pub fn get_gpu_buffers_mut(&mut self) -> Option<&mut GpuBuffers> {
         self.gpu_buffers.as_mut()
     }
+
+    /// 기저 테이블을 INT8로 양자화합니다.
+    /// 
+    /// # 인자
+    /// * `basis_table` - FP32 기저 테이블
+    /// 
+    /// # 반환
+    /// (INT8 테이블, 스케일 팩터) 튜플
+    fn quantize_to_int8(basis_table: &Array2<f32>) -> (Array2<i8>, Array1<f32>) {
+        let (b, n) = (basis_table.shape()[0], basis_table.shape()[1]);
+        let mut int8_table = Array2::<i8>::zeros((b, n));
+        let mut scales = Array1::<f32>::zeros(b);
+        
+        for i in 0..b {
+            let row = basis_table.row(i);
+            
+            // 행별 최대 절댓값 찾기
+            let max_abs = row.iter()
+                .map(|&x| x.abs())
+                .fold(0.0f32, f32::max);
+            
+            // 스케일 팩터 계산 (127로 나누어 INT8 범위에 맞춤)
+            let scale = if max_abs > 1e-8 {
+                max_abs / 127.0
+            } else {
+                1.0
+            };
+            scales[i] = scale;
+            
+            // 양자화
+            for j in 0..n {
+                let quantized = (row[j] / scale).round().clamp(-128.0, 127.0) as i8;
+                int8_table[[i, j]] = quantized;
+            }
+        }
+        
+        (int8_table, scales)
+    }
+
+    /// INT8 최적화를 활성화합니다.
+    /// 기저 테이블을 INT8로 양자화하고 GPU 메모리에 업로드합니다.
+    pub fn enable_int8_optimization(&mut self) {
+        if self.use_int8 {
+            return; // 이미 활성화됨
+        }
+        
+        // 기저 테이블 INT8 양자화
+        let (int8_table, scales) = Self::quantize_to_int8(&self.basis_table);
+        self.basis_table_int8 = Some(int8_table);
+        self.basis_scales = Some(scales);
+        self.use_int8 = true;
+        
+        println!("INT8 최적화 활성화: 기저 테이블 양자화 완료");
+        println!("  - 원본 크기: {:.2} KB", 
+                 self.basis_table.len() * 4 / 1024);
+        println!("  - INT8 크기: {:.2} KB", 
+                 self.basis_table.len() / 1024);
+        println!("  - 메모리 절감: {:.1}x", 4.0);
+    }
 }
 
 // GPU 메모리 정리를 위한 Drop 구현
@@ -759,6 +877,12 @@ impl Drop for BitfieldLinear {
                 }
                 if !buffers.residual_scales_gpu.is_null() {
                     kernel::cuda_free(buffers.residual_scales_gpu);
+                }
+                if !buffers.basis_table_int8_gpu.is_null() {
+                    kernel::cuda_free(buffers.basis_table_int8_gpu);
+                }
+                if !buffers.basis_scales_gpu.is_null() {
+                    kernel::cuda_free(buffers.basis_scales_gpu);
                 }
                 if !buffers.input_buffer_gpu.is_null() {
                     kernel::cuda_free(buffers.input_buffer_gpu);

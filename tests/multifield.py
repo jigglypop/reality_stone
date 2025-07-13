@@ -81,14 +81,18 @@ def test_electricity_3d():
     
     # 시계열 분류 모델
     class TimeSeriesClassifier(nn.Module):
-        def __init__(self, input_size, hidden_size, num_classes, use_bitfield=False):
+        def __init__(self, input_size, hidden_size, num_classes, use_bitfield=False, use_int8=False):
             super().__init__()
             self.use_bitfield = use_bitfield
+            self.use_int8 = use_int8
             
             # 시계열 인코더
             if use_bitfield:
                 fc1 = nn.Linear(input_size, hidden_size)
                 self.encoder = BitfieldLinear.from_linear(fc1, basis_size=128, r_max=2.0)
+                # INT8 최적화 활성화
+                if use_int8:
+                    self.encoder.enable_int8_optimization()
             else:
                 self.encoder = nn.Linear(input_size, hidden_size)
             
@@ -130,14 +134,16 @@ def test_electricity_3d():
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     
-    # 두 모델 비교
+    # 세 모델 비교
     results = {}
     
-    for use_bitfield in [False, True]:
-        model_name = "BitfieldLinear" if use_bitfield else "Standard Linear"
-        print(f"\n{model_name} 학습:")
+    for model_type in ["Standard", "Bitfield", "Bitfield+INT8"]:
+        use_bitfield = model_type != "Standard"
+        use_int8 = model_type == "Bitfield+INT8"
         
-        model = TimeSeriesClassifier(n_features, hidden_size, num_classes, use_bitfield)
+        print(f"\n{model_type} 학습:")
+        
+        model = TimeSeriesClassifier(n_features, hidden_size, num_classes, use_bitfield, use_int8)
         optimizer = optim.Adam(model.parameters(), lr=0.001)
         criterion = nn.CrossEntropyLoss()
         
@@ -175,13 +181,13 @@ def test_electricity_3d():
             
             model.train()
         
-        results[model_name] = best_acc
+        results[model_type] = best_acc
         print(f"  최고 정확도: {best_acc:.1f}%")
     
     print(f"\n결과 비교:")
-    print(f"Standard Linear: {results['Standard Linear']:.1f}%")
-    print(f"BitfieldLinear: {results['BitfieldLinear']:.1f}%")
-    print(f"정확도 차이: {abs(results['Standard Linear'] - results['BitfieldLinear']):.1f}%")
+    print(f"Standard Linear: {results['Standard']:.1f}%")
+    print(f"BitfieldLinear: {results['Bitfield']:.1f}%")
+    print(f"BitfieldLinear+INT8: {results['Bitfield+INT8']:.1f}%")
 
 
 def create_action_recognition_data():
@@ -553,6 +559,105 @@ def test_extreme_compression():
         print(f"  속도 (잔차 없음): {bitfield_no_res_time*1000:.3f} ms ({linear_time/bitfield_no_res_time:.2f}x)")
 
 
+def test_int8_optimization_performance():
+    """INT8 최적화 성능 벤치마크"""
+    print("\n=== INT8 최적화 성능 벤치마크 ===\n")
+    
+    # 다양한 크기의 레이어 테스트
+    test_configs = [
+        (512, 256, "Small"),
+        (1024, 512, "Medium"),
+        (2048, 1024, "Large"),
+    ]
+    
+    batch_size = 32
+    num_iterations = 100
+    
+    for in_feat, out_feat, name in test_configs:
+        print(f"\n{name} Layer ({in_feat}→{out_feat}):")
+        
+        # Standard Linear
+        linear = nn.Linear(in_feat, out_feat)
+        
+        # BitfieldLinear (FP32 기저)
+        bitfield_fp32 = BitfieldLinear.from_linear(
+            linear, basis_size=256, r_max=2.0, use_residual=False
+        )
+        
+        # BitfieldLinear (INT8 기저)
+        bitfield_int8 = BitfieldLinear.from_linear(
+            linear, basis_size=256, r_max=2.0, use_residual=False
+        )
+        bitfield_int8.enable_int8_optimization()
+        
+        # 테스트 입력
+        x = torch.randn(batch_size, in_feat)
+        
+        # GPU로 이동 (가능한 경우)
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        x_device = x.to(device)
+        linear_device = linear.to(device)
+        bitfield_fp32_device = bitfield_fp32.to(device)
+        bitfield_int8_device = bitfield_int8.to(device)
+        
+        # 워밍업
+        for _ in range(10):
+            _ = linear_device(x_device)
+            _ = bitfield_fp32_device(x_device)
+            _ = bitfield_int8_device(x_device)
+        
+        # Standard Linear 속도
+        torch.cuda.synchronize() if device == 'cuda' else None
+        start = time.time()
+        for _ in range(num_iterations):
+            _ = linear_device(x_device)
+        torch.cuda.synchronize() if device == 'cuda' else None
+        linear_time = (time.time() - start) / num_iterations
+        
+        # BitfieldLinear FP32 속도
+        torch.cuda.synchronize() if device == 'cuda' else None
+        start = time.time()
+        for _ in range(num_iterations):
+            _ = bitfield_fp32_device(x_device)
+        torch.cuda.synchronize() if device == 'cuda' else None
+        bitfield_fp32_time = (time.time() - start) / num_iterations
+        
+        # BitfieldLinear INT8 속도
+        torch.cuda.synchronize() if device == 'cuda' else None
+        start = time.time()
+        for _ in range(num_iterations):
+            _ = bitfield_int8_device(x_device)
+        torch.cuda.synchronize() if device == 'cuda' else None
+        bitfield_int8_time = (time.time() - start) / num_iterations
+        
+        # 정확도 비교
+        with torch.no_grad():
+            y_linear = linear_device(x_device)
+            y_fp32 = bitfield_fp32_device(x_device)
+            y_int8 = bitfield_int8_device(x_device)
+            
+            mse_fp32 = F.mse_loss(y_fp32, y_linear).item()
+            mse_int8 = F.mse_loss(y_int8, y_linear).item()
+        
+        # 메모리 사용량 계산
+        linear_memory = in_feat * out_feat * 4 / 1024  # KB
+        bitfield_memory = out_feat * 4 / 1024  # 코드만
+        basis_fp32_memory = 256 * in_feat * 4 / 1024  # FP32 기저
+        basis_int8_memory = 256 * in_feat * 1 / 1024  # INT8 기저
+        
+        print(f"  속도 비교:")
+        print(f"    - Linear: {linear_time*1000:.3f} ms (기준)")
+        print(f"    - Bitfield FP32: {bitfield_fp32_time*1000:.3f} ms ({linear_time/bitfield_fp32_time:.2f}x)")
+        print(f"    - Bitfield INT8: {bitfield_int8_time*1000:.3f} ms ({linear_time/bitfield_int8_time:.2f}x)")
+        print(f"  정확도 (MSE):")
+        print(f"    - Bitfield FP32: {mse_fp32:.6f}")
+        print(f"    - Bitfield INT8: {mse_int8:.6f}")
+        print(f"  메모리 사용량:")
+        print(f"    - Linear: {linear_memory:.1f} KB")
+        print(f"    - Bitfield FP32: {bitfield_memory + basis_fp32_memory:.1f} KB ({linear_memory/(bitfield_memory + basis_fp32_memory):.1f}x 압축)")
+        print(f"    - Bitfield INT8: {bitfield_memory + basis_int8_memory:.1f} KB ({linear_memory/(bitfield_memory + basis_int8_memory):.1f}x 압축)")
+
+
 if __name__ == "__main__":
     # 전기 소비 시계열 데이터 테스트 (3D)
     test_electricity_3d()
@@ -562,6 +667,9 @@ if __name__ == "__main__":
     
     # 압축 성능 분석
     test_compression_performance()
-    test_extreme_compression()  # 새로운 테스트 추가
+    test_extreme_compression()
+    
+    # INT8 최적화 성능 테스트
+    test_int8_optimization_performance()
     
     print("\n✓ 모든 테스트 완료!") 

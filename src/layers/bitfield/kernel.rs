@@ -9,6 +9,10 @@ use crate::layers::bitfield::{decoder, ops};
 use ndarray::{Array1, Array2, ArrayBase, ArrayView, Axis, Data, Ix2, IxDyn};
 use rayon::prelude::*;
 
+// CUDA 타입 정의
+#[cfg(feature = "cuda")]
+type cudaStream_t = *mut std::ffi::c_void;
+
 // CUDA 커널 바인딩
 #[cfg(feature = "cuda")]
 extern "C" {
@@ -58,7 +62,21 @@ extern "C" {
         input_dim: i32,
         output_dim: i32,
         basis_size: i32,
-        stream: *mut std::ffi::c_void,
+        stream: cudaStream_t,
+    );
+    
+    fn launch_gemm_hyper_bit_int8_kernel(
+        x: *const f32,
+        codes_gpu: *const u32,
+        basis_table_int8_gpu: *const i8,
+        basis_scales_gpu: *const f32,
+        delta: f32,
+        output: *mut f32,
+        batch_size: i32,
+        input_dim: i32,
+        output_dim: i32,
+        basis_size: i32,
+        stream: cudaStream_t,
     );
 }
 
@@ -67,11 +85,22 @@ extern "C" {
 extern "C" {
     fn cudaMalloc(devPtr: *mut *mut std::ffi::c_void, size: usize) -> i32;
     fn cudaFree(devPtr: *mut std::ffi::c_void) -> i32;
-    fn cudaMemcpy(dst: *mut std::ffi::c_void, src: *const std::ffi::c_void, count: usize, kind: i32) -> i32;
-    fn cudaMemcpyAsync(dst: *mut std::ffi::c_void, src: *const std::ffi::c_void, count: usize, kind: i32, stream: *mut std::ffi::c_void) -> i32;
-    fn cudaStreamCreate(pStream: *mut *mut std::ffi::c_void) -> i32;
-    fn cudaStreamDestroy(stream: *mut std::ffi::c_void) -> i32;
-    fn cudaStreamSynchronize(stream: *mut std::ffi::c_void) -> i32;
+    fn cudaMemcpy(
+        dst: *mut std::ffi::c_void,
+        src: *const std::ffi::c_void,
+        count: usize,
+        kind: i32,
+    ) -> i32;
+    fn cudaMemcpyAsync(
+        dst: *mut std::ffi::c_void,
+        src: *const std::ffi::c_void,
+        count: usize,
+        kind: i32,
+        stream: cudaStream_t,
+    ) -> i32;
+    fn cudaStreamCreate(pStream: *mut cudaStream_t) -> i32;
+    fn cudaStreamDestroy(stream: cudaStream_t) -> i32;
+    fn cudaStreamSynchronize(stream: cudaStream_t) -> i32;
     fn cudaDeviceSynchronize() -> i32;
 }
 
@@ -128,8 +157,8 @@ pub unsafe fn cuda_free<T>(ptr: *mut T) {
 
 // CUDA 스트림 관리 함수들
 #[cfg(feature = "cuda")]
-pub unsafe fn cuda_stream_create() -> *mut std::ffi::c_void {
-    let mut stream: *mut std::ffi::c_void = std::ptr::null_mut();
+pub unsafe fn cuda_stream_create() -> cudaStream_t {
+    let mut stream: cudaStream_t = std::ptr::null_mut();
     let result = cudaStreamCreate(&mut stream);
     if result != 0 {
         panic!("CUDA stream creation failed with error code: {}", result);
@@ -138,7 +167,7 @@ pub unsafe fn cuda_stream_create() -> *mut std::ffi::c_void {
 }
 
 #[cfg(feature = "cuda")]
-pub unsafe fn cuda_stream_destroy(stream: *mut std::ffi::c_void) {
+pub unsafe fn cuda_stream_destroy(stream: cudaStream_t) {
     let result = cudaStreamDestroy(stream);
     if result != 0 {
         panic!("CUDA stream destruction failed with error code: {}", result);
@@ -146,7 +175,7 @@ pub unsafe fn cuda_stream_destroy(stream: *mut std::ffi::c_void) {
 }
 
 #[cfg(feature = "cuda")]
-pub unsafe fn cuda_stream_synchronize(stream: *mut std::ffi::c_void) {
+pub unsafe fn cuda_stream_synchronize(stream: cudaStream_t) {
     let result = cudaStreamSynchronize(stream);
     if result != 0 {
         panic!("CUDA stream synchronization failed with error code: {}", result);
@@ -154,7 +183,7 @@ pub unsafe fn cuda_stream_synchronize(stream: *mut std::ffi::c_void) {
 }
 
 #[cfg(feature = "cuda")]
-pub unsafe fn cuda_memcpy_async_h2d(dst: *mut f32, src: *const f32, size: usize, stream: *mut std::ffi::c_void) {
+pub unsafe fn cuda_memcpy_async_h2d(dst: *mut f32, src: *const f32, size: usize, stream: cudaStream_t) {
     let result = cudaMemcpyAsync(
         dst as *mut std::ffi::c_void,
         src as *const std::ffi::c_void,
@@ -168,13 +197,41 @@ pub unsafe fn cuda_memcpy_async_h2d(dst: *mut f32, src: *const f32, size: usize,
 }
 
 #[cfg(feature = "cuda")]
-pub unsafe fn cuda_memcpy_async_d2h(dst: *mut f32, src: *const f32, size: usize, stream: *mut std::ffi::c_void) {
+pub unsafe fn cuda_memcpy_async_d2h(dst: *mut f32, src: *const f32, size: usize, stream: cudaStream_t) {
     let result = cudaMemcpyAsync(
         dst as *mut std::ffi::c_void,
         src as *const std::ffi::c_void,
         size,
         CUDA_MEMCPY_DEVICE_TO_HOST,
         stream,
+    );
+    if result != 0 {
+        panic!("CUDA async memcpy D2H failed with error code: {}", result);
+    }
+}
+
+#[cfg(feature = "cuda")]
+pub unsafe fn cuda_memcpy_h2d_async(dst: *mut f32, src: *const f32, size: usize, stream: cudaStream_t) {
+    let result = cudaMemcpyAsync(
+        dst as *mut std::ffi::c_void,
+        src as *const std::ffi::c_void,
+        size,
+        CUDA_MEMCPY_HOST_TO_DEVICE,
+        stream as *mut std::ffi::c_void,
+    );
+    if result != 0 {
+        panic!("CUDA async memcpy H2D failed with error code: {}", result);
+    }
+}
+
+#[cfg(feature = "cuda")]
+pub unsafe fn cuda_memcpy_d2h_async(dst: *mut f32, src: *const f32, size: usize, stream: cudaStream_t) {
+    let result = cudaMemcpyAsync(
+        dst as *mut std::ffi::c_void,
+        src as *const std::ffi::c_void,
+        size,
+        CUDA_MEMCPY_DEVICE_TO_HOST,
+        stream as *mut std::ffi::c_void,
     );
     if result != 0 {
         panic!("CUDA async memcpy D2H failed with error code: {}", result);
@@ -450,7 +507,7 @@ fn is_cuda_available() -> bool {
 
 /// W가 압축된 비트필드 코드로 표현될 때 `y = xW^T`를 수행합니다.
 ///
-/// 이것은 `ndarray`와 병렬 처리를 위한 `rayon`을 사용하는 CPU 기반 참조 구현입니다.
+/// `ndarray`와 병렬 처리를 위한 `rayon`을 사용하는 CPU 기반 참조 구현입니다.
 ///
 /// # 인자
 /// * `x` - 입력 벡터/행렬, `[batch_size, n]` 형태.
@@ -718,7 +775,7 @@ pub fn gemm_hyper_bit_gpu_optimized<S>(
     residual_delta: f32,
     input_buffer_gpu: *mut f32,
     output_buffer_gpu: *mut f32,
-    stream: *mut std::ffi::c_void,
+    stream: cudaStream_t,
     m: usize,
     n: usize,
     b: usize,
@@ -732,7 +789,7 @@ where
     
     // 배치 크기 체크
     if batch_size * input_dim * std::mem::size_of::<f32>() > 64 * n * std::mem::size_of::<f32>() {
-        panic!("Batch size too large for pre-allocated buffers");
+        panic!("Batch size too large for buffer pool");
     }
     
     unsafe {
@@ -765,6 +822,67 @@ where
             output.as_mut_ptr(),
             output_buffer_gpu,
             batch_size * output_dim * std::mem::size_of::<f32>(),
+            stream,
+        );
+        
+        // 스트림 동기화
+        cuda_stream_synchronize(stream);
+        
+        output
+    }
+} 
+
+#[cfg(feature = "cuda")]
+pub fn gemm_hyper_bit_gpu_int8_optimized<S>(
+    x: &ArrayBase<S, Ix2>,
+    codes_gpu: *const u32,
+    basis_table_int8_gpu: *const i8,
+    basis_scales_gpu: *const f32,
+    delta: f32,
+    input_buffer_gpu: *mut f32,
+    output_buffer_gpu: *mut f32,
+    stream: cudaStream_t,
+    m: usize,
+    n: usize,
+    basis_size: usize,
+) -> Array2<f32>
+where
+    S: Data<Elem = f32>,
+{
+    let batch_size = x.shape()[0];
+    
+    unsafe {
+        // 입력 데이터를 GPU 버퍼로 비동기 복사
+        let input_size = batch_size * n * std::mem::size_of::<f32>();
+        cuda_memcpy_h2d_async(
+            input_buffer_gpu,
+            x.as_ptr(),
+            input_size,
+            stream,
+        );
+        
+        // INT8 최적화 커널 실행
+        launch_gemm_hyper_bit_int8_kernel(
+            input_buffer_gpu,
+            codes_gpu,
+            basis_table_int8_gpu,
+            basis_scales_gpu,
+            delta,
+            output_buffer_gpu,
+            batch_size as i32,
+            n as i32,
+            m as i32,
+            basis_size as i32,
+            stream,
+        );
+        
+        // 결과를 CPU로 복사
+        let mut output = Array2::<f32>::zeros((batch_size, m));
+        let output_size = batch_size * m * std::mem::size_of::<f32>();
+        cuda_memcpy_d2h_async(
+            output.as_mut_ptr(),
+            output_buffer_gpu,
+            output_size,
             stream,
         );
         

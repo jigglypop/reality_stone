@@ -432,6 +432,78 @@ __global__ void gemm_hyper_bit_backward_direct_kernel(
     grad_input[batch_idx * input_dim + in_idx] = grad_sum;
 }
 
+// INT8 최적화된 비트필드 추론 커널
+__global__ void gemm_hyper_bit_int8_kernel(
+    const float* __restrict__ x,
+    const uint32_t* __restrict__ codes,
+    const int8_t* __restrict__ basis_table_int8,
+    const float* __restrict__ basis_scales,
+    const float delta,
+    float* __restrict__ output,
+    const int batch_size,
+    const int in_features,
+    const int out_features,
+    const int basis_size
+) {
+    extern __shared__ float shared_mem[];
+    
+    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total_elements = batch_size * out_features;
+    
+    if (tid >= total_elements) return;
+    
+    const int batch_idx = tid / out_features;
+    const int out_idx = tid % out_features;
+    
+    // 코드 디코딩
+    const uint32_t code = codes[out_idx];
+    const uint8_t phase = (code >> 24) & 0xFF;
+    const uint8_t amp_fine = (code >> 22) & 0x03;
+    const uint8_t cat = (code >> 20) & 0x03;
+    const uint8_t sub = (code >> 18) & 0x03;
+    const uint16_t idx = (code >> 10) & 0xFF;
+    const uint8_t sign = (code >> 9) & 0x01;
+    const uint8_t d = (code >> 8) & 0x01;
+    const uint8_t amp = code & 0xFF;
+    
+    // 스케일 팩터 계산
+    const float r = (amp * 4.0f + amp_fine) * delta;
+    const float signed_r = sign ? -r : r;
+    const float scale_factor = lookup_and_apply_gpu(cat, sub, d, signed_r, phase);
+    
+    // 기저 벡터의 스케일
+    const float basis_scale = basis_scales[idx];
+    
+    // INT8 내적 계산 (벡터화)
+    float sum = 0.0f;
+    const int8_t* basis_row = &basis_table_int8[idx * in_features];
+    const float* input_row = &x[batch_idx * in_features];
+    
+    // 4개씩 벡터화 처리
+    const int vec_size = in_features / 4;
+    const int remainder = in_features % 4;
+    
+    #pragma unroll 4
+    for (int i = 0; i < vec_size; i++) {
+        int4 basis_vec = reinterpret_cast<const int4*>(basis_row)[i];
+        float4 input_vec = reinterpret_cast<const float4*>(input_row)[i];
+        
+        // INT8을 float으로 변환하고 내적 계산
+        sum += (float)basis_vec.x * input_vec.x;
+        sum += (float)basis_vec.y * input_vec.y;
+        sum += (float)basis_vec.z * input_vec.z;
+        sum += (float)basis_vec.w * input_vec.w;
+    }
+    
+    // 나머지 처리
+    for (int i = vec_size * 4; i < in_features; i++) {
+        sum += (float)basis_row[i] * input_row[i];
+    }
+    
+    // 최종 스케일링 적용
+    output[tid] = sum * scale_factor * basis_scale;
+}
+
 // C++ 인터페이스 함수들
 extern "C" {
     void launch_gemm_hyper_bit_kernel(const float* x, const uint32_t* codes,
@@ -509,7 +581,7 @@ extern "C" void launch_gemm_hyper_bit_optimized_kernel(
     int input_dim,
     int output_dim,
     int basis_size,
-    cudaStream_t stream
+    void* stream
 ) {
     // 최적의 블록 크기 계산
     int threads_per_block = 256;
@@ -520,7 +592,7 @@ extern "C" void launch_gemm_hyper_bit_optimized_kernel(
     int blocks = (total_threads + threads_per_block - 1) / threads_per_block;
     
     // 커널 실행 (스트림 사용)
-    gemm_hyper_bit_optimized_kernel<<<blocks, threads_per_block, shared_mem_size, stream>>>(
+    gemm_hyper_bit_optimized_kernel<<<blocks, threads_per_block, shared_mem_size, (cudaStream_t)stream>>>(
         x, codes_gpu, basis_table_gpu, residual_codes_gpu,
         delta, residual_delta, output, batch_size, input_dim, output_dim, basis_size
     );
@@ -579,6 +651,32 @@ extern "C" void launch_gemm_hyper_bit_backward_direct_kernel(
         grad_output_gpu, codes_gpu, basis_table_gpu, residual_codes_gpu,
         delta, residual_delta, grad_input_gpu,
         batch_size, input_dim, output_dim, basis_size
+    );
+}
+
+extern "C" void launch_gemm_hyper_bit_int8_kernel(
+    const float* x,
+    const uint32_t* codes_gpu,
+    const int8_t* basis_table_int8_gpu,
+    const float* basis_scales_gpu,
+    const float delta,
+    float* output,
+    const int batch_size,
+    const int input_dim,
+    const int output_dim,
+    const int basis_size,
+    void* stream
+) {
+    const int total_elements = batch_size * output_dim;
+    const int threads_per_block = 256;
+    const int num_blocks = (total_elements + threads_per_block - 1) / threads_per_block;
+    
+    // 공유 메모리 크기 계산
+    const size_t shared_mem_size = threads_per_block * sizeof(float);
+    
+    gemm_hyper_bit_int8_kernel<<<num_blocks, threads_per_block, shared_mem_size, (cudaStream_t)stream>>>(
+        x, codes_gpu, basis_table_int8_gpu, basis_scales_gpu, delta,
+        output, batch_size, input_dim, output_dim, basis_size
     );
 }
 

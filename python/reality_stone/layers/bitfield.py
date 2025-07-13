@@ -306,6 +306,10 @@ class BitfieldLinear(nn.Module):
         """CUDA 사용 여부를 반환합니다."""
         return self.rust_layer.use_cuda()
     
+    def enable_int8_optimization(self):
+        """INT8 최적화를 활성화합니다."""
+        self.rust_layer.enable_int8_optimization()
+    
     def __repr__(self):
         return (f"BitfieldLinear(in_features={self.in_features}, "
                 f"out_features={self.out_features}, "

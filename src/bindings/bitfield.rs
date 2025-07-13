@@ -367,4 +367,9 @@ impl PyBitfieldLinear {
         // grad_input이 저장된 GPU 버퍼 포인터 반환
         Ok(buffers.input_buffer_gpu as usize)
     }
+
+    /// INT8 최적화를 활성화합니다.
+    pub fn enable_int8_optimization(&mut self) {
+        self.inner.enable_int8_optimization();
+    }
 } 

@@ -2,7 +2,7 @@
 
 use ndarray::{Array1, Array2};
 use ndarray_rand::rand::{thread_rng, Rng};
-use numpy::{PyReadonlyArray2, ToPyArray, PyArray2};
+use numpy::{PyArray2, PyReadonlyArray2, ToPyArray};
 use pyo3::prelude::*;
 use std::ops::AddAssign;
 
@@ -22,7 +22,9 @@ impl SplineLayer {
     pub fn new(k: usize, in_features: usize, out_features: usize) -> Self {
         let mut rng = thread_rng();
         Self {
-            control_points: Array2::from_shape_fn((k + 1, in_features), |(_, _)| rng.gen::<f32>() * 0.02),
+            control_points: Array2::from_shape_fn((k + 1, in_features), |(_, _)| {
+                rng.gen::<f32>() * 0.02
+            }),
             k,
             in_features,
             out_features,
@@ -31,7 +33,7 @@ impl SplineLayer {
 
     #[staticmethod]
     pub fn from_weight_py(
-        py: Python,
+        _py: Python,
         weight: PyReadonlyArray2<f32>,
         k: usize,
         learning_rate: f32,
@@ -52,7 +54,11 @@ impl SplineLayer {
         Ok(())
     }
 
-    pub fn forward<'py>(&self, py: Python<'py>, input: PyReadonlyArray2<f32>) -> &'py PyArray2<f32> {
+    pub fn forward<'py>(
+        &self,
+        py: Python<'py>,
+        input: PyReadonlyArray2<f32>,
+    ) -> &'py PyArray2<f32> {
         let input_array = input.as_array();
         let weight = self.interpolate_internal();
         let output = input_array.dot(&weight.t());
@@ -74,13 +80,15 @@ impl SplineLayer {
     pub fn from_weight(weight: &Array2<f32>, k: usize, learning_rate: f32, steps: usize) -> Self {
         let (out_features, in_features) = weight.dim();
         let mut rng = thread_rng();
-        let mut control_points = Array2::from_shape_fn((k + 1, in_features), |(_, _)| rng.gen::<f32>() * 0.02);
+        let mut control_points =
+            Array2::from_shape_fn((k + 1, in_features), |(_, _)| rng.gen::<f32>() * 0.02);
 
         for _ in 0..steps {
-            let (reconstructed_weight, grad) = Self::interpolate_with_grad(&control_points, out_features);
+            let (reconstructed_weight, grad) =
+                Self::interpolate_with_grad(&control_points, out_features);
             let loss_grad = ops::mse_loss_grad(&reconstructed_weight, weight);
             let mut control_points_grad = Array2::<f32>::zeros((k + 1, in_features));
-            
+
             for i in 0..out_features {
                 let t = i as f32 / (out_features - 1) as f32;
                 let t_scaled = t * k as f32;
@@ -98,7 +106,12 @@ impl SplineLayer {
             }
             control_points.scaled_add(-learning_rate, &control_points_grad);
         }
-        Self { control_points, k, in_features, out_features }
+        Self {
+            control_points,
+            k,
+            in_features,
+            out_features,
+        }
     }
 
     fn interpolate_internal(&self) -> Array2<f32> {
@@ -115,18 +128,23 @@ impl SplineLayer {
             let c1 = 1.5 * t3 - 2.5 * t2 + 1.0;
             let c2 = -1.5 * t3 + 2.0 * t2 + 0.5 * t_local;
             let c3 = 0.5 * t3 - 0.5 * t2;
-            
+
             let p0 = self.control_points.row(j - 1);
             let p1 = self.control_points.row(j);
             let p2 = self.control_points.row(j + 1);
             let p3 = self.control_points.row(j + 2);
 
-            reconstructed.row_mut(i).assign(&(c0 * &p0 + c1 * &p1 + c2 * &p2 + c3 * &p3));
+            reconstructed
+                .row_mut(i)
+                .assign(&(c0 * &p0 + c1 * &p1 + c2 * &p2 + c3 * &p3));
         }
         reconstructed
     }
 
-    fn interpolate_with_grad(control_points: &Array2<f32>, out_features: usize) -> (Array2<f32>, CatmullRomGradients) {
+    fn interpolate_with_grad(
+        control_points: &Array2<f32>,
+        out_features: usize,
+    ) -> (Array2<f32>, CatmullRomGradients) {
         let mut reconstructed = Array2::zeros((out_features, control_points.shape()[1]));
         let k = control_points.shape()[0] - 1;
         let mut grads = CatmullRomGradients {
@@ -148,14 +166,16 @@ impl SplineLayer {
             let c1 = 1.5 * t3 - 2.5 * t2 + 1.0;
             let c2 = -1.5 * t3 + 2.0 * t2 + 0.5 * t_local;
             let c3 = 0.5 * t3 - 0.5 * t2;
-            
+
             let p0 = control_points.row(j - 1);
             let p1 = control_points.row(j);
             let p2 = control_points.row(j + 1);
             let p3 = control_points.row(j + 2);
-            
-            reconstructed.row_mut(i).assign(&(c0 * &p0 + c1 * &p1 + c2 * &p2 + c3 * &p3));
-            
+
+            reconstructed
+                .row_mut(i)
+                .assign(&(c0 * &p0 + c1 * &p1 + c2 * &p2 + c3 * &p3));
+
             grads.p0_grads[i].fill(c0);
             grads.p1_grads[i].fill(c1);
             grads.p2_grads[i].fill(c2);
@@ -170,4 +190,4 @@ struct CatmullRomGradients {
     p1_grads: Vec<Array1<f32>>,
     p2_grads: Vec<Array1<f32>>,
     p3_grads: Vec<Array1<f32>>,
-} 
+}

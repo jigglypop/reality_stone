@@ -1,24 +1,12 @@
 import torch
 import torch.nn as nn
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from reality_stone.layers import EquivalentHyperbolicLinear, project_to_ball
+from reality_stone.layers import EquivalentHyperbolicLinear
+from reality_stone.conversion import convert_to_hyperbolic # 새로 추가
 import time
 import numpy as np
 
-def convert_to_equivalent_hyperbolic(model: nn.Module, c: float = 1.0):
-    """
-    모델의 모든 선형 레이어를 EquivalentHyperbolicLinear로 교체합니다.
-    """
-    for name, module in model.named_children():
-        # 재귀적으로 하위 모듈 탐색
-        if len(list(module.children())) > 0:
-            convert_to_equivalent_hyperbolic(module, c=c)
-        
-        # Conv1D와 Linear 레이어를 교체
-        if isinstance(module, nn.Linear) or 'Conv1D' in str(type(module)):
-            equiv_layer = EquivalentHyperbolicLinear.from_linear(module, c=c)
-            setattr(model, name, equiv_layer)
-            print(f"✅ Replaced '{name}' with EquivalentHyperbolicLinear(c={c})")
+# 기존 변환 함수는 삭제 (라이브러리 함수를 사용하므로)
 
 def test_layer_equivalence():
     """레이어 변환의 동등성을 테스트합니다."""
@@ -104,7 +92,8 @@ def main():
     start_time = time.time()
     
     # 모든 레이어 변환
-    convert_to_equivalent_hyperbolic(model, c=1.0)
+    layer_map = {nn.Linear: EquivalentHyperbolicLinear}
+    convert_to_hyperbolic(model, layer_map=layer_map, c=1.0)
     
     conversion_time = time.time() - start_time
     print(f"⏰ Conversion finished in {conversion_time:.2f} seconds.")

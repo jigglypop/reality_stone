@@ -1,4 +1,4 @@
-use ndarray::{Array1, ArrayView2, Axis, Array2};
+use ndarray::{Array1, Array2, ArrayView2, Axis};
 
 pub const EPS: f32 = 1e-7;
 
@@ -15,4 +15,4 @@ pub fn project_to_ball(x: &ArrayView2<f32>, epsilon: f32) -> Array2<f32> {
 
 pub fn dot_batched(x: &ArrayView2<f32>, y: &ArrayView2<f32>) -> Array1<f32> {
     (x * y).sum_axis(Axis(1))
-} 
+}

@@ -1,18 +1,18 @@
+mod bitfield;
 mod klein;
 mod lorentz;
-mod poincare;
 mod mobius;
-mod bitfield;
+mod poincare;
 mod spline;
 
 #[macro_use]
 mod macros;
 
+pub use bitfield::*;
 pub use klein::*;
 pub use lorentz::*;
-pub use poincare::*;
 pub use mobius::*;
-pub use bitfield::*;
+pub use poincare::*;
 pub use spline::*;
 
 use pyo3::prelude::*;
@@ -35,4 +35,4 @@ pub fn _rust(_py: Python, m: &PyModule) -> PyResult<()> {
     // Spline Layer
     spline::register_spline_module(_py, m)?;
     Ok(())
-} 
+}

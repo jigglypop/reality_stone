@@ -8,4 +8,4 @@ pub fn norm_sq_batched(x: &ArrayView2<f32>) -> Array1<f32> {
 
 pub fn dot_batched(x: &ArrayView2<f32>, y: &ArrayView2<f32>) -> Array1<f32> {
     (x * y).sum_axis(Axis(1))
-} 
+}

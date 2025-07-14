@@ -2,425 +2,115 @@
 
 Reality Stone의 내부 구조와 설계 원칙을 상세히 설명합니다.
 
-## 전체 아키텍처
+## 1. 전체 아키텍처
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Python API Layer                         │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐│
-│  │   Poincaré      │  │    Lorentz      │  │     Klein       ││
-│  │   Layers        │  │    Layers       │  │    Layers       ││
-│  └─────────────────┘  └─────────────────┘  └─────────────────┘│
-│  ┌─────────────────────────────────────────────────────────────┐│
-│  │              Core Operations (Mobius, etc.)                ││
-│  └─────────────────────────────────────────────────────────────┘│
-└─────────────────────────────────────────────────────────────┘
-                                │
-                                ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   PyO3 Bindings                             │
-│  ┌─────────────────────────────────────────────────────────────┐│
-│  │            Rust-Python Interface                           ││
-│  │         (Type conversion, Error handling)                  ││
-│  └─────────────────────────────────────────────────────────────┘│
-└─────────────────────────────────────────────────────────────┘
-                                │
-                                ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    Rust Core                                │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐│
-│  │   CPU Kernels   │  │  CUDA Kernels   │  │   Memory Mgmt   ││
-│  │                 │  │                 │  │                 ││
-│  │ • Poincaré Ops  │  │ • GPU Poincaré  │  │ • Safe Alloc    ││
-│  │ • Lorentz Ops   │  │ • GPU Lorentz   │  │ • Buffer Mgmt   ││
-│  │ • Klein Ops     │  │ • GPU Klein     │  │ • Error Safety  ││
-│  │ • Mobius Ops    │  │ • GPU Mobius    │  │                 ││
-│  └─────────────────┘  └─────────────────┘  └─────────────────┘│
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph A[Python Layer: 사용자 인터페이스]
+        direction LR
+        A1(PyTorch nn.Module) --> A2(torch.autograd)
+        A1 --> A3(Rust Binding);
+    end
+    
+    subgraph B[Rust Core: 고성능 로직]
+        direction LR
+        B1(PyO3 Interface) --> B2(Hyperbolic/Compressed Logic)
+        B2 --> B3(CUDA Dispatcher);
+    end
+
+    subgraph C[CUDA Kernel: GPU 가속]
+        direction LR
+        C1(Fused Kernels) --> C2(GPU Hardware);
+    end
+
+    A3 --> B1;
+    B3 --> C1;
+
+    style A fill:#D6EAF8,stroke:#3498DB,color:#000
+    style B fill:#D5F5E3,stroke:#2ECC71,color:#000
+    style C fill:#FCF3CF,stroke:#F1C40F,color:#000
 ```
 
-## 🦀 Rust 코어 구조
+-   **Python Layer**: PyTorch와 완벽하게 통합된 사용자 친화적 API를 제공합니다. `nn.Module`을 상속받아 기존 PyTorch 생태계와 자연스럽게 연동됩니다.
+-   **Rust Core**: 메모리 안전성과 고성능을 보장하는 핵심 로직입니다. 모든 하이퍼볼릭 연산과 압축 알고리즘이 구현되어 있습니다.
+-   **CUDA Kernel**: GPU 가속을 위한 저수준 커널입니다. 연산 퓨전(fused kernel) 등을 통해 극도의 성능 최적화를 추구합니다.
 
-### 디렉토리 구조
+## 2. Rust 코어 구조
 
+### 2.1. 디렉토리 구조 (개선안)
 ```
 src/
-├── lib.rs                 # 메인 라이브러리 진입점
-├── layers/                # 하이퍼볼릭 레이어 구현
-│   ├── mod.rs            # 레이어 모듈 정의
-│   ├── poincare.rs       # Poincaré Ball 레이어
-│   ├── lorentz.rs        # Lorentz 레이어
-│   ├── klein.rs          # Klein 레이어
-│   ├── mobius.rs         # Mobius 변환
-│   ├── utils.rs          # 공통 유틸리티
-│   └── cuda/             # CUDA 구현
-│       ├── poincare.cu   # Poincaré CUDA 커널
-│       ├── lorentz.cu    # Lorentz CUDA 커널
-│       ├── klein.cu      # Klein CUDA 커널
-│       └── mobius.cu     # Mobius CUDA 커널
-├── bindings/             # Python 바인딩
-│   ├── mod.rs            # 바인딩 모듈 정의
-│   ├── poincare.rs       # Poincaré 바인딩
-│   ├── lorentz.rs        # Lorentz 바인딩
-│   ├── klein.rs          # Klein 바인딩
-│   └── mobius.rs         # Mobius 바인딩
-└── ops/                  # 기본 연산 (미래 확장)
-    └── mod.rs
+├── core/                    # 핵심 공통 모듈
+│   ├── mod.rs
+│   ├── layer.rs            # Layer 트레이트
+│   ├── tensor.rs           # 텐서 추상화
+│   ├── registry.rs         # 레이어 레지스트리
+│   └── error.rs            # 통합 에러 타입
+├── layers/                  # 레이어 구현
+│   ├── hyperbolic/         # 하이퍼볼릭 레이어
+│   └── compressed/         # 압축 레이어
+├── ops/                     # 공통 연산
+└── bindings/                # Python 바인딩
 ```
 
-### 핵심 설계 원칙
+### 2.2. 핵심 설계 원칙
 
-#### 1. 메모리 안전성
-```rust
-// 모든 메모리 접근은 Rust의 소유권 시스템으로 보호
-pub fn poincare_add_cpu(
-    x: &Array2<f64>,
-    y: &Array2<f64>,
-    c: f64,
-) -> Result<Array2<f64>, Box<dyn Error>> {
-    // 안전한 메모리 접근 보장
-    let result = Array2::zeros(x.dim());
-    // ... 구현
-    Ok(result)
-}
-```
+- **메모리 안전성**: Rust의 소유권 시스템을 통해 메모리 누수나 데이터 경쟁(race condition)을 원천적으로 방지합니다.
+- **에러 처리**: `Result`와 `thiserror`를 사용하여 모든 잠재적 실패 가능성을 명시적으로 처리합니다.
+- **성능 최적화**: `rayon`을 이용한 병렬 처리, SIMD 최적화, 제로 카피(zero-copy) 연산을 통해 성능을 극대화합니다.
 
-#### 2. 에러 처리
-```rust
-// 모든 함수는 Result 타입으로 에러 처리
-pub type HyperbolicResult<T> = Result<T, HyperbolicError>;
+## 3. Python 바인딩 구조 (개선안)
 
-#[derive(Debug, thiserror::Error)]
-pub enum HyperbolicError {
-    #[error("Invalid curvature parameter: {0}")]
-    InvalidCurvature(f64),
-    #[error("Tensor dimension mismatch: expected {expected}, got {actual}")]
-    DimensionMismatch { expected: usize, actual: usize },
-    #[error("CUDA error: {0}")]
-    CudaError(String),
-}
-```
-
-#### 3. 성능 최적화
-```rust
-// SIMD 최적화 사용
-use simba::simd::*;
-
-// 병렬 처리
-use rayon::prelude::*;
-
-pub fn parallel_poincare_add(
-    x: &Array2<f64>,
-    y: &Array2<f64>,
-    c: f64,
-) -> Array2<f64> {
-    x.axis_iter(Axis(0))
-        .into_par_iter()
-        .zip(y.axis_iter(Axis(0)))
-        .map(|(x_row, y_row)| {
-            // 병렬 처리로 각 행 계산
-            mobius_add_row(x_row, y_row, c)
-        })
-        .collect()
-}
-```
-
-## 🐍 Python 바인딩 구조
-
-### PyO3 바인딩 패턴
+### 3.1. 통합 바인딩 시스템
+`src/bindings/unified.rs` 와 매크로(`macros.rs`)를 통해 모든 레이어의 바인딩을 자동 생성합니다.
 
 ```rust
-// src/bindings/poincare.rs
-use pyo3::prelude::*;
-use numpy::{PyArray2, PyReadonlyArray2};
-
-#[pyfunction]
-pub fn poincare_ball_layer_cpu(
-    u: PyReadonlyArray2<f64>,
-    v: PyReadonlyArray2<f64>,
-    c: f64,
-    t: f64,
-) -> PyResult<Py<PyArray2<f64>>> {
-    // NumPy 배열을 Rust 배열로 변환
-    let u_array = u.as_array();
-    let v_array = v.as_array();
-    
-    // Rust 함수 호출
-    let result = crate::layers::poincare::poincare_ball_layer(
-        &u_array, &v_array, c, t
-    ).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
-    
-    // 결과를 NumPy 배열로 변환
-    Ok(result.into_pyarray(py).to_owned())
+// src/bindings/macros.rs
+#[macro_export]
+macro_rules! create_py_layer {
+    ($name:ident, $rust_type:ty) => {
+        // ... PyClass 생성 코드 ...
+    };
 }
 ```
+- **장점**: 코드 중복 90% 감소, 새 레이어 추가 용이, 일관성 유지
 
-### Python 래퍼 구조
-
-```python
-# python/reality_stone/layers/poincare.py
-from torch.autograd import Function
-from .. import _rust
-
-class PoincareBallLayer(Function):
-    @staticmethod
-    def forward(ctx, u, v, c, t):
-        # 컨텍스트 저장
-        ctx.save_for_backward(u, v)
-        ctx.c = c
-        ctx.t = t
-        
-        # Rust 함수 호출
-        if u.is_cuda:
-            return _rust.poincare_ball_layer_cuda(u, v, c, t)
-        else:
-            return _rust.poincare_ball_layer_cpu(u, v, c, t)
-    
-    @staticmethod
-    def backward(ctx, grad_output):
-        u, v = ctx.saved_tensors
-        c, t = ctx.c, ctx.t
-        
-        # 역전파 계산
-        grad_u, grad_v = _rust.poincare_ball_layer_backward(
-            grad_output, u, v, c, t
-        )
-        return grad_u, grad_v, None, None
+### 3.2. 데이터 플로우
 ```
-
-## CUDA 구현 구조
-
-### CUDA 커널 구조
-
-```cuda
-// src/layers/cuda/poincare.cu
-__global__ void poincare_add_kernel(
-    const float* x,
-    const float* y,
-    float* result,
-    int batch_size,
-    int dim,
-    float c
-) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int batch_idx = idx / dim;
-    int feat_idx = idx % dim;
-    
-    if (batch_idx < batch_size && feat_idx < dim) {
-        // Mobius 덧셈 계산
-        float x_val = x[idx];
-        float y_val = y[idx];
-        result[idx] = mobius_add_element(x_val, y_val, c);
-    }
-}
+Python (torch.Tensor) → Rust (ndarray) → CUDA Kernel (raw pointer)
+↑                                                 ↓
+Python (torch.Tensor) ← Rust (ndarray) ← CUDA Result (raw pointer)
 ```
+- `PyO3`와 `NumPy` crate를 통해 Python과 Rust 간의 데이터 변환 오버헤드를 최소화합니다.
+- GPU 사용 시, `torch.Tensor`의 메모리 포인터를 직접 CUDA 커널로 전달하여 불필요한 데이터 복사를 방지합니다.
 
-### 메모리 관리
+## 4. 🧪 테스트 아키텍처 (개선안)
 
-```rust
-// CUDA 메모리 관리
-pub struct CudaBuffer<T> {
-    ptr: *mut T,
-    size: usize,
-    _phantom: PhantomData<T>,
-}
+### 4.1. 테스트 전략: 테스트 피라미드
+- **단위 테스트 (70%)**: Rust(`cargo test`), CUDA(C++ GTest), Python(`pytest`)의 각 함수 및 모듈을 개별적으로 테스트합니다.
+- **통합 테스트 (20%)**: Python-Rust-CUDA 계층 간의 연동, GPU/CPU 결과 일관성, `torch.autograd.gradcheck`를 이용한 그래디언트 정확성을 검증합니다.
+- **E2E 테스트 (10%)**: 실제 모델(KoGPT-2)에 압축 레이어를 적용하여, 원본 모델과의 성능 및 출력 유사도(BLEU)를 비교합니다.
 
-impl<T> CudaBuffer<T> {
-    pub fn new(size: usize) -> Result<Self, CudaError> {
-        let mut ptr = std::ptr::null_mut();
-        unsafe {
-            cuda_malloc(&mut ptr, size * std::mem::size_of::<T>())?;
-        }
-        Ok(CudaBuffer { ptr, size, _phantom: PhantomData })
-    }
-}
-
-impl<T> Drop for CudaBuffer<T> {
-    fn drop(&mut self) {
-        unsafe {
-            cuda_free(self.ptr);
-        }
-    }
-}
-```
-
-## 🔄 데이터 플로우
-
-### 1. Forward Pass
-```
-Python Input (torch.Tensor)
-    ↓
-NumPy Array (via .numpy())
-    ↓
-Rust ndarray
-    ↓
-CUDA Memory (if GPU)
-    ↓
-CUDA Kernel Execution
-    ↓
-Result Back to CPU
-    ↓
-Rust ndarray
-    ↓
-NumPy Array
-    ↓
-PyTorch Tensor
-```
-
-### 2. Backward Pass
-```
-Gradient (torch.Tensor)
-    ↓
-Saved Context (u, v, c, t)
-    ↓
-Rust Backward Function
-    ↓
-Computed Gradients
-    ↓
-Return (grad_u, grad_v, None, None)
-```
-
-## 🧪 테스트 아키텍처
-
-### 테스트 계층
-
+### 4.2. 디렉토리 구조
 ```
 tests/
-├── unit/                 # 단위 테스트
-│   ├── test_poincare.py  # Poincaré 레이어 테스트
-│   ├── test_lorentz.py   # Lorentz 레이어 테스트
-│   └── test_mobius.py    # Mobius 연산 테스트
-├── integration/          # 통합 테스트
-│   ├── test_gradients.py # 그래디언트 정확성 테스트
-│   └── test_cuda.py      # CUDA 구현 테스트
-└── benchmarks/           # 성능 테스트
-    ├── memory_test.py    # 메모리 사용량 테스트
-    └── speed_test.py     # 속도 벤치마크
+├── conftest.py          # Pytest 공통 픽스처
+├── unit/                # 단위 테스트
+│   ├── rust/            # Rust 단위 테스트 (`cargo test`로 실행)
+│   └── python/
+├── integration/         # 통합 테스트
+├── e2e/                 # End-to-End 테스트
+└── benchmarks/          # 성능 벤치마크
 ```
 
-## 빌드 시스템
+### 4.3. 자동화
+- **GitHub Actions**: 모든 Pull Request에 대해 `cargo test`와 `pytest`를 자동으로 실행하여 코드 무결성을 보장합니다.
+- **`pytest-benchmark`**: 성능 벤치마크를 정기적으로 실행하고 결과를 리포팅합니다.
 
-### Cargo.toml 구조
+## 5. 빌드 시스템
 
-```toml
-[package]
-name = "reality_stone"
-version = "0.2.0"
-edition = "2021"
+- **`maturin`**: Rust 코드를 컴파일하여 Python 패키지를 빌드하는 핵심 도구입니다.
+- **`build.rs`**: CUDA 커널(.cu 파일)을 컴파일하고 Rust 코드와 링크하는 역할을 담당합니다.
+- **`cargo-watch`**: 개발 중 Rust 코드 변경 시, `maturin develop`을 자동으로 실행하여 실시간 리빌드를 지원합니다.
 
-[lib]
-name = "_rust"
-crate-type = ["cdylib"]
-
-[dependencies]
-pyo3 = { version = "0.19", features = ["extension-module"] }
-numpy = "0.19"
-ndarray = { version = "0.15", features = ["rayon"] }
-rayon = "1.7"
-
-[build-dependencies]
-cc = "1.0"
-glob = "0.3"
-
-[features]
-default = []
-cuda = []
-```
-
-### 빌드 스크립트 (build.rs)
-
-```rust
-use std::env;
-use cc::Build;
-
-fn main() {
-    #[cfg(feature = "cuda")]
-    {
-        let cuda_path = env::var("CUDA_HOME").expect("CUDA_HOME not set");
-        
-        // CUDA 파일 컴파일
-        let cu_files = glob::glob("src/layers/cuda/*.cu")
-            .expect("Failed to read CUDA files")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("Failed to collect CUDA files");
-        
-        for file in cu_files {
-            Build::new()
-                .cuda(true)
-                .flag("-arch=sm_70")
-                .include(format!("{}/include", cuda_path))
-                .file(file)
-                .compile("cuda_kernels");
-        }
-    }
-}
-```
-
-## 성능 고려사항
-
-### 메모리 레이아웃
-
-```rust
-// 연속 메모리 레이아웃 사용
-#[repr(C)]
-pub struct Point {
-    pub x: f64,
-    pub y: f64,
-}
-
-// 캐시 친화적 데이터 구조
-pub struct BatchedPoints {
-    pub data: Vec<f64>,  // [x1, y1, x2, y2, ...]
-    pub batch_size: usize,
-    pub dim: usize,
-}
-```
-
-### SIMD 최적화
-
-```rust
-use simba::simd::f64x4;
-
-pub fn vectorized_mobius_add(
-    x: &[f64],
-    y: &[f64],
-    c: f64,
-) -> Vec<f64> {
-    let chunks = x.chunks_exact(4)
-        .zip(y.chunks_exact(4))
-        .map(|(x_chunk, y_chunk)| {
-            let x_vec = f64x4::from_slice_unaligned(x_chunk);
-            let y_vec = f64x4::from_slice_unaligned(y_chunk);
-            mobius_add_simd(x_vec, y_vec, c)
-        })
-        .collect()
-}
-```
-
-## 🔍 디버깅 및 프로파일링
-
-### 디버그 빌드
-
-```bash
-# 디버그 정보 포함 빌드
-maturin develop --profile dev
-
-# 메모리 디버깅
-valgrind --tool=memcheck python test_script.py
-
-# CUDA 디버깅
-cuda-gdb python test_script.py
-```
-
-### 프로파일링
-
-```bash
-# Rust 프로파일링
-cargo build --release --features cuda
-perf record --call-graph=dwarf ./target/release/reality_stone
-
-# Python 프로파일링
-python -m cProfile -o profile.stats test_script.py
-```
-
-이 아키텍처는 성능, 안전성, 유지보수성을 모두 고려한 설계입니다. 각 레이어는 명확한 책임을 가지며, 타입 안전성과 에러 처리를 통해 안정적인 시스템을 구축했습니다. 
+이 아키텍처는 성능, 안전성, 유지보수성을 모두 고려한 설계입니다. 명확한 계층 분리와 자동화된 테스트 파이프라인을 통해 안정적이고 확장 가능한 시스템을 구축합니다. 

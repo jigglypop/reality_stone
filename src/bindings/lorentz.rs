@@ -1,4 +1,4 @@
-use crate::layers::{lorentz};
+use crate::layers::lorentz;
 use crate::ops::mobius;
 use ndarray::Array2;
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray2};
@@ -236,4 +236,4 @@ pub fn register(m: &PyModule) -> PyResult<()> {
     }
 
     Ok(())
-} 
+}

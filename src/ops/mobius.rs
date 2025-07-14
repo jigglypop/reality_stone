@@ -1,4 +1,7 @@
-use crate::{layers::poincare::mobius_add_vjp, ops::{batch::EPS, dot_batched, norm_sq_batched}};
+use crate::{
+    layers::poincare::mobius_add_vjp,
+    ops::{batch::EPS, dot_batched, norm_sq_batched},
+};
 use ndarray::{Array2, ArrayView2, Axis};
 
 const BOUNDARY_EPS: f32 = 1e-5;
@@ -20,7 +23,7 @@ pub fn mobius_add(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32) -> Array2<f3
 pub fn mobius_scalar(u: &ArrayView2<f32>, c: f32, r: f32) -> Array2<f32> {
     let norm = norm_sq_batched(u).mapv(f32::sqrt).insert_axis(Axis(1));
     let norm_clamped = norm.mapv(|v| v.max(EPS));
-    
+
     if c.abs() < EPS {
         // c = 0: 유클리드 경우
         return Array2::from_elem(u.dim(), r) * u;
@@ -46,31 +49,27 @@ pub fn mobius_scalar(u: &ArrayView2<f32>, c: f32, r: f32) -> Array2<f32> {
     scale * u
 }
 
-pub fn mobius_scalar_grad_c(
-    u: &ArrayView2<f32>,
-    c: f32,
-    r: f32,
-) -> Array2<f32> {
+pub fn mobius_scalar_grad_c(u: &ArrayView2<f32>, c: f32, r: f32) -> Array2<f32> {
     let norm = norm_sq_batched(u).mapv(f32::sqrt).insert_axis(Axis(1));
     let norm_clamped = norm.mapv(|v| v.max(EPS));
     if c.abs() < EPS {
         // c = 0: gradient is 0
         return Array2::zeros(u.dim());
     }
-    
+
     if c > 0.0 {
         // 양수 곡률
         let sqrt_c = c.sqrt();
         let scn = (sqrt_c * &norm_clamped).mapv(|v| v.min(1.0 - BOUNDARY_EPS));
         let alpha = scn.mapv(|v| v.atanh());
         let beta = (r * &alpha).mapv(|v| v.tanh());
-        
+
         // d(sqrt(c))/dc = 0.5/sqrt(c)
         let d_sqrt_c_dc = 0.5 / sqrt_c;
-        
+
         // d(alpha)/d(scn) = 1/(1 - scn^2)
         let d_alpha_dscn = 1.0 / (1.0 - &scn * &scn).mapv(|v| v.max(EPS));
-        
+
         // d(beta)/d(alpha) = r * (1 - tanh^2(r*alpha))
         let tanh_r_alpha = (r * &alpha).mapv(|v| v.tanh());
         let d_beta_dalpha = r * (1.0 - &tanh_r_alpha * &tanh_r_alpha);
@@ -94,7 +93,8 @@ pub fn mobius_scalar_grad_c(
         // Chain rule
         let d_beta_dc = &d_beta_dalpha * &d_alpha_dscn * &norm_clamped * d_sqrt_abs_c_dc;
         // d(scale)/dc
-        let d_scale_dc = (&d_beta_dc * sqrt_abs_c - &beta * d_sqrt_abs_c_dc) / ((-c) * &norm_clamped);
+        let d_scale_dc =
+            (&d_beta_dc * sqrt_abs_c - &beta * d_sqrt_abs_c_dc) / ((-c) * &norm_clamped);
         &d_scale_dc * u
     }
 }
@@ -109,14 +109,18 @@ pub struct DynamicCurvature {
 
 impl DynamicCurvature {
     pub fn new(kappa: f32, c_min: f32, c_max: f32) -> Self {
-        Self { kappa, c_min, c_max }
+        Self {
+            kappa,
+            c_min,
+            c_max,
+        }
     }
-    
+
     pub fn compute_c(&self) -> f32 {
         let sigmoid = 1.0 / (1.0 + (-self.kappa).exp());
         self.c_min + (self.c_max - self.c_min) * sigmoid
     }
-    
+
     pub fn compute_dc_dkappa(&self) -> f32 {
         let sigmoid = 1.0 / (1.0 + (-self.kappa).exp());
         (self.c_max - self.c_min) * sigmoid * (1.0 - sigmoid)
@@ -132,23 +136,27 @@ pub struct LayerWiseDynamicCurvature {
 
 impl LayerWiseDynamicCurvature {
     pub fn new(num_layers: usize, c_min: f32, c_max: f32) -> Self {
-        Self { 
+        Self {
             kappas: vec![0.0; num_layers],
-            c_min, 
-            c_max 
+            c_min,
+            c_max,
         }
     }
-    
+
     pub fn from_kappas(kappas: Vec<f32>, c_min: f32, c_max: f32) -> Self {
-        Self { kappas, c_min, c_max }
+        Self {
+            kappas,
+            c_min,
+            c_max,
+        }
     }
-    
+
     pub fn compute_c(&self, layer_idx: usize) -> f32 {
         let kappa = self.kappas.get(layer_idx).unwrap_or(&0.0);
         let sigmoid = 1.0 / (1.0 + (-kappa).exp());
         self.c_min + (self.c_max - self.c_min) * sigmoid
     }
-    
+
     pub fn compute_dc_dkappa(&self, layer_idx: usize) -> f32 {
         let kappa = self.kappas.get(layer_idx).unwrap_or(&0.0);
         let sigmoid = 1.0 / (1.0 + (-kappa).exp());
@@ -156,12 +164,7 @@ impl LayerWiseDynamicCurvature {
     }
 }
 
-
-pub fn mobius_add_grad_c(
-    u: &ArrayView2<f32>, 
-    v: &ArrayView2<f32>, 
-    c: f32
-) -> Array2<f32> {
+pub fn mobius_add_grad_c(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32) -> Array2<f32> {
     let u2 = norm_sq_batched(u).insert_axis(Axis(1));
     let v2 = norm_sq_batched(v).insert_axis(Axis(1));
     let uv = dot_batched(u, v).insert_axis(Axis(1));
@@ -277,4 +280,4 @@ pub mod cuda {
             ffi::mobius_scalar_cuda(out, u, c, r, batch_size, dim);
         }
     }
-} 
+}

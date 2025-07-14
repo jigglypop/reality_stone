@@ -65,4 +65,6 @@ python tests/test.py
 ```bash
 docker compose exec -it dev bash
 source ./.venv/bin/activate
+
+cargo watch -w src -s "maturin develop"
 ```

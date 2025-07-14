@@ -204,7 +204,6 @@ pub fn klein_ball_layer_backward_cuda(
     Ok(())
 }
 
-
 pub fn register(m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(klein_add, m)?)?;
     m.add_function(wrap_pyfunction!(klein_scalar, m)?)?;
@@ -222,6 +221,6 @@ pub fn register(m: &PyModule) -> PyResult<()> {
         m.add_function(wrap_pyfunction!(klein_layer_forward_cuda, m)?)?;
         m.add_function(wrap_pyfunction!(klein_ball_layer_backward_cuda, m)?)?;
     }
-    
+
     Ok(())
-} 
+}

@@ -26,6 +26,11 @@ else:
 
 from .core.mobius import MobiusAdd, MobiusScalarMul
 from .layers import *
+from .layers.bitfield import BitfieldLinear
+from .layers.spline import SplineLinear
+
+# 모델 변환 유틸리티 추가
+from .conversion import convert_to_hyperbolic
 
 def poincare_ball_layer(u: torch.Tensor, v: torch.Tensor, c: float = None, t: float = 0.5, kappas: torch.Tensor = None, layer_idx: int = None, c_min: float = -2.0, c_max: float = -0.1) -> torch.Tensor:
     return PoincareBallLayer.apply(u, v, c, t, kappas, layer_idx, c_min, c_max)
@@ -67,5 +72,8 @@ __all__ = [
     'klein_layer',
     'KleinLayer',
     # Status
-    '_has_rust_ext', '_has_cuda'
+    '_has_rust_ext', '_has_cuda',
+    'BitfieldLinear',
+    'SplineLinear',
+    'convert_to_hyperbolic',
 ]

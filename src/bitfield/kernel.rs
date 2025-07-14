@@ -5,14 +5,12 @@
 //! 이 모듈은 압축된 비트필드 코드와 기저 테이블로부터 직접 추론을 수행하는
 //! 고성능 커널들을 제공합니다. CPU와 GPU 버전을 모두 지원합니다.
 
-use crate::layers::bitfield::{decoder, ops};
-use ndarray::{Array1, Array2, ArrayBase, ArrayView, Axis, Data, Ix2, IxDyn};
+use crate::bitfield::{decoder, ops};
+use ndarray::{Array1, Array2, ArrayBase, ArrayView, ArrayView2, Axis, Data, Ix2, IxDyn};
 use rayon::prelude::*;
-
 // CUDA 타입 정의
 #[cfg(feature = "cuda")]
-type cudaStream_t = *mut std::ffi::c_void;
-
+type CudaStreamT = *mut std::ffi::c_void;
 // CUDA 커널 바인딩
 #[cfg(feature = "cuda")]
 extern "C" {
@@ -27,7 +25,7 @@ extern "C" {
         output_dim: i32,
         basis_size: i32,
     );
-    
+
     fn launch_residual_gemm_kernel(
         x: *const f32,
         residual_weights: *const f32,
@@ -36,7 +34,7 @@ extern "C" {
         input_dim: i32,
         output_dim: i32,
     );
-    
+
     fn launch_gemm_hyper_bit_cached_kernel(
         x: *const f32,
         codes_gpu: *const u32,
@@ -49,7 +47,7 @@ extern "C" {
         output_dim: i32,
         basis_size: i32,
     );
-    
+
     fn launch_gemm_hyper_bit_optimized_kernel(
         x: *const f32,
         codes_gpu: *const u32,
@@ -62,9 +60,9 @@ extern "C" {
         input_dim: i32,
         output_dim: i32,
         basis_size: i32,
-        stream: cudaStream_t,
+        stream: CudaStreamT,
     );
-    
+
     fn launch_gemm_hyper_bit_int8_kernel(
         x: *const f32,
         codes_gpu: *const u32,
@@ -76,7 +74,7 @@ extern "C" {
         input_dim: i32,
         output_dim: i32,
         basis_size: i32,
-        stream: cudaStream_t,
+        stream: CudaStreamT,
     );
 }
 
@@ -96,14 +94,13 @@ extern "C" {
         src: *const std::ffi::c_void,
         count: usize,
         kind: i32,
-        stream: cudaStream_t,
+        stream: CudaStreamT,
     ) -> i32;
-    fn cudaStreamCreate(pStream: *mut cudaStream_t) -> i32;
-    fn cudaStreamDestroy(stream: cudaStream_t) -> i32;
-    fn cudaStreamSynchronize(stream: cudaStream_t) -> i32;
+    fn cudaStreamCreate(pStream: *mut CudaStreamT) -> i32;
+    fn cudaStreamDestroy(stream: CudaStreamT) -> i32;
+    fn cudaStreamSynchronize(stream: CudaStreamT) -> i32;
     fn cudaDeviceSynchronize() -> i32;
 }
-
 // CUDA 메모리 복사 종류 상수
 #[cfg(feature = "cuda")]
 const CUDA_MEMCPY_HOST_TO_DEVICE: i32 = 1;
@@ -116,7 +113,10 @@ pub unsafe fn cuda_malloc(size: usize) -> *mut f32 {
     let mut ptr: *mut std::ffi::c_void = std::ptr::null_mut();
     let result = cudaMalloc(&mut ptr as *mut *mut std::ffi::c_void, size);
     if result != 0 {
-        panic!("CUDA malloc failed with error code: {} (size: {} bytes)", result, size);
+        panic!(
+            "CUDA malloc failed with error code: {} (size: {} bytes)",
+            result, size
+        );
     }
     ptr as *mut f32
 }
@@ -157,8 +157,8 @@ pub unsafe fn cuda_free<T>(ptr: *mut T) {
 
 // CUDA 스트림 관리 함수들
 #[cfg(feature = "cuda")]
-pub unsafe fn cuda_stream_create() -> cudaStream_t {
-    let mut stream: cudaStream_t = std::ptr::null_mut();
+pub unsafe fn cuda_stream_create() -> CudaStreamT {
+    let mut stream: CudaStreamT = std::ptr::null_mut();
     let result = cudaStreamCreate(&mut stream);
     if result != 0 {
         panic!("CUDA stream creation failed with error code: {}", result);
@@ -167,7 +167,7 @@ pub unsafe fn cuda_stream_create() -> cudaStream_t {
 }
 
 #[cfg(feature = "cuda")]
-pub unsafe fn cuda_stream_destroy(stream: cudaStream_t) {
+pub unsafe fn cuda_stream_destroy(stream: CudaStreamT) {
     let result = cudaStreamDestroy(stream);
     if result != 0 {
         panic!("CUDA stream destruction failed with error code: {}", result);
@@ -175,15 +175,23 @@ pub unsafe fn cuda_stream_destroy(stream: cudaStream_t) {
 }
 
 #[cfg(feature = "cuda")]
-pub unsafe fn cuda_stream_synchronize(stream: cudaStream_t) {
+pub unsafe fn cuda_stream_synchronize(stream: CudaStreamT) {
     let result = cudaStreamSynchronize(stream);
     if result != 0 {
-        panic!("CUDA stream synchronization failed with error code: {}", result);
+        panic!(
+            "CUDA stream synchronization failed with error code: {}",
+            result
+        );
     }
 }
 
 #[cfg(feature = "cuda")]
-pub unsafe fn cuda_memcpy_async_h2d(dst: *mut f32, src: *const f32, size: usize, stream: cudaStream_t) {
+pub unsafe fn cuda_memcpy_async_h2d(
+    dst: *mut f32,
+    src: *const f32,
+    size: usize,
+    stream: CudaStreamT,
+) {
     let result = cudaMemcpyAsync(
         dst as *mut std::ffi::c_void,
         src as *const std::ffi::c_void,
@@ -197,7 +205,12 @@ pub unsafe fn cuda_memcpy_async_h2d(dst: *mut f32, src: *const f32, size: usize,
 }
 
 #[cfg(feature = "cuda")]
-pub unsafe fn cuda_memcpy_async_d2h(dst: *mut f32, src: *const f32, size: usize, stream: cudaStream_t) {
+pub unsafe fn cuda_memcpy_async_d2h(
+    dst: *mut f32,
+    src: *const f32,
+    size: usize,
+    stream: CudaStreamT,
+) {
     let result = cudaMemcpyAsync(
         dst as *mut std::ffi::c_void,
         src as *const std::ffi::c_void,
@@ -211,7 +224,12 @@ pub unsafe fn cuda_memcpy_async_d2h(dst: *mut f32, src: *const f32, size: usize,
 }
 
 #[cfg(feature = "cuda")]
-pub unsafe fn cuda_memcpy_h2d_async(dst: *mut f32, src: *const f32, size: usize, stream: cudaStream_t) {
+pub unsafe fn cuda_memcpy_h2d_async(
+    dst: *mut f32,
+    src: *const f32,
+    size: usize,
+    stream: CudaStreamT,
+) {
     let result = cudaMemcpyAsync(
         dst as *mut std::ffi::c_void,
         src as *const std::ffi::c_void,
@@ -225,7 +243,12 @@ pub unsafe fn cuda_memcpy_h2d_async(dst: *mut f32, src: *const f32, size: usize,
 }
 
 #[cfg(feature = "cuda")]
-pub unsafe fn cuda_memcpy_d2h_async(dst: *mut f32, src: *const f32, size: usize, stream: cudaStream_t) {
+pub unsafe fn cuda_memcpy_d2h_async(
+    dst: *mut f32,
+    src: *const f32,
+    size: usize,
+    stream: CudaStreamT,
+) {
     let result = cudaMemcpyAsync(
         dst as *mut std::ffi::c_void,
         src as *const std::ffi::c_void,
@@ -251,24 +274,29 @@ where
 {
     use std::time::Instant;
     let start_total = Instant::now();
-    
+
     let batch_size = x.shape()[0] as i32;
     let input_dim = x.shape()[1] as i32;
     let output_dim = codes.len() as i32;
     let basis_size = basis_table.shape()[0] as i32;
-    
+
     unsafe {
         // GPU 메모리 할당
         let start_alloc = Instant::now();
         let x_gpu = cuda_malloc((batch_size * input_dim) as usize * std::mem::size_of::<f32>());
         let codes_gpu = cuda_malloc(output_dim as usize * std::mem::size_of::<u32>()) as *mut u32;
         let basis_gpu = cuda_malloc((basis_size * input_dim) as usize * std::mem::size_of::<f32>());
-        let output_gpu = cuda_malloc((batch_size * output_dim) as usize * std::mem::size_of::<f32>());
+        let output_gpu =
+            cuda_malloc((batch_size * output_dim) as usize * std::mem::size_of::<f32>());
         let alloc_time = start_alloc.elapsed();
-        
+
         // 데이터를 GPU로 복사
         let start_h2d = Instant::now();
-        cuda_memcpy_h2d(x_gpu, x.as_ptr(), (batch_size * input_dim) as usize * std::mem::size_of::<f32>());
+        cuda_memcpy_h2d(
+            x_gpu,
+            x.as_ptr(),
+            (batch_size * input_dim) as usize * std::mem::size_of::<f32>(),
+        );
         // codes는 u32 타입이므로 별도 처리
         {
             let codes_ptr = codes.as_ptr() as *const std::ffi::c_void;
@@ -283,30 +311,31 @@ where
                 panic!("CUDA memcpy for codes failed with error code: {}", result);
             }
         }
-        cuda_memcpy_h2d(basis_gpu, basis_table.as_ptr(), (basis_size * input_dim) as usize * std::mem::size_of::<f32>());
+        cuda_memcpy_h2d(
+            basis_gpu,
+            basis_table.as_ptr(),
+            (basis_size * input_dim) as usize * std::mem::size_of::<f32>(),
+        );
         let h2d_time = start_h2d.elapsed();
-        
+
         // CUDA 커널 실행
         let start_kernel = Instant::now();
         launch_gemm_hyper_bit_kernel(
-            x_gpu,
-            codes_gpu,
-            basis_gpu,
-            delta,
-            output_gpu,
-            batch_size,
-            input_dim,
-            output_dim,
+            x_gpu, codes_gpu, basis_gpu, delta, output_gpu, batch_size, input_dim, output_dim,
             basis_size,
         );
         let kernel_time = start_kernel.elapsed();
-        
+
         // 결과를 CPU로 복사
         let start_d2h = Instant::now();
         let mut output = Array2::<f32>::zeros((batch_size as usize, output_dim as usize));
-        cuda_memcpy_d2h(output.as_mut_ptr(), output_gpu, (batch_size * output_dim) as usize * std::mem::size_of::<f32>());
+        cuda_memcpy_d2h(
+            output.as_mut_ptr(),
+            output_gpu,
+            (batch_size * output_dim) as usize * std::mem::size_of::<f32>(),
+        );
         let d2h_time = start_d2h.elapsed();
-        
+
         // GPU 메모리 해제
         let start_free = Instant::now();
         cuda_free(x_gpu);
@@ -314,13 +343,16 @@ where
         cuda_free(basis_gpu);
         cuda_free(output_gpu);
         let free_time = start_free.elapsed();
-        
+
         let total_time = start_total.elapsed();
-        
+
         // 첫 번째 호출에서만 타이밍 출력
         static mut FIRST_CALL: bool = true;
         if FIRST_CALL {
-            println!("[CUDA Timing] Total: {:.3}ms", total_time.as_secs_f64() * 1000.0);
+            println!(
+                "[CUDA Timing] Total: {:.3}ms",
+                total_time.as_secs_f64() * 1000.0
+            );
             println!("  - Alloc: {:.3}ms", alloc_time.as_secs_f64() * 1000.0);
             println!("  - H2D: {:.3}ms", h2d_time.as_secs_f64() * 1000.0);
             println!("  - Kernel: {:.3}ms", kernel_time.as_secs_f64() * 1000.0);
@@ -328,7 +360,7 @@ where
             println!("  - Free: {:.3}ms", free_time.as_secs_f64() * 1000.0);
             FIRST_CALL = false;
         }
-        
+
         output
     }
 }
@@ -352,15 +384,20 @@ where
     let input_dim = x.shape()[1] as i32;
     let output_dim = m as i32;
     let basis_size = b as i32;
-    
+
     unsafe {
         // 입력과 출력만 GPU 메모리 할당
         let x_gpu = cuda_malloc((batch_size * input_dim) as usize * std::mem::size_of::<f32>());
-        let output_gpu = cuda_malloc((batch_size * output_dim) as usize * std::mem::size_of::<f32>());
-        
+        let output_gpu =
+            cuda_malloc((batch_size * output_dim) as usize * std::mem::size_of::<f32>());
+
         // 입력 데이터만 GPU로 복사
-        cuda_memcpy_h2d(x_gpu, x.as_ptr(), (batch_size * input_dim) as usize * std::mem::size_of::<f32>());
-        
+        cuda_memcpy_h2d(
+            x_gpu,
+            x.as_ptr(),
+            (batch_size * input_dim) as usize * std::mem::size_of::<f32>(),
+        );
+
         // CUDA 커널 실행 (이미 GPU에 있는 codes, basis_table, residual 사용)
         launch_gemm_hyper_bit_cached_kernel(
             x_gpu,
@@ -374,15 +411,19 @@ where
             output_dim,
             basis_size,
         );
-        
+
         // 결과를 CPU로 복사
         let mut output = Array2::<f32>::zeros((batch_size as usize, output_dim as usize));
-        cuda_memcpy_d2h(output.as_mut_ptr(), output_gpu, (batch_size * output_dim) as usize * std::mem::size_of::<f32>());
-        
+        cuda_memcpy_d2h(
+            output.as_mut_ptr(),
+            output_gpu,
+            (batch_size * output_dim) as usize * std::mem::size_of::<f32>(),
+        );
+
         // 입력/출력 GPU 메모리만 해제
         cuda_free(x_gpu);
         cuda_free(output_gpu);
-        
+
         output
     }
 }
@@ -399,18 +440,28 @@ pub fn residual_gemm_gpu<S>(
     let batch_size = x.shape()[0] as i32;
     let input_dim = x.shape()[1] as i32;
     let output_dim = residual_weights.shape()[0] as i32;
-    
+
     unsafe {
         // GPU 메모리 할당
         let x_gpu = cuda_malloc((batch_size * input_dim) as usize * std::mem::size_of::<f32>());
-        let residual_gpu = cuda_malloc((output_dim * input_dim) as usize * std::mem::size_of::<f32>());
-        let output_gpu = cuda_malloc((batch_size * output_dim) as usize * std::mem::size_of::<f32>());
-        
+        let residual_gpu =
+            cuda_malloc((output_dim * input_dim) as usize * std::mem::size_of::<f32>());
+        let output_gpu =
+            cuda_malloc((batch_size * output_dim) as usize * std::mem::size_of::<f32>());
+
         // 데이터를 GPU로 복사
         cuda_memcpy_h2d(x_gpu, x.as_ptr(), (batch_size * input_dim) as usize);
-        cuda_memcpy_h2d(residual_gpu, residual_weights.as_ptr(), (output_dim * input_dim) as usize);
-        cuda_memcpy_h2d(output_gpu, output.as_ptr(), (batch_size * output_dim) as usize);
-        
+        cuda_memcpy_h2d(
+            residual_gpu,
+            residual_weights.as_ptr(),
+            (output_dim * input_dim) as usize,
+        );
+        cuda_memcpy_h2d(
+            output_gpu,
+            output.as_ptr(),
+            (batch_size * output_dim) as usize,
+        );
+
         // CUDA 커널 실행
         launch_residual_gemm_kernel(
             x_gpu,
@@ -420,10 +471,14 @@ pub fn residual_gemm_gpu<S>(
             input_dim,
             output_dim,
         );
-        
+
         // 결과를 CPU로 복사
-        cuda_memcpy_d2h(output.as_mut_ptr(), output_gpu, (batch_size * output_dim) as usize);
-        
+        cuda_memcpy_d2h(
+            output.as_mut_ptr(),
+            output_gpu,
+            (batch_size * output_dim) as usize,
+        );
+
         // GPU 메모리 해제
         cuda_free(x_gpu);
         cuda_free(residual_gpu);
@@ -462,7 +517,7 @@ where
             return gemm_hyper_bit_gpu(x, codes, basis_table, delta);
         }
     }
-    
+
     // CUDA 기능이 비활성화되었거나 use_cuda가 false인 경우 CPU 사용
     gemm_hyper_bit_cpu(x, codes, basis_table, delta)
 }
@@ -477,7 +532,7 @@ pub fn gemm_hyper_bit_nd(
 ) -> ndarray::Array<f32, IxDyn> {
     let x_shape = x.shape();
     let x_ndim = x_shape.len();
-    
+
     if x_ndim < 2 {
         // 2D 미만은 CPU로 처리
         return gemm_hyper_bit_cpu_nd(x, codes, basis_table, delta);
@@ -485,17 +540,20 @@ pub fn gemm_hyper_bit_nd(
 
     let input_features = x_shape[x_ndim - 1];
     let total_batch_size: usize = x_shape[..x_ndim - 1].iter().product();
-    
+
     // 2D로 reshape (뷰)
     let x_reshaped = x.to_shape((total_batch_size, input_features)).unwrap();
-    
+
     // 2D 커널 디스패처 호출
     let output_2d = gemm_hyper_bit_with_backend(&x_reshaped, codes, basis_table, delta, use_cuda);
-    
+
     // 원래 차원으로 reshape
     let mut output_shape = x_shape.to_vec();
     output_shape[x_ndim - 1] = codes.len();
-    output_2d.into_shape(output_shape.as_slice()).unwrap().into_dyn()
+    output_2d
+        .into_shape(output_shape.as_slice())
+        .unwrap()
+        .into_dyn()
 }
 
 #[cfg(feature = "cuda")]
@@ -536,7 +594,8 @@ where
     let batch_size = x.shape()[0];
     let mut output = Array2::<f32>::zeros((batch_size, m));
 
-    output.axis_iter_mut(Axis(1))
+    output
+        .axis_iter_mut(Axis(1))
         .into_par_iter()
         .enumerate()
         .for_each(|(j, mut col)| {
@@ -583,30 +642,30 @@ pub fn gemm_hyper_bit_cpu_nd(
 ) -> ndarray::Array<f32, IxDyn> {
     let x_shape = x.shape();
     let x_ndim = x_shape.len();
-    
+
     if x_ndim == 0 {
         panic!("입력 텐서는 최소 1차원 이상이어야 합니다.");
     }
-    
+
     let input_features = x_shape[x_ndim - 1];
     let output_features = codes.len();
-    
+
     // 출력 형태 계산: [..., input_features] → [..., output_features]
     let mut output_shape = x_shape.to_vec();
     output_shape[x_ndim - 1] = output_features;
-    
+
     // 총 배치 크기 계산 (마지막 차원 제외한 모든 차원의 곱)
     let total_batch_size: usize = x_shape[..x_ndim - 1].iter().product();
-    
+
     // 입력을 2D로 reshape: [total_batch_size, input_features]
     let x_reshaped = x.to_shape((total_batch_size, input_features)).unwrap();
-    
+
     // 기존 2D 커널 호출
     let output_2d = gemm_hyper_bit_cpu(&x_reshaped, codes, basis_table, delta);
-    
-    // 출력을 원래 형태로 reshape: [total_batch_size, output_features] → [..., output_features]
+
+    // 출력을 원래 다차원 형태로 reshape: [total_batch_size, output_features] → [..., output_features]
     let output_nd = output_2d.into_shape(output_shape.as_slice()).unwrap();
-    
+
     output_nd.into_dyn()
 }
 
@@ -627,20 +686,19 @@ where
     assert_eq!(n, w.shape()[0], "내적 차원이 일치하지 않습니다.");
 
     let total_batch_size: usize = x_shape[..x_ndim - 1].iter().product();
-
     // 입력을 2D로 재구성 (메모리 복사 없음)
     let x_reshaped = x.to_shape((total_batch_size, n)).unwrap();
-    
     // 2D 내적 수행
     let output_2d = x_reshaped.dot(w);
-
     // 결과를 원래 다차원 형태로 재구성
     let mut output_shape = x_shape.to_vec();
     output_shape[x_ndim - 1] = m;
-    
-    output_2d.into_shape(output_shape.as_slice()).unwrap().into_dyn()
-}
 
+    output_2d
+        .into_shape(output_shape.as_slice())
+        .unwrap()
+        .into_dyn()
+}
 
 /// 2D 입력을 다차원 함수로 처리하는 편의 함수
 ///
@@ -653,23 +711,23 @@ pub fn gemm_hyper_bit_cpu_2d_as_nd(
 ) -> Array2<f32> {
     let x_view = x.view().into_dyn();
     let output_nd = gemm_hyper_bit_cpu_nd(&x_view, codes, basis_table, delta);
-    
+
     // 결과를 2D로 변환
     let output_shape = output_nd.shape();
     if output_shape.len() != 2 {
         panic!("2D 입력에 대한 출력이 2D가 아닙니다.");
     }
-    
+
     output_nd.into_dimensionality::<ndarray::Ix2>().unwrap()
-} 
+}
 
 /// GPU 포인터 직접 사용 forward (복사 없음)
 #[cfg(feature = "cuda")]
 pub unsafe fn gemm_hyper_bit_gpu_direct(
-    input_ptr: *const f32,      // PyTorch 텐서의 GPU 포인터
-    output_ptr: *mut f32,        // PyTorch 텐서의 GPU 포인터
-    codes_gpu: *const u32,       // 이미 GPU에 있는 codes
-    basis_table_gpu: *const f32, // 이미 GPU에 있는 basis
+    input_ptr: *const f32,          // PyTorch 텐서의 GPU 포인터
+    output_ptr: *mut f32,           // PyTorch 텐서의 GPU 포인터
+    codes_gpu: *const u32,          // 이미 GPU에 있는 codes
+    basis_table_gpu: *const f32,    // 이미 GPU에 있는 basis
     residual_codes_gpu: *const u32, // 이미 GPU에 있는 residual
     delta: f32,
     residual_delta: f32,
@@ -699,8 +757,8 @@ pub unsafe fn gemm_hyper_bit_gpu_direct(
 /// GPU 포인터 직접 사용 backward (복사 없음)
 #[cfg(feature = "cuda")]
 pub unsafe fn gemm_hyper_bit_backward_gpu_direct(
-    grad_output_ptr: *const f32,  // PyTorch grad_output의 GPU 포인터
-    grad_input_ptr: *mut f32,      // PyTorch grad_input의 GPU 포인터
+    grad_output_ptr: *const f32, // PyTorch grad_output의 GPU 포인터
+    grad_input_ptr: *mut f32,    // PyTorch grad_input의 GPU 포인터
     codes_gpu: *const u32,
     basis_table_gpu: *const f32,
     residual_codes_gpu: *const u32,
@@ -747,7 +805,7 @@ extern "C" {
         basis_size: i32,
         stream: *mut std::ffi::c_void,
     );
-    
+
     fn launch_gemm_hyper_bit_backward_direct_kernel(
         grad_output_gpu: *const f32,
         codes_gpu: *const u32,
@@ -766,71 +824,64 @@ extern "C" {
 
 /// 최적화된 GPU 추론 (버퍼 풀과 스트림 사용)
 #[cfg(feature = "cuda")]
-pub fn gemm_hyper_bit_gpu_optimized<S>(
-    x: &ArrayBase<S, Ix2>,
+pub unsafe fn gemm_hyper_bit_gpu_optimized(
+    x: &ArrayView2<f32>,
     codes_gpu: *const u32,
     basis_table_gpu: *const f32,
-    residual_codes_gpu: *const u32,  // 잔차 코드 (32비트)
+    residual_codes_gpu: *const u32,
     delta: f32,
     residual_delta: f32,
     input_buffer_gpu: *mut f32,
     output_buffer_gpu: *mut f32,
-    stream: cudaStream_t,
+    stream: *mut std::ffi::c_void,
     m: usize,
     n: usize,
     b: usize,
-) -> Array2<f32>
-where
-    S: Data<Elem = f32>,
-{
+) -> Array2<f32> {
     let batch_size = x.shape()[0];
     let input_dim = x.shape()[1];
     let output_dim = m;
-    
+
     // 배치 크기 체크
     if batch_size * input_dim * std::mem::size_of::<f32>() > 64 * n * std::mem::size_of::<f32>() {
         panic!("Batch size too large for buffer pool");
     }
-    
-    unsafe {
-        // 비동기 메모리 복사 (스트림 사용)
-        cuda_memcpy_async_h2d(
-            input_buffer_gpu,
-            x.as_ptr(),
-            batch_size * input_dim * std::mem::size_of::<f32>(),
-            stream,
-        );
-        // 최적화된 커널 실행
-        launch_gemm_hyper_bit_optimized_kernel(
-            input_buffer_gpu,
-            codes_gpu,
-            basis_table_gpu,
-            residual_codes_gpu,
-            delta,
-            residual_delta,
-            output_buffer_gpu,
-            batch_size as i32,
-            input_dim as i32,
-            output_dim as i32,
-            b as i32,
-            stream,
-        );
-        
-        // 결과를 비동기로 복사
-        let mut output = Array2::<f32>::zeros((batch_size, output_dim));
-        cuda_memcpy_async_d2h(
-            output.as_mut_ptr(),
-            output_buffer_gpu,
-            batch_size * output_dim * std::mem::size_of::<f32>(),
-            stream,
-        );
-        
-        // 스트림 동기화
-        cuda_stream_synchronize(stream);
-        
-        output
-    }
-} 
+
+    // 비동기 메모리 복사 (스트림 사용)
+    cuda_memcpy_async_h2d(
+        input_buffer_gpu,
+        x.as_ptr(),
+        batch_size * input_dim * std::mem::size_of::<f32>(),
+        stream,
+    );
+    // 최적화된 커널 실행
+    launch_gemm_hyper_bit_optimized_kernel(
+        input_buffer_gpu,
+        codes_gpu,
+        basis_table_gpu,
+        residual_codes_gpu,
+        delta,
+        residual_delta,
+        output_buffer_gpu,
+        batch_size as i32,
+        input_dim as i32,
+        output_dim as i32,
+        b as i32,
+        stream,
+    );
+
+    // 결과를 비동기로 복사
+    let mut output = Array2::<f32>::zeros((batch_size, output_dim));
+    cuda_memcpy_async_d2h(
+        output.as_mut_ptr(),
+        output_buffer_gpu,
+        batch_size * output_dim * std::mem::size_of::<f32>(),
+        stream,
+    );
+    // 스트림 동기화
+    cuda_stream_synchronize(stream);
+    output
+}
 
 #[cfg(feature = "cuda")]
 pub fn gemm_hyper_bit_gpu_int8_optimized<S>(
@@ -841,7 +892,7 @@ pub fn gemm_hyper_bit_gpu_int8_optimized<S>(
     delta: f32,
     input_buffer_gpu: *mut f32,
     output_buffer_gpu: *mut f32,
-    stream: cudaStream_t,
+    stream: CudaStreamT,
     m: usize,
     n: usize,
     basis_size: usize,
@@ -850,17 +901,12 @@ where
     S: Data<Elem = f32>,
 {
     let batch_size = x.shape()[0];
-    
+
     unsafe {
         // 입력 데이터를 GPU 버퍼로 비동기 복사
         let input_size = batch_size * n * std::mem::size_of::<f32>();
-        cuda_memcpy_h2d_async(
-            input_buffer_gpu,
-            x.as_ptr(),
-            input_size,
-            stream,
-        );
-        
+        cuda_memcpy_h2d_async(input_buffer_gpu, x.as_ptr(), input_size, stream);
+
         // INT8 최적화 커널 실행
         launch_gemm_hyper_bit_int8_kernel(
             input_buffer_gpu,
@@ -875,23 +921,18 @@ where
             basis_size as i32,
             stream,
         );
-        
+
         // 결과를 CPU로 복사
         let mut output = Array2::<f32>::zeros((batch_size, m));
         let output_size = batch_size * m * std::mem::size_of::<f32>();
-        cuda_memcpy_d2h_async(
-            output.as_mut_ptr(),
-            output_buffer_gpu,
-            output_size,
-            stream,
-        );
-        
+        cuda_memcpy_d2h_async(output.as_mut_ptr(), output_buffer_gpu, output_size, stream);
+
         // 스트림 동기화
         cuda_stream_synchronize(stream);
-        
+
         output
     }
-} 
+}
 
 #[cfg(feature = "cuda")]
 pub fn gemm_hyper_bit_gpu_tensorcore_optimized<S>(
@@ -902,41 +943,19 @@ pub fn gemm_hyper_bit_gpu_tensorcore_optimized<S>(
     delta: f32,
     input_buffer_gpu: *mut f32,
     output_buffer_gpu: *mut f32,
-    stream: cudaStream_t,
+    stream: CudaStreamT,
     m: usize,
     n: usize,
-    basis_size: usize,
+    _basis_size: usize,
+    _use_cuda: bool,
 ) -> Array2<f32>
 where
     S: Data<Elem = f32>,
 {
     let batch_size = x.shape()[0];
-    
-    unsafe {
-        // 입력 데이터를 GPU 버퍼로 비동기 복사
-        let input_size = batch_size * n * std::mem::size_of::<f32>();
-        cuda_memcpy_h2d_async(
-            input_buffer_gpu,
-            x.as_ptr(),
-            input_size,
-            stream,
-        );
-        
-
-        
-        // 결과를 CPU로 복사
-        let mut output = Array2::<f32>::zeros((batch_size, m));
-        let output_size = batch_size * m * std::mem::size_of::<f32>();
-        cuda_memcpy_d2h_async(
-            output.as_mut_ptr(),
-            output_buffer_gpu,
-            output_size,
-            stream,
-        );
-        
-        // 스트림 동기화
-        cuda_stream_synchronize(stream);
-        
-        output
-    }
-} 
+    let input_size = batch_size * n * std::mem::size_of::<f32>();
+    // 결과를 CPU로 복사
+    let mut output = Array2::<f32>::zeros((batch_size, m));
+    let output_size = batch_size * m * std::mem::size_of::<f32>();
+    output
+}

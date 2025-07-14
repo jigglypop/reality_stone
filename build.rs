@@ -1,5 +1,5 @@
-use std::env;
 use glob::glob;
+use std::env;
 
 fn main() {
     #[cfg(feature = "cuda")]
@@ -24,7 +24,7 @@ fn main() {
             } else {
                 stem.to_string()
             };
-            
+
             // Use cc::Build for compiling CUDA files
             cc::Build::new()
                 .cuda(true)
@@ -39,4 +39,4 @@ fn main() {
         println!("cargo:rustc-link-lib=cudart");
         println!("cargo:rustc-link-lib=cublas");
     }
-} 
+}

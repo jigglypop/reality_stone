@@ -4,10 +4,9 @@
 #[link(name = "reality_stone_kernels", kind = "static")]
 extern "C" {
     // Bitfield
-    pub fn bitfield_forward_cuda(
-        // ...
+    pub fn bitfield_forward_cuda(// ...
     );
-    
+
     // Spline
     pub fn spline_forward_cuda(
         input: *const f32,

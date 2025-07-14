@@ -1,0 +1,20 @@
+# Reality Stone rustfmt 설정 (stable)
+
+# 기본 설정
+edition = "2021"
+max_width = 100
+hard_tabs = false
+tab_spaces = 4
+newline_style = "Unix"
+
+# 안정 버전에서 지원하는 설정들
+use_small_heuristics = "Default"
+reorder_imports = true
+reorder_modules = true
+merge_derives = true
+use_try_shorthand = true
+use_field_init_shorthand = true
+force_explicit_abi = true
+
+# match 관련
+match_block_trailing_comma = false 

@@ -29,10 +29,7 @@ pub fn mobius_add_cuda(
     let u_ptr_f32 = u_ptr as *const f32;
     let v_ptr_f32 = v_ptr as *const f32;
     let out_ptr_f32 = out_ptr as *mut f32;
-
-    unsafe {
-        mobius::cuda::mobius_add_cuda(out_ptr_f32, u_ptr_f32, v_ptr_f32, c, batch_size, dim);
-    }
+    mobius::cuda::mobius_add_cuda(out_ptr_f32, u_ptr_f32, v_ptr_f32, c, batch_size, dim);
     Ok(())
 }
 
@@ -61,10 +58,7 @@ pub fn mobius_scalar_cuda(
 ) -> PyResult<()> {
     let u_ptr_f32 = u_ptr as *const f32;
     let out_ptr_f32 = out_ptr as *mut f32;
-
-    unsafe {
-        mobius::cuda::mobius_scalar_cuda(out_ptr_f32, u_ptr_f32, c, r, batch_size, dim);
-    }
+    mobius::cuda::mobius_scalar_cuda(out_ptr_f32, u_ptr_f32, c, r, batch_size, dim);
     Ok(())
 }
 
@@ -100,9 +94,8 @@ pub fn mobius_add_dynamic_backward_cpu<'py>(
     let u_arr = u.as_array();
     let v_arr = v.as_array();
     let dynamic_c = mobius::DynamicCurvature::new(kappa, c_min, c_max);
-    let (grad_u, grad_v, grad_kappa) = mobius::mobius_add_dynamic_backward(
-        &grad_output_arr, &u_arr, &v_arr, &dynamic_c
-    );
+    let (grad_u, grad_v, grad_kappa) =
+        mobius::mobius_add_dynamic_backward(&grad_output_arr, &u_arr, &v_arr, &dynamic_c);
     (grad_u.into_pyarray(py), grad_v.into_pyarray(py), grad_kappa)
 }
 
@@ -139,7 +132,11 @@ pub fn mobius_add_layerwise_backward_cpu<'py>(
     let v_arr = v.as_array();
     let layer_curvatures = mobius::LayerWiseDynamicCurvature::from_kappas(kappas, c_min, c_max);
     let (grad_u, grad_v, grad_kappa) = mobius::mobius_add_layerwise_backward(
-        &grad_output_arr, &u_arr, &v_arr, &layer_curvatures, layer_idx
+        &grad_output_arr,
+        &u_arr,
+        &v_arr,
+        &layer_curvatures,
+        layer_idx,
     );
     (grad_u.into_pyarray(py), grad_v.into_pyarray(py), grad_kappa)
 }
@@ -156,4 +153,4 @@ pub fn register(m: &PyModule) -> PyResult<()> {
     #[cfg(feature = "cuda")]
     m.add_function(wrap_pyfunction!(mobius_scalar_cuda, m)?)?;
     Ok(())
-} 
+}

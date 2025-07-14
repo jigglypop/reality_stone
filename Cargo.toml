@@ -7,7 +7,13 @@ description = "High-performance hyperbolic neural networks library powered by Ru
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/jigglypop/reality_stone"
-keywords = ["hyperbolic", "neural-networks", "deep-learning", "manifold-learning", "rust"]
+keywords = [
+    "hyperbolic",
+    "neural-networks",
+    "deep-learning",
+    "manifold-learning",
+    "rust",
+]
 
 [lib]
 name = "_rust"
@@ -15,18 +21,19 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pyo3 = { version = "0.19", features = ["extension-module"] }
-ndarray = { version = "0.15", features = ["rayon"] }
+ndarray = { version = "0.15", features = ["rayon", "approx"] }
 numpy = "0.19"
 rayon = "1.7"
 num-traits = "0.2"
 num-integer = "0.1"
 num-rational = "0.4"
 simba = "0.8"
-approx = "0.5"
+approx = "0.4.0"
 anyhow = "1.0"
 thiserror = "1.0"
 ndarray-rand = "0.15.0"
 rand = "0.9.1"
+libc = "0.2"
 
 [build-dependencies]
 cc = "1.0"

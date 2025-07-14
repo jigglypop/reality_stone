@@ -1,7 +1,7 @@
 // src/bindings/macros.rs
 
 /// PyFunction 바인딩 생성을 위한 매크로
-/// 
+///
 /// 사용법:
 /// `create_binding!(파이썬_함수명, Rust_함수_경로, [인자1, 인자2, ...], 반환_타입);`
 ///
@@ -70,4 +70,4 @@ macro_rules! create_binding {
             numpy::IntoPyArray::into_pyarray(result, py)
         }
     };
-} 
+}

@@ -1,5 +1,5 @@
 use crate::ops::batch::norm_sq_batched;
-use ndarray::{ArrayView2, Axis, Array2};
+use ndarray::{Array2, ArrayView2, Axis};
 
 pub const EPS: f32 = 1e-7;
 pub fn project_to_ball(x: &ArrayView2<f32>, epsilon: f32) -> Array2<f32> {

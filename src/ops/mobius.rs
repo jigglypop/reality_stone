@@ -232,7 +232,6 @@ pub fn mobius_add_layerwise_backward(
 #[cfg(feature = "cuda")]
 pub mod cuda {
     mod ffi {
-        #[link(name = "kernel_mobius", kind="static")]
         extern "C" {
             pub fn mobius_add_cuda(
                 out: *mut f32,

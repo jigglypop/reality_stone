@@ -229,7 +229,6 @@ pub fn lorentz_layer_backward(
 #[cfg(feature = "cuda")]
 pub mod cuda {
     mod ffi {
-        #[link(name = "lorentz", kind="static")]
         extern "C" {
             pub fn lorentz_distance_cuda(
                 out: *mut f32,

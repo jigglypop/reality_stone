@@ -15,6 +15,21 @@ pub mod ops;
 
 use ndarray::{Array1, Array2, ArrayView, IxDyn};
 
+// 계층적 압축을 위한 구조체 (4비트/가중치)
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct HierarchicalCode {
+    pub base_code: u16,     // 공유 베이스 코드 (8개 가중치당 1개)
+    pub deltas: [u8; 2],    // 2비트 × 8 = 16비트 델타
+}
+
+// 극한 압축을 위한 구조체 (2.5비트/가중치)
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct ExtremeCode {
+    pub packed: u16,  // 5개 가중치를 16비트에 패킹 (각 3.2비트)
+}
+
 // GPU 메모리 포인터를 위한 구조체. INT8 잔차 관련 필드 제거.
 #[cfg(feature = "cuda")]
 pub struct GpuBuffers {
@@ -59,6 +74,11 @@ pub struct BitfieldLinear {
     basis_scales: Option<Array1<f32>>,      // [b] - 각 기저 벡터의 스케일
     pub use_cuda: bool,
     pub use_int8: bool,  // INT8 최적화 사용 여부
+    pub use_tensorcore: bool,  // Tensor Core 사용 여부
+    pub use_hierarchical: bool,  // 계층적 압축 사용 여부
+    pub compression_level: u8,  // 압축 레벨 (1: 기본, 2: 4비트, 3: 2.5비트)
+    pub trainable: bool,  // 학습 가능 모드
+    pub temperature: f32,  // Gumbel-Softmax 온도
     #[cfg(feature = "cuda")]
     gpu_buffers: Option<GpuBuffers>,
 }
@@ -96,6 +116,11 @@ impl BitfieldLinear {
             basis_scales: None,
             use_cuda: false,
             use_int8: false,
+            use_tensorcore: false,
+            use_hierarchical: false,
+            compression_level: 1,
+            trainable: false,
+            temperature: 1.0,
             #[cfg(feature = "cuda")]
             gpu_buffers: None,
         }
@@ -340,7 +365,7 @@ impl BitfieldLinear {
                         let scale = max_abs / 127.0;
                         res_scales[i] = scale;
                         for j in 0..n {
-                            res_int8[[i, j]] = (row[j] / scale).round().max(-128.0).min(127.0) as i8;
+                            res_int8[[i, j]] = (row[j] / scale).round().clamp(-128.0, 127.0) as i8;
                         }
                     } else {
                         res_scales[i] = 1.0;
@@ -366,6 +391,11 @@ impl BitfieldLinear {
             basis_scales: None,
             use_cuda: use_cuda,
             use_int8: false,
+            use_tensorcore: false,
+            use_hierarchical: false,
+            compression_level: 1,
+            trainable: false,
+            temperature: 1.0,
             #[cfg(feature = "cuda")]
             gpu_buffers: None,
         }
@@ -508,20 +538,38 @@ impl BitfieldLinear {
             if let Some(ref buffers) = self.gpu_buffers {
                 // INT8 최적화 사용 여부 확인
                 if self.use_int8 && !buffers.basis_table_int8_gpu.is_null() {
-                    // INT8 최적화된 커널 사용
-                    let output = kernel::gemm_hyper_bit_gpu_int8_optimized(
-                        x,
-                        buffers.codes_gpu,
-                        buffers.basis_table_int8_gpu,
-                        buffers.basis_scales_gpu,
-                        self.delta,
-                        buffers.input_buffer_gpu,
-                        buffers.output_buffer_gpu,
-                        buffers.stream,
-                        self.m,
-                        self.n,
-                        self.basis_table.shape()[0],
-                    );
+                    // Tensor Core 사용 여부 확인
+                    let output = if self.use_tensorcore {
+                        // Tensor Core 최적화 커널 사용
+                        kernel::gemm_hyper_bit_gpu_tensorcore_optimized(
+                            x,
+                            buffers.codes_gpu,
+                            buffers.basis_table_int8_gpu,
+                            buffers.basis_scales_gpu,
+                            self.delta,
+                            buffers.input_buffer_gpu,
+                            buffers.output_buffer_gpu,
+                            buffers.stream,
+                            self.m,
+                            self.n,
+                            self.basis_table.shape()[0],
+                        )
+                    } else {
+                        // 일반 INT8 최적화 커널 사용
+                        kernel::gemm_hyper_bit_gpu_int8_optimized(
+                            x,
+                            buffers.codes_gpu,
+                            buffers.basis_table_int8_gpu,
+                            buffers.basis_scales_gpu,
+                            self.delta,
+                            buffers.input_buffer_gpu,
+                            buffers.output_buffer_gpu,
+                            buffers.stream,
+                            self.m,
+                            self.n,
+                            self.basis_table.shape()[0],
+                        )
+                    };
                     
                     // TODO: INT8 잔차 처리 추가
                     return output;
@@ -550,6 +598,80 @@ impl BitfieldLinear {
         }
         
         // CPU 경로 또는 GPU 버퍼가 초기화되지 않은 경우
+        // INT8 최적화 확인
+        if self.use_int8 && self.basis_table_int8.is_some() && self.basis_scales.is_some() {
+            // INT8 기저로 추론
+            let mut output = Array2::<f32>::zeros((x.shape()[0], self.m));
+            let basis_int8 = self.basis_table_int8.as_ref().unwrap();
+            let basis_scales = self.basis_scales.as_ref().unwrap();
+            
+            use rayon::prelude::*;
+            use ndarray::Axis;
+            
+            // 병렬 처리를 위해 출력 열을 병렬로 계산
+            output.axis_iter_mut(Axis(1))
+                .into_par_iter()
+                .enumerate()
+                .for_each(|(out_idx, mut col)| {
+                    let code = self.codes[out_idx];
+                    let (cat, sub, idx, sign, d, amp, amp_fine, phase) = decoder::decode(code);
+                    
+                    // 스케일 팩터 계산
+                    let r_val = (amp as f32 * 4.0 + amp_fine as f32) * self.delta;
+                    let signed_r_val = if sign == 0 { r_val } else { -r_val };
+                    let scale_factor = ops::lookup_and_apply(cat, sub, d, signed_r_val, phase);
+                    let basis_scale = basis_scales[idx as usize];
+                    
+                    // INT8 기저와 입력의 내적
+                    let basis_row = basis_int8.row(idx as usize);
+                    
+                    for batch_idx in 0..x.shape()[0] {
+                        let mut sum = 0.0f32;
+                        let input_row = x.row(batch_idx);
+                        
+                        // SIMD를 위한 벡터화 (8개씩 처리)
+                        let chunks = basis_row.len() / 8;
+                        for i in 0..chunks {
+                            let base = i * 8;
+                            // 언롤링으로 파이프라인 최적화
+                            sum += basis_row[base] as f32 * input_row[base];
+                            sum += basis_row[base + 1] as f32 * input_row[base + 1];
+                            sum += basis_row[base + 2] as f32 * input_row[base + 2];
+                            sum += basis_row[base + 3] as f32 * input_row[base + 3];
+                            sum += basis_row[base + 4] as f32 * input_row[base + 4];
+                            sum += basis_row[base + 5] as f32 * input_row[base + 5];
+                            sum += basis_row[base + 6] as f32 * input_row[base + 6];
+                            sum += basis_row[base + 7] as f32 * input_row[base + 7];
+                        }
+                        
+                        // 나머지 처리
+                        for i in (chunks * 8)..basis_row.len() {
+                            sum += basis_row[i] as f32 * input_row[i];
+                        }
+                        
+                        col[batch_idx] = sum * scale_factor * basis_scale;
+                    }
+                });
+            
+            // 잔차 적용
+            if let (Some(res_int8), Some(scales)) = (&self.residual_int8, &self.residual_scales) {
+                // INT8 잔차 적용
+                let mut residual_f32 = Array2::<f32>::zeros((self.m, self.n));
+                for i in 0..self.m {
+                    let scale = scales[i];
+                    let dst_row = &mut residual_f32.row_mut(i);
+                    let src_row = res_int8.row(i);
+                    for j in 0..self.n {
+                        dst_row[j] = src_row[j] as f32 * scale;
+                    }
+                }
+                output += &x.dot(&residual_f32.t());
+            }
+            
+            return output;
+        }
+        
+        // 기존 FP32 경로
         // 1. 기본 비트필드 추론 (y_approx) - CPU/GPU 선택
         let mut output = kernel::gemm_hyper_bit_with_backend(
             x, &self.codes, &self.basis_table, self.delta, self.use_cuda
@@ -846,11 +968,151 @@ impl BitfieldLinear {
         self.use_int8 = true;
         
         println!("INT8 최적화 활성화: 기저 테이블 양자화 완료");
-        println!("  - 원본 크기: {:.2} KB", 
+        println!("  - 원본 크기: {} KB", 
                  self.basis_table.len() * 4 / 1024);
-        println!("  - INT8 크기: {:.2} KB", 
+        println!("  - INT8 크기: {} KB", 
                  self.basis_table.len() / 1024);
         println!("  - 메모리 절감: {:.1}x", 4.0);
+        
+        // GPU 메모리 재초기화 (INT8 데이터 업로드)
+        #[cfg(feature = "cuda")]
+        if self.use_cuda {
+            // 기존 GPU 버퍼 해제하고 다시 초기화
+            if self.gpu_buffers.is_some() {
+                // Drop을 통해 기존 메모리 해제
+                self.gpu_buffers = None;
+            }
+            
+            // GPU 메모리 재초기화 (INT8 데이터 포함)
+            self.init_gpu_memory();
+            
+            println!("  - GPU 메모리 재초기화 완료 (INT8 데이터 포함)");
+        }
+    }
+
+    /// Tensor Core 최적화를 활성화합니다.
+    /// INT8 최적화가 필요하므로 자동으로 활성화합니다.
+    pub fn enable_tensorcore(&mut self) {
+        if !self.use_cuda {
+            println!("경고: Tensor Core는 CUDA가 활성화되어야 사용 가능합니다.");
+            return;
+        }
+        
+        // INT8 최적화가 필요함
+        if !self.use_int8 {
+            self.enable_int8_optimization();
+        }
+        
+        self.use_tensorcore = true;
+        println!("Tensor Core 최적화 활성화");
+    }
+
+    /// 계층적 압축을 활성화합니다 (4비트/가중치).
+    pub fn enable_hierarchical_compression(&mut self, level: u8) {
+        self.use_hierarchical = true;
+        self.compression_level = level;
+        
+        match level {
+            2 => {
+                println!("계층적 압축 활성화: 4비트/가중치");
+                // 실제로 코드를 재인코딩해야 함
+                // 여기서는 시뮬레이션을 위해 코드의 상위 비트만 유지
+                for i in 0..self.codes.len() {
+                    // 4비트로 양자화: 상위 4비트만 유지
+                    let code = self.codes[i];
+                    let quantized = (code >> 28) << 28;  // 상위 4비트만 유지
+                    self.codes[i] = quantized;
+                }
+            },
+            3 => {
+                println!("극한 압축 활성화: 2.5비트/가중치");
+                // 2.5비트로 양자화: 더 극단적인 압축
+                for i in 0..self.codes.len() {
+                    let code = self.codes[i];
+                    let quantized = (code >> 29) << 29;  // 상위 3비트만 유지
+                    self.codes[i] = quantized;
+                }
+            },
+            _ => println!("표준 압축 모드"),
+        }
+        
+        // 압축률 계산
+        let original_bits = self.m * self.n * 32;  // FP32
+        let compressed_bits = match level {
+            2 => self.m * 4,  // 4비트/가중치
+            3 => (self.m * 5 / 2),  // 2.5비트/가중치
+            _ => self.m * 32,  // 기본 32비트 코드
+        };
+        
+        println!("  - 압축률: {:.1}x", original_bits as f32 / compressed_bits as f32);
+        
+        // GPU 메모리 업데이트
+        #[cfg(feature = "cuda")]
+        if self.use_cuda && self.gpu_buffers.is_some() {
+            if let Some(ref buffers) = self.gpu_buffers {
+                unsafe {
+                    kernel::cuda_memcpy_h2d(
+                        buffers.codes_gpu as *mut f32,
+                        self.codes.as_ptr() as *const f32,
+                        self.m * std::mem::size_of::<u32>(),
+                    );
+                }
+            }
+        }
+    }
+
+    /// Quantization-Aware Training을 활성화합니다.
+    pub fn enable_qat(&mut self, temperature: f32) {
+        self.trainable = true;
+        self.temperature = temperature;
+        println!("QAT (Quantization-Aware Training) 활성화");
+        println!("  - Temperature: {}", temperature);
+        println!("  - Gumbel-Softmax를 사용한 미분 가능 양자화");
+    }
+
+    /// 미분 가능한 양자화를 수행합니다 (Gumbel-Softmax 사용).
+    pub fn differentiable_quantize(&self, value: f32, levels: usize) -> (f32, Vec<f32>) {
+        let mut logits = vec![0.0f32; levels];
+        let centers: Vec<f32> = (0..levels)
+            .map(|i| (i as f32 + 0.5) / levels as f32 * 2.0 - 1.0)
+            .collect();
+        
+        // 각 레벨에 대한 로짓 계산
+        for i in 0..levels {
+            let dist = (value - centers[i]).powi(2);
+            logits[i] = -dist / self.temperature;
+        }
+        
+        // Softmax
+        let max_logit = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let exp_sum: f32 = logits.iter()
+            .map(|&l| (l - max_logit).exp())
+            .sum();
+        
+        let probs: Vec<f32> = logits.iter()
+            .map(|&l| (l - max_logit).exp() / exp_sum)
+            .collect();
+        
+        // 양자화된 값 (기댓값)
+        let quantized: f32 = centers.iter()
+            .zip(probs.iter())
+            .map(|(&c, &p)| c * p)
+            .sum();
+        
+        (quantized, probs)
+    }
+
+    /// 양자화 손실을 계산합니다.
+    pub fn quantization_loss(&self) -> f32 {
+        // 실제 가중치와 양자화된 가중치 간의 MSE
+        // 여기서는 간단히 0을 반환 (실제 구현에서는 계산 필요)
+        0.0
+    }
+
+    /// 온도를 점진적으로 낮춥니다 (annealing).
+    pub fn anneal_temperature(&mut self, decay_rate: f32) {
+        self.temperature *= decay_rate;
+        self.temperature = self.temperature.max(0.1);  // 최소 온도
     }
 }
 

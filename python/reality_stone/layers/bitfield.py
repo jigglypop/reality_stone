@@ -87,12 +87,18 @@ class BitfieldFunction(Function):
                 else:
                     # forward_cuda_direct가 없으면 기존 방식 사용
                     output = rust_layer.forward(input)
+                    # 출력이 CPU로 나왔다면 GPU로 이동
+                    if not output.is_cuda and input.is_cuda:
+                        output = output.to(input.device)
                     return output
                 
             except Exception as e:
                 # GPU 처리 실패 시 기존 방식 사용
                 print(f"[경고] GPU 직접 처리 실패: {e}")
                 output = rust_layer.forward(input)
+                # 출력이 CPU로 나왔다면 GPU로 이동
+                if not output.is_cuda and input.is_cuda:
+                    output = output.to(input.device)
         else:
             # CPU 경로 또는 CUDA 비활성화
             output = rust_layer.forward(input)
@@ -183,6 +189,13 @@ class BitfieldLinear(nn.Module):
         self.r_max = r_max
         self.rust_layer = None
         
+        # 압축 정보 저장
+        self.use_residual = True
+        self.compression_level = 1
+        self.use_int8 = False
+        self.use_tensorcore = False
+        self.use_hierarchical = False
+        
         # GPU 텐서들 (lazy initialization)
         self.codes_gpu = None
         self.basis_table_gpu = None
@@ -230,9 +243,11 @@ class BitfieldLinear(nn.Module):
         rust_layer.set_use_cuda(use_cuda)
         
         if use_cuda:
-            print(f"  CUDA 가속 활성화됨")
+            print(f"  CUDA 가속 활성화됨 (device: {linear.weight.device})")
             # GPU 메모리 초기화
             rust_layer.init_gpu_memory()
+        else:
+            print(f"  CPU 모드 (device: {linear.weight.device})")
         
         # 새로운 BitfieldLinear 생성
         bitfield = cls(
@@ -246,9 +261,15 @@ class BitfieldLinear(nn.Module):
         
         bitfield.rust_layer = rust_layer
         
-        # 원본 bias 저장
+        # 압축 정보 저장
+        bitfield.use_residual = use_residual
+        
+        # 원본 bias 저장 (올바른 device로)
         if use_bias:
-            bitfield.bias.data = torch.from_numpy(bias_np)
+            bitfield.bias.data = torch.from_numpy(bias_np).to(linear.weight.device)
+        
+        # BitfieldLinear를 올바른 device로 이동
+        bitfield = bitfield.to(linear.weight.device)
         
         # 압축 정보 출력
         original_size = linear.in_features * linear.out_features * 4 / 1024  # KB
@@ -309,6 +330,71 @@ class BitfieldLinear(nn.Module):
     def enable_int8_optimization(self):
         """INT8 최적화를 활성화합니다."""
         self.rust_layer.enable_int8_optimization()
+        self.use_int8 = True
+    
+    def enable_tensorcore(self):
+        """Tensor Core 최적화를 활성화합니다."""
+        self.rust_layer.enable_tensorcore()
+        self.use_tensorcore = True
+    
+    def enable_hierarchical_compression(self, level=2):
+        """계층적 압축을 활성화합니다.
+        
+        Args:
+            level: 압축 레벨 (2: 4비트/가중치, 3: 2.5비트/가중치)
+        """
+        self.rust_layer.enable_hierarchical_compression(level)
+        self.use_hierarchical = True
+        self.compression_level = level
+    
+    def enable_qat(self, temperature=1.0):
+        """Quantization-Aware Training을 활성화합니다.
+        
+        Args:
+            temperature: Gumbel-Softmax 온도
+        """
+        self.rust_layer.enable_qat(temperature)
+    
+    def anneal_temperature(self, decay_rate=0.95):
+        """QAT 온도를 점진적으로 낮춥니다.
+        
+        Args:
+            decay_rate: 온도 감소율
+        """
+        self.rust_layer.anneal_temperature(decay_rate)
+    
+    def quantization_loss(self):
+        """양자화 손실을 반환합니다."""
+        return self.rust_layer.quantization_loss()
+    
+    def get_compression_ratio(self):
+        """현재 설정에 따른 압축률을 계산합니다."""
+        original_size = self.in_features * self.out_features * 4  # FP32 bytes
+        
+        # 기본 코드 크기
+        compressed_size = self.out_features * 4  # 32비트 코드
+        
+        # 잔차 추가
+        if self.use_residual:
+            compressed_size += self.out_features * self.in_features * 1  # INT8 잔차
+            compressed_size += self.out_features * 4  # 스케일
+        
+        # 계층적 압축
+        if self.use_hierarchical:
+            if self.compression_level == 2:
+                # 4비트/가중치
+                compressed_size = self.out_features * 0.5
+            elif self.compression_level == 3:
+                # 2.5비트/가중치  
+                compressed_size = self.out_features * 0.3125
+        
+        # 기저 테이블 (공유되므로 출력 수로 나눔)
+        basis_table_size = self.basis_size * self.in_features * 4
+        if self.use_int8:
+            basis_table_size = self.basis_size * self.in_features * 1  # INT8
+        compressed_size += basis_table_size / max(self.out_features, 1)
+        
+        return original_size / compressed_size
     
     def __repr__(self):
         return (f"BitfieldLinear(in_features={self.in_features}, "

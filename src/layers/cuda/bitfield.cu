@@ -680,4 +680,3 @@ extern "C" void launch_gemm_hyper_bit_int8_kernel(
     );
 }
 
-

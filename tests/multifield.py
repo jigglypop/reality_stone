@@ -9,6 +9,38 @@ import time
 from reality_stone.layers import BitfieldLinear
 import torch.nn.functional as F
 
+def check_gpu_status():
+    """GPU 상태를 체크하고 정보를 출력합니다."""
+    print("\n=== GPU 상태 체크 ===")
+    
+    if torch.cuda.is_available():
+        print(f"✓ CUDA 사용 가능")
+        print(f"  - GPU 개수: {torch.cuda.device_count()}")
+        print(f"  - 현재 GPU: {torch.cuda.current_device()}")
+        print(f"  - GPU 이름: {torch.cuda.get_device_name(0)}")
+        print(f"  - CUDA 버전: {torch.version.cuda}")
+        print(f"  - cuDNN 버전: {torch.backends.cudnn.version()}")
+        
+        # 메모리 정보
+        total_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
+        allocated_memory = torch.cuda.memory_allocated(0) / 1024**3
+        print(f"  - 전체 메모리: {total_memory:.2f} GB")
+        print(f"  - 할당된 메모리: {allocated_memory:.2f} GB")
+        
+        # Compute Capability 체크 (Tensor Core 지원 여부)
+        major, minor = torch.cuda.get_device_capability(0)
+        print(f"  - Compute Capability: {major}.{minor}")
+        if major >= 7:
+            print(f"  - Tensor Core 지원: ✓")
+        else:
+            print(f"  - Tensor Core 지원: ✗")
+            
+        return True
+    else:
+        print("✗ CUDA 사용 불가")
+        print("  - CPU 모드로 실행 중")
+        return False
+
 def load_electricity_dataset():
     print("\n=== 전기 소비 시계열 데이터셋 로드 ===")
     n_clients = 370
@@ -563,6 +595,13 @@ def test_int8_optimization_performance():
     """INT8 최적화 성능 벤치마크"""
     print("\n=== INT8 최적화 성능 벤치마크 ===\n")
     
+    # GPU 사용 가능 여부 체크
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"테스트 디바이스: {device}")
+    if device == 'cuda':
+        print(f"GPU 이름: {torch.cuda.get_device_name(0)}")
+    print()
+    
     # 다양한 크기의 레이어 테스트
     test_configs = [
         (512, 256, "Small"),
@@ -590,21 +629,28 @@ def test_int8_optimization_performance():
         )
         bitfield_int8.enable_int8_optimization()
         
+        # BitfieldLinear (Tensor Core)
+        bitfield_tensorcore = BitfieldLinear.from_linear(
+            linear, basis_size=256, r_max=2.0, use_residual=False
+        )
+        bitfield_tensorcore.enable_tensorcore()
+        
         # 테스트 입력
         x = torch.randn(batch_size, in_feat)
         
         # GPU로 이동 (가능한 경우)
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
         x_device = x.to(device)
         linear_device = linear.to(device)
         bitfield_fp32_device = bitfield_fp32.to(device)
         bitfield_int8_device = bitfield_int8.to(device)
+        bitfield_tensorcore_device = bitfield_tensorcore.to(device)
         
         # 워밍업
         for _ in range(10):
             _ = linear_device(x_device)
             _ = bitfield_fp32_device(x_device)
             _ = bitfield_int8_device(x_device)
+            _ = bitfield_tensorcore_device(x_device)
         
         # Standard Linear 속도
         torch.cuda.synchronize() if device == 'cuda' else None
@@ -630,14 +676,24 @@ def test_int8_optimization_performance():
         torch.cuda.synchronize() if device == 'cuda' else None
         bitfield_int8_time = (time.time() - start) / num_iterations
         
+        # BitfieldLinear Tensor Core 속도
+        torch.cuda.synchronize() if device == 'cuda' else None
+        start = time.time()
+        for _ in range(num_iterations):
+            _ = bitfield_tensorcore_device(x_device)
+        torch.cuda.synchronize() if device == 'cuda' else None
+        bitfield_tensorcore_time = (time.time() - start) / num_iterations
+        
         # 정확도 비교
         with torch.no_grad():
             y_linear = linear_device(x_device)
             y_fp32 = bitfield_fp32_device(x_device)
             y_int8 = bitfield_int8_device(x_device)
+            y_tensorcore = bitfield_tensorcore_device(x_device)
             
             mse_fp32 = F.mse_loss(y_fp32, y_linear).item()
             mse_int8 = F.mse_loss(y_int8, y_linear).item()
+            mse_tensorcore = F.mse_loss(y_tensorcore, y_linear).item()
         
         # 메모리 사용량 계산
         linear_memory = in_feat * out_feat * 4 / 1024  # KB
@@ -649,16 +705,163 @@ def test_int8_optimization_performance():
         print(f"    - Linear: {linear_time*1000:.3f} ms (기준)")
         print(f"    - Bitfield FP32: {bitfield_fp32_time*1000:.3f} ms ({linear_time/bitfield_fp32_time:.2f}x)")
         print(f"    - Bitfield INT8: {bitfield_int8_time*1000:.3f} ms ({linear_time/bitfield_int8_time:.2f}x)")
+        print(f"    - Bitfield Tensor Core: {bitfield_tensorcore_time*1000:.3f} ms ({linear_time/bitfield_tensorcore_time:.2f}x)")
         print(f"  정확도 (MSE):")
         print(f"    - Bitfield FP32: {mse_fp32:.6f}")
         print(f"    - Bitfield INT8: {mse_int8:.6f}")
+        print(f"    - Bitfield Tensor Core: {mse_tensorcore:.6f}")
         print(f"  메모리 사용량:")
         print(f"    - Linear: {linear_memory:.1f} KB")
         print(f"    - Bitfield FP32: {bitfield_memory + basis_fp32_memory:.1f} KB ({linear_memory/(bitfield_memory + basis_fp32_memory):.1f}x 압축)")
-        print(f"    - Bitfield INT8: {bitfield_memory + basis_int8_memory:.1f} KB ({linear_memory/(bitfield_memory + basis_int8_memory):.1f}x 압축)")
+        print(f"    - Bitfield INT8/TC: {bitfield_memory + basis_int8_memory:.1f} KB ({linear_memory/(bitfield_memory + basis_int8_memory):.1f}x 압축)")
 
+
+def test_all_optimizations():
+    """모든 최적화 기법 종합 테스트"""
+    print("\n=== 모든 최적화 기법 종합 테스트 ===\n")
+    
+    # 테스트 설정
+    in_feat, out_feat = 1024, 512
+    batch_size = 32
+    
+    # Standard Linear
+    linear = nn.Linear(in_feat, out_feat)
+    x = torch.randn(batch_size, in_feat)
+    
+    # 모든 최적화 기법
+    optimizations = [
+        ("Standard", None, None),
+        ("Bitfield (기본)", BitfieldLinear.from_linear(linear, basis_size=256, r_max=2.0, use_residual=False), None),
+        ("Bitfield + INT8", BitfieldLinear.from_linear(linear, basis_size=256, r_max=2.0, use_residual=False), 
+         lambda m: m.enable_int8_optimization()),
+        ("Bitfield + Tensor Core", BitfieldLinear.from_linear(linear, basis_size=256, r_max=2.0, use_residual=False), 
+         lambda m: m.enable_tensorcore()),
+        ("Bitfield + 계층적 (4비트)", BitfieldLinear.from_linear(linear, basis_size=256, r_max=2.0, use_residual=False), 
+         lambda m: m.enable_hierarchical_compression(2)),
+        ("Bitfield + 극한 (2.5비트)", BitfieldLinear.from_linear(linear, basis_size=256, r_max=2.0, use_residual=False), 
+         lambda m: m.enable_hierarchical_compression(3)),
+        ("Bitfield + QAT", BitfieldLinear.from_linear(linear, basis_size=256, r_max=2.0, use_residual=False), 
+         lambda m: m.enable_qat(temperature=1.0)),
+        ("Bitfield + 모든 최적화", BitfieldLinear.from_linear(linear, basis_size=256, r_max=2.0, use_residual=False), 
+         lambda m: [m.enable_tensorcore(), m.enable_hierarchical_compression(2), m.enable_qat(0.5)]),
+    ]
+    
+    # GPU로 이동
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    x_device = x.to(device)
+    linear_device = linear.to(device)
+    
+    # 기준 출력
+    with torch.no_grad():
+        y_ref = linear_device(x_device)
+    
+    results = []
+    
+    for name, model, init_func in optimizations:
+        print(f"\n{name}:")
+        
+        if model is None:  # Standard Linear
+            model = linear_device
+            mse = 0.0
+            compression_ratio = 1.0
+        else:
+            # 초기화 함수 실행
+            if init_func:
+                init_func(model)
+            
+            model = model.to(device)
+            
+            # MSE 계산
+            with torch.no_grad():
+                y = model(x_device)
+                mse = F.mse_loss(y, y_ref).item()
+            
+            # 압축률 계산
+            original_size = in_feat * out_feat * 4  # bytes
+            if hasattr(model, 'get_compression_ratio'):
+                compression_ratio = model.get_compression_ratio()
+            else:
+                compression_ratio = 1.0
+        
+        # 속도 측정
+        torch.cuda.synchronize() if device == 'cuda' else None
+        start = time.time()
+        for _ in range(100):
+            _ = model(x_device)
+        torch.cuda.synchronize() if device == 'cuda' else None
+        inference_time = (time.time() - start) / 100
+        
+        results.append({
+            'name': name,
+            'mse': mse,
+            'compression': compression_ratio,
+            'time': inference_time
+        })
+        
+        print(f"  - MSE: {mse:.6f}")
+        print(f"  - 압축률: {compression_ratio:.1f}x")
+        print(f"  - 추론 시간: {inference_time*1000:.3f} ms")
+    
+    # 결과 요약
+    print("\n=== 결과 요약 ===")
+    print(f"{'최적화 기법':<25} {'MSE':>10} {'압축률':>10} {'속도':>10}")
+    print("-" * 60)
+    
+    base_time = results[0]['time']
+    for r in results:
+        speedup = base_time / r['time']
+        print(f"{r['name']:<25} {r['mse']:>10.6f} {r['compression']:>9.1f}x {speedup:>9.2f}x")
+
+
+def test_gpu_bitfield():
+    """GPU에서 BitfieldLinear가 제대로 작동하는지 테스트"""
+    print("\n=== GPU BitfieldLinear 테스트 ===")
+    
+    if not torch.cuda.is_available():
+        print("GPU를 사용할 수 없습니다.")
+        return
+    
+    # 간단한 Linear 레이어 생성
+    in_features, out_features = 512, 256
+    linear = nn.Linear(in_features, out_features).cuda()
+    print(f"Linear 레이어 device: {linear.weight.device}")
+    
+    # BitfieldLinear로 변환
+    print("\nBitfieldLinear로 변환:")
+    bitfield = BitfieldLinear.from_linear(linear, basis_size=128, r_max=2.0, use_residual=False)
+    
+    # 테스트 입력
+    x = torch.randn(32, in_features).cuda()
+    print(f"\n입력 텐서 device: {x.device}")
+    
+    # Forward 테스트
+    with torch.no_grad():
+        y_linear = linear(x)
+        y_bitfield = bitfield(x)
+        
+    print(f"Linear 출력 device: {y_linear.device}")
+    print(f"Bitfield 출력 device: {y_bitfield.device}")
+    
+    # MSE 계산
+    mse = F.mse_loss(y_bitfield, y_linear).item()
+    print(f"\nMSE: {mse:.6f}")
+    
+    # INT8 최적화 테스트
+    print("\nINT8 최적화 활성화:")
+    bitfield.enable_int8_optimization()
+    
+    with torch.no_grad():
+        y_int8 = bitfield(x)
+    
+    mse_int8 = F.mse_loss(y_int8, y_linear).item()
+    print(f"INT8 MSE: {mse_int8:.6f}")
 
 if __name__ == "__main__":
+    # GPU 상태 체크
+    has_gpu = check_gpu_status()
+    device = torch.device('cuda' if has_gpu else 'cpu')
+    print(f"\n사용할 디바이스: {device}")
+    
     # 전기 소비 시계열 데이터 테스트 (3D)
     test_electricity_3d()
     
@@ -671,5 +874,11 @@ if __name__ == "__main__":
     
     # INT8 최적화 성능 테스트
     test_int8_optimization_performance()
+    
+    # 모든 최적화 기법 테스트
+    test_all_optimizations()
+    
+    # GPU BitfieldLinear 테스트
+    test_gpu_bitfield()
     
     print("\n✓ 모든 테스트 완료!") 

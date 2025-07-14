@@ -233,7 +233,6 @@ pub fn poincare_ball_layer_layerwise_backward(
 #[cfg(feature = "cuda")]
 pub mod cuda {
     mod ffi {
-        #[link(name = "kernel_poincare", kind="static")]
         extern "C" {
             pub fn poincare_distance_cuda(
                 out: *mut f32,

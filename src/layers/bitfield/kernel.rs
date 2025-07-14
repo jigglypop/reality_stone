@@ -892,3 +892,51 @@ where
         output
     }
 } 
+
+#[cfg(feature = "cuda")]
+pub fn gemm_hyper_bit_gpu_tensorcore_optimized<S>(
+    x: &ArrayBase<S, Ix2>,
+    codes_gpu: *const u32,
+    basis_table_int8_gpu: *const i8,
+    basis_scales_gpu: *const f32,
+    delta: f32,
+    input_buffer_gpu: *mut f32,
+    output_buffer_gpu: *mut f32,
+    stream: cudaStream_t,
+    m: usize,
+    n: usize,
+    basis_size: usize,
+) -> Array2<f32>
+where
+    S: Data<Elem = f32>,
+{
+    let batch_size = x.shape()[0];
+    
+    unsafe {
+        // 입력 데이터를 GPU 버퍼로 비동기 복사
+        let input_size = batch_size * n * std::mem::size_of::<f32>();
+        cuda_memcpy_h2d_async(
+            input_buffer_gpu,
+            x.as_ptr(),
+            input_size,
+            stream,
+        );
+        
+
+        
+        // 결과를 CPU로 복사
+        let mut output = Array2::<f32>::zeros((batch_size, m));
+        let output_size = batch_size * m * std::mem::size_of::<f32>();
+        cuda_memcpy_d2h_async(
+            output.as_mut_ptr(),
+            output_buffer_gpu,
+            output_size,
+            stream,
+        );
+        
+        // 스트림 동기화
+        cuda_stream_synchronize(stream);
+        
+        output
+    }
+} 

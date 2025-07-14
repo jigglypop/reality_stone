@@ -26,6 +26,7 @@ approx = "0.5"
 anyhow = "1.0"
 thiserror = "1.0"
 ndarray-rand = "0.15.0"
+rand = "0.9.1"
 
 [build-dependencies]
 cc = "1.0"

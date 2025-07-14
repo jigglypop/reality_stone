@@ -132,3 +132,202 @@ $$b_\theta: [0, 1] \rightarrow \mathbb{B}^n$$
 $$b_\theta(t) = \exp_o(\text{MLP}_\theta(t))$$
 
 이렇게 하면 기저가 항상 쌍곡 공간에 존재하도록 보장됩니다.
+
+## 압축 방법들의 수학적 구현 원리
+
+### 1. **프랙탈 압축 (Fractal Compression)**
+
+#### 수학적 기초
+프랙탈 압축은 **IFS (Iterated Function System)** 이론에 기반합니다.
+
+**정리 (Hutchinson, 1981)**: 수축 사상들의 집합 $\{w_i\}_{i=1}^n$에 대해, 유일한 고정점(attractor) $A$가 존재하며:
+$$A = \bigcup_{i=1}^n w_i(A)$$
+
+#### 압축 알고리즘
+가중치 행렬 $W \in \mathbb{R}^{m \times n}$을 블록으로 분할하고, 각 range block $R$에 대해 가장 유사한 domain block $D$와 변환 $w$를 찾습니다:
+
+$$w(D) = \begin{bmatrix} a & b \\ c & d \end{bmatrix} D + \begin{bmatrix} e \\ f \end{bmatrix}$$
+
+여기서 $|a|, |b|, |c|, |d| < 1$ (수축 조건)
+
+**압축 과정**:
+1. Range 분할: $W = \{R_1, R_2, ..., R_k\}$
+2. 각 $R_i$에 대해: $\min_{D_j, w_{ij}} \|R_i - w_{ij}(D_j)\|^2$
+3. 저장: $(i, j, a_{ij}, b_{ij}, c_{ij}, d_{ij}, e_{ij}, f_{ij})$ 
+
+**복원**: 임의의 초기 이미지에서 시작하여 반복:
+$$W^{(n+1)} = \bigcup_{i=1}^k w_i(D_i^{(n)})$$
+
+수렴성은 Banach 고정점 정리로 보장됩니다.
+
+### 2. **DNA 인코딩**
+
+#### 수학적 기초
+DNA를 **4진 부호**로 모델링: $\Sigma = \{A, T, G, C\} \cong \{0, 1, 2, 3\}$
+
+**정보 이론적 용량**: 
+- 각 뉴클레오타이드: 2비트
+- 코돈 (3개 뉴클레오타이드): 6비트 → 64가지
+
+#### 인코딩 알고리즘
+가중치 $w \in [-1, 1]$을 DNA 서열로 변환:
+
+1. **양자화**: $q = \lfloor (w + 1) \cdot 32 \rfloor \in \{0, ..., 63\}$
+2. **코돈 매핑**: 
+   $$q = 16 \cdot n_1 + 4 \cdot n_2 + n_3, \quad n_i \in \{0,1,2,3\}$$
+3. **생물학적 제약 적용**:
+   - GC 함량 균형: $P(G) + P(C) \approx 0.5$
+   - 반복 서열 회피: $P(X_i = X_{i+1} = X_{i+2}) < \epsilon$
+
+#### 압축 기법
+**LZ77 변형 (생물학적)**:
+```
+원본: ATGATGATGATG...
+압축: ATG(3,3)...  # (위치, 길이)
+```
+
+**팰린드롬 활용**:
+$$s = ATGCGCAT \rightarrow \text{store: } ATG + \text{palindrome marker}$$
+
+### 3. **양자 영감 압축**
+
+#### 수학적 기초
+큐비트 상태: $|\psi\rangle = \alpha|0\rangle + \beta|1\rangle$, 여기서 $|\alpha|^2 + |\beta|^2 = 1$
+
+**Bloch 구 표현**:
+$$|\psi\rangle = \cos\frac{\theta}{2}|0\rangle + e^{i\phi}\sin\frac{\theta}{2}|1\rangle$$
+
+#### 인코딩
+두 가중치 $(w_1, w_2)$를 하나의 큐비트로:
+
+1. **정규화**: $\alpha = \frac{w_1}{\sqrt{w_1^2 + w_2^2}}, \quad \beta = \frac{w_2}{\sqrt{w_1^2 + w_2^2}}$
+
+2. **각도 변환**: 
+   - $\theta = 2\arccos(|\alpha|)$
+   - $\phi = \arg(\beta) - \arg(\alpha)$
+
+3. **양자화**: 8비트로 저장
+   - $\theta_{quantized} = \lfloor \frac{\theta}{\pi} \cdot 255 \rfloor$
+   - $\phi_{quantized} = \lfloor \frac{\phi}{2\pi} \cdot 255 \rfloor$
+
+#### 얽힘 표현
+$n$개 가중치의 얽힌 상태:
+$$|\Psi\rangle = \sum_{i=0}^{2^n-1} c_i |i\rangle$$
+
+Schmidt 분해로 압축:
+$$|\Psi\rangle = \sum_{k=1}^r \lambda_k |u_k\rangle \otimes |v_k\rangle$$
+
+### 4. **홀로그래픽 압축**
+
+#### 수학적 기초
+홀로그램은 **간섭 패턴**을 기록:
+$$I(x,y) = |A_{ref} + A_{obj}|^2 = |A_{ref}|^2 + |A_{obj}|^2 + 2\text{Re}(A_{ref}^* A_{obj})$$
+
+#### 인코딩 과정
+1. **푸리에 변환**: $\hat{W}(k_x, k_y) = \mathcal{F}\{W(x,y)\}$
+
+2. **참조파 생성**: $A_{ref} = A_0 e^{i(k_x x + k_y y)}$
+
+3. **간섭 패턴**: 
+   $$H(x,y) = |\hat{W}(x,y) + A_{ref}|^2$$
+
+4. **양자화**: 위상만 저장 (진폭은 복원 가능)
+   $$\phi_{hologram} = \arg(\hat{W} + A_{ref})$$
+
+#### 부분 복원
+홀로그램의 일부 $(x_0, y_0, \Delta x, \Delta y)$에서:
+$$W_{reconstructed} = \mathcal{F}^{-1}\{H_{partial} \cdot A_{ref}^*\}$$
+
+해상도는 $\frac{1}{\Delta x}$에 비례하여 감소합니다.
+
+### 5. **토폴로지 기반 압축**
+
+#### 수학적 기초
+**Morse 이론**: 매끄러운 함수 $f: M \to \mathbb{R}$의 임계점들이 다양체 $M$의 위상을 결정합니다.
+
+#### Persistence Homology
+가중치를 함수로 보고 sublevel set 분석:
+$$M_t = \{x \in M : f(x) \leq t\}$$
+
+**Persistence diagram**: $(birth_i, death_i)$ 쌍들
+- $birth_i$: $i$번째 위상 특징 생성
+- $death_i$: $i$번째 위상 특징 소멸
+
+#### 압축 알고리즘
+1. **임계점 추출**: $\nabla f = 0$인 점들
+   - 극소: $\det(H_f) > 0, \lambda_i > 0$
+   - 극대: $\det(H_f) > 0, \lambda_i < 0$  
+   - 안장점: $\det(H_f) < 0$
+
+2. **Morse-Smale 복합체**:
+   $$\text{Cell}_p = \{x : \lim_{t \to \infty} \phi_t(x) = p\}$$
+   여기서 $\phi_t$는 gradient flow
+
+3. **저장**: 임계점 위치 + 연결 정보
+   - 점: $(x_i, y_i, f(x_i, y_i), \text{type})$
+   - 연결: 인접 행렬
+
+### 6. **스파이킹 압축**
+
+#### 수학적 기초
+**Leaky Integrate-and-Fire 모델**:
+$$\tau_m \frac{dV}{dt} = -(V - V_{rest}) + R \cdot I(t)$$
+
+스파이크 발생: $V > V_{threshold}$
+
+#### 인코딩 방식
+1. **Rate coding**: 
+   $$w = \frac{n_{spikes}}{T} \cdot \text{scale}$$
+
+2. **Temporal coding**:
+   $$w = -\log(t_{first\_spike} / T_{max})$$
+
+3. **Phase coding**:
+   $$w = \cos(2\pi f t_{spike} + \phi)$$
+
+#### 압축 구현
+가중치 $w$를 스파이크 열로:
+1. **포아송 과정**: 
+   $$P(k \text{ spikes in } [0,T]) = \frac{(\lambda T)^k e^{-\lambda T}}{k!}$$
+   여기서 $\lambda = |w| \cdot \lambda_{max}$
+
+2. **스파이크 시간 저장**: 
+   - 16비트 타임스탬프 (μs 단위)
+   - 평균 10개 스파이크/가중치 → 20바이트
+
+### 7. **카오스 압축**
+
+#### 수학적 기초
+**로렌츠 시스템**:
+$$\begin{cases}
+\frac{dx}{dt} = \sigma(y - x) \\
+\frac{dy}{dt} = x(\rho - z) - y \\
+\frac{dz}{dt} = xy - \beta z
+\end{cases}$$
+
+표준 파라미터: $\sigma = 10, \rho = 28, \beta = 8/3$
+
+#### 압축 원리
+**Takens 임베딩 정리**: 시계열 $\{w_i\}$를 위상 공간에 임베딩:
+$$\vec{v}_i = (w_i, w_{i+\tau}, w_{i+2\tau}, ..., w_{i+(m-1)\tau})$$
+
+적절한 $m > 2d + 1$ (여기서 $d$는 어트랙터 차원)에 대해, 원래 동역학을 복원 가능합니다.
+
+#### 구현
+1. **초기값 찾기**: 최소화 문제
+   $$\min_{x_0, y_0, z_0} \sum_{i=1}^n |w_i - x_i(x_0, y_0, z_0)|^2$$
+
+2. **파라미터 추정**: 
+   - Lyapunov 지수로 카오스성 확인
+   - 상관 차원으로 최소 임베딩 차원 결정
+
+3. **저장**: 
+   - 초기 조건: 3 × 32비트 = 96비트
+   - 시스템 타입: 8비트
+   - 반복 횟수: 16비트
+   - 총: 120비트로 전체 시계열 표현
+
+**복원 정확도**: 
+$$\|w - w_{reconstructed}\| < C \cdot e^{\lambda_{max} \cdot t}$$
+
+여기서 $\lambda_{max}$는 최대 Lyapunov 지수입니다.

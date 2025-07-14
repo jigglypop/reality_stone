@@ -372,4 +372,29 @@ impl PyBitfieldLinear {
     pub fn enable_int8_optimization(&mut self) {
         self.inner.enable_int8_optimization();
     }
+
+    /// Tensor Core 최적화를 활성화합니다.
+    pub fn enable_tensorcore(&mut self) {
+        self.inner.enable_tensorcore();
+    }
+
+    /// 계층적 압축을 활성화합니다.
+    pub fn enable_hierarchical_compression(&mut self, level: u8) {
+        self.inner.enable_hierarchical_compression(level);
+    }
+
+    /// Quantization-Aware Training을 활성화합니다.
+    pub fn enable_qat(&mut self, temperature: f32) {
+        self.inner.enable_qat(temperature);
+    }
+
+    /// 온도를 점진적으로 낮춥니다.
+    pub fn anneal_temperature(&mut self, decay_rate: f32) {
+        self.inner.anneal_temperature(decay_rate);
+    }
+
+    /// 양자화 손실을 반환합니다.
+    pub fn quantization_loss(&self) -> f32 {
+        self.inner.quantization_loss()
+    }
 } 

@@ -150,7 +150,6 @@ pub fn klein_layer_backward(
 #[cfg(feature = "cuda")]
 pub mod cuda {
     mod ffi {
-        #[link(name = "klein", kind="static")]
         extern "C" {
             pub fn klein_distance_cuda(
                 out: *mut f32,

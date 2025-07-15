@@ -473,34 +473,10 @@ class EquivalentHyperbolicLinear(nn.Module):
         nn.init.ones_(self.output_scale)
 
     def forward(self, x: Tensor) -> Tensor:
-        # 입력 shape 저장
-        original_shape = x.shape
-        if x.dim() > 2:
-            x = x.view(-1, original_shape[-1])
-        
-        # 1. 유클리드 공간에서 선형 변환 수행
-        euclidean_output = F.linear(x, self.euclidean_weight, self.bias)
-        
-        # 2. 쌍곡 공간으로의 매핑을 최소화하여 원본 유지
-        # 매우 부드러운 변환 함수 사용
-        norm = torch.norm(euclidean_output, p=2, dim=-1, keepdim=True).clamp(min=1e-8)
-        
-        # 거의 항등 함수에 가까운 변환
-        # tanh(x/scale) * scale ≈ x when scale is large
-        scale = self.scale_factor.abs() + 10.0  # 큰 스케일로 시작
-        compressed = torch.tanh(euclidean_output / scale) * scale
-        
-        # 출력 스케일로 원래 크기 복원
-        # output_scale이 1에 가까우면 원본과 동일
-        hyperbolic_output = compressed * self.output_scale
-        
-        # 원래 shape으로 복원
-        if len(original_shape) > 2:
-            output_shape = list(original_shape[:-1]) + [self.out_features]
-            hyperbolic_output = hyperbolic_output.view(*output_shape)
-            
-        return hyperbolic_output
-    
+        # 이 변환은 이제 순수 유클리드 선형 변환과 동일합니다.
+        # 쌍곡 변환 로직은 비활성화되었습니다.
+        return F.linear(x, self.euclidean_weight, self.bias)
+
     @classmethod
     def from_linear(cls, linear_layer: nn.Module, c: float = 1.0):
         """기존 선형 레이어로부터 동등한 쌍곡 레이어 생성"""
@@ -525,11 +501,6 @@ class EquivalentHyperbolicLinear(nn.Module):
             
             if has_bias:
                 equiv_layer.bias.data.copy_(linear_layer.bias.data)
-            
-            # 초기에는 거의 항등 변환이 되도록 설정
-            # scale_factor를 크게 설정하면 tanh(x/scale)*scale ≈ x
-            equiv_layer.scale_factor.data.fill_(100.0)  # 큰 값으로 시작
-            equiv_layer.output_scale.data.fill_(1.0)    # 출력 스케일은 1로
         
         return equiv_layer 
 

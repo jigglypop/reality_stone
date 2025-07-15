@@ -1,9 +1,9 @@
-use glob::glob;
-use std::env;
-
 fn main() {
     #[cfg(feature = "cuda")]
     {
+        use glob::glob;
+        use std::env;
+
         let cuda_path = env::var("CUDA_HOME")
             .or_else(|_| env::var("CUDA_PATH"))
             .unwrap_or_else(|_| "/usr/local/cuda".to_string());

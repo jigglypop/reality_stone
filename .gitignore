@@ -48,3 +48,4 @@ dist
 uv.lock
 Cargo.lock
 target
+original_model

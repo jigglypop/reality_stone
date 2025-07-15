@@ -1,19 +1,12 @@
-mod bitfield;
 mod klein;
 mod lorentz;
 mod mobius;
 mod poincare;
+mod rbe;
 mod spline;
 
 #[macro_use]
 mod macros;
-
-pub use bitfield::*;
-pub use klein::*;
-pub use lorentz::*;
-pub use mobius::*;
-pub use poincare::*;
-pub use spline::*;
 
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
@@ -30,9 +23,9 @@ pub fn _rust(_py: Python, m: &PyModule) -> PyResult<()> {
     lorentz::register(m)?;
     // Klein operations
     klein::register(m)?;
-    // Bitfield Linear Layer
-    m.add_class::<bitfield::PyBitfieldLinear>()?;
     // Spline Layer
     spline::register_spline_module(_py, m)?;
+    // RBE (Riemannian Basis Encoding) Module
+    rbe::init_module(_py, m)?;
     Ok(())
 }

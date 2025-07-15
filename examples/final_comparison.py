@@ -9,12 +9,12 @@ import copy
 from tqdm import tqdm
 try:
     import reality_stone as rs
-    from reality_stone.layers import BitfieldLinear
+    from reality_stone.layers import RBELinear
     RS_AVAILABLE = True
 except ImportError:
     RS_AVAILABLE = False
     # Define a placeholder class if reality_stone is not available
-    class BitfieldLinear(nn.Module):
+    class RBELinear(nn.Module):
         def __init__(self, in_features, out_features, **kwargs):
             super().__init__()
             self.linear = nn.Linear(in_features, out_features)
@@ -24,11 +24,11 @@ except ImportError:
         def from_linear(cls, linear, **kwargs):
             return cls(linear.in_features, linear.out_features)
 
-# --- 헬가손-비트필드 하이브리드 압축기 ---
-class HelgasonBitfieldCompressor:
+# --- 헬가손-RBE 하이브리드 압축기 ---
+class HelgasonRBECompressor:
     """
     헬가손-푸리에 변환으로 주요 특징을 잡고,
-    잔차를 Bitfield로 정밀하게 압축하는 무손실 압축기
+    잔차를 RBE로 정밀하게 압축하는 극한 압축기
     """
     def __init__(self, W: torch.Tensor, compression_ratio=0.1):
         self.shape = W.shape

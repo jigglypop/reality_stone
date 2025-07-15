@@ -20,10 +20,10 @@ name = "_rust"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.19", features = ["extension-module"] }
+pyo3 = { version = "0.20.0", features = ["extension-module"] }
 ndarray = { version = "0.15", features = ["rayon", "approx"] }
-numpy = "0.19"
-rayon = "1.7"
+numpy = "0.20.0"
+rayon = "1.8.0"
 num-traits = "0.2"
 num-integer = "0.1"
 num-rational = "0.4"
@@ -32,8 +32,9 @@ approx = "0.4.0"
 anyhow = "1.0"
 thiserror = "1.0"
 ndarray-rand = "0.15.0"
-rand = "0.9.1"
+rand = "0.8.5"
 libc = "0.2"
+rustfft = "6.4.0"
 
 [build-dependencies]
 cc = "1.0"

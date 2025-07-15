@@ -26,7 +26,6 @@ else:
 
 from .core.mobius import MobiusAdd, MobiusScalarMul
 from .layers import *
-from .layers.bitfield import BitfieldLinear
 from .layers.spline import SplineLinear
 
 # 모델 변환 유틸리티 추가
@@ -73,7 +72,7 @@ __all__ = [
     'KleinLayer',
     # Status
     '_has_rust_ext', '_has_cuda',
-    'BitfieldLinear',
+
     'SplineLinear',
     'convert_to_hyperbolic',
 ]

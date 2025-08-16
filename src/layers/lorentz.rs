@@ -70,6 +70,70 @@ pub fn lorentz_exp0_space(u: &ArrayView2<f32>, c: f32) -> Array2<f32> {
     out
 }
 
+/// lorentz_exp0_space의 정확 역전파를 계산합니다.
+/// 입력 u(R^d tangent)에 대한 gradient를 반환합니다.
+pub fn lorentz_exp0_space_backward(
+    grad_output: &ArrayView2<f32>,
+    u: &ArrayView2<f32>,
+    c: f32,
+) -> Array2<f32> {
+    let batch = u.nrows();
+    let d = u.ncols();
+    let sqrtc = c.sqrt();
+    let mut grad_input = Array2::<f32>::zeros(u.raw_dim());
+
+    for i in 0..batch {
+        // r = ||u||, s = sqrt(c) r
+        let mut r_sq = 0.0f32;
+        for j in 0..d {
+            r_sq += u[[i, j]] * u[[i, j]];
+        }
+        let r = r_sq.sqrt();
+        let s = sqrtc * r;
+
+        // f(s) = sinh(s)/(s*sqrt(c))
+        let f = if s.abs() < 1e-6 {
+            1.0 / sqrtc
+        } else {
+            s.sinh() / (s * sqrtc)
+        };
+
+        // f'(s) = (cosh(s)*s - sinh(s)) / (s^2 * sqrt(c))
+        let fp = if s.abs() < 1e-6 {
+            // small-s limit: g'(s) ~ s/3, so f'(s) ~ (s/3)/sqrt(c) -> 0
+            0.0
+        } else {
+            (s.cosh() * s - s.sinh()) / (s * s * sqrtc)
+        };
+
+        // ds/du_k = sqrt(c) * u_k / r  (safe)
+        let inv_r = if r < 1e-6 { 0.0 } else { 1.0 / r };
+
+        // gather grads from output: grad_output has shape (batch, d+1)
+        // time component gradient g_t and space components g_s
+        let g_t = grad_output[[i, 0]];
+        // effective contribution via time: d x0 / du_k = sinh(s) * u_k / r
+        let sinh_s = s.sinh();
+
+        // dot(g_s, u)
+        let mut g_s_dot_u = 0.0f32;
+        for j in 0..d {
+            g_s_dot_u += grad_output[[i, j + 1]] * u[[i, j]];
+        }
+
+        // compute per-dim gradient
+        for k in 0..d {
+            let u_k = u[[i, k]];
+            let dsduk = sqrtc * u_k * inv_r;
+            let term_from_space = f * grad_output[[i, k + 1]] + (g_s_dot_u * fp * dsduk);
+            let term_from_time = g_t * (sinh_s * u_k * inv_r);
+            grad_input[[i, k]] = term_from_space + term_from_time;
+        }
+    }
+
+    grad_input
+}
+
 /// Logarithmic map at origin mapping hyperboloid points (time + space) -> tangent vectors (R^d)
 pub fn lorentz_log0_space(x: &ArrayView2<f32>, c: f32) -> Array2<f32> {
     let batch = x.nrows();
@@ -95,6 +159,59 @@ pub fn lorentz_log0_space(x: &ArrayView2<f32>, c: f32) -> Array2<f32> {
         }
     }
     out
+}
+
+/// lorentz_log0_space의 정확 역전파를 계산합니다.
+/// 입력 x(time + space)에 대한 gradient를 반환합니다.
+pub fn lorentz_log0_space_backward(
+    grad_output: &ArrayView2<f32>,
+    x: &ArrayView2<f32>,
+    c: f32,
+) -> Array2<f32> {
+    let batch = x.nrows();
+    let dim = x.ncols();
+    let space_dim = dim - 1;
+    let sqrtc = c.sqrt();
+    let mut grad_input = Array2::<f32>::zeros(x.raw_dim());
+
+    for i in 0..batch {
+        let x0 = x[[i, 0]];
+        // s = acosh( sqrt(c) * x0 )
+        let ax0 = (sqrtc * x0).max(1.0 + EPS);
+        let s = ax0.acosh();
+        let sinh_s = s.sinh().max(EPS);
+        let cosh_s = s.cosh();
+
+        // scale = s / (sinh(s) * sqrt(c))
+        let scale = s / (sinh_s * sqrtc);
+
+        // d scale / d x0 = (sinh(s) - s cosh(s)) / sinh(s)^3
+        // since ds/dx0 = sqrt(c)/sinh(s)
+        let dscale_dx0 = (sinh_s - s * cosh_s) / (sinh_s * sinh_s * sinh_s);
+
+        // gradients from output
+        let g = grad_output.row(i);
+
+        // space components
+        let mut dot_g_u = 0.0f32;
+        for j in 0..space_dim {
+            let gj = g[j];
+            dot_g_u += gj * 0.0; // place holder to avoid confusion
+        }
+        // Compute g_xspace = grad_output_space * scale
+        for j in 0..space_dim {
+            grad_input[[i, j + 1]] = grad_output[[i, j]] * scale;
+        }
+
+        // time component: depends via scale only
+        let mut dot_gspace_xspace = 0.0f32;
+        for j in 0..space_dim {
+            dot_gspace_xspace += grad_output[[i, j]] * x[[i, j + 1]];
+        }
+        grad_input[[i, 0]] = dot_gspace_xspace * dscale_dx0;
+    }
+
+    grad_input
 }
 
 pub fn lorentz_distance(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32) -> Array1<f32> {
@@ -183,6 +300,115 @@ pub fn lorentz_scalar(u: &ArrayView2<f32>, c: f32, r: f32) -> Array2<f32> {
     result
 }
 
+/// lorentz_scalar 의 정확 역전파를 계산합니다.
+/// 입력 u(time + space)에 대한 gradient를 반환합니다.
+pub fn lorentz_scalar_backward(
+    grad_output: &ArrayView2<f32>,
+    u: &ArrayView2<f32>,
+    c: f32,
+    r: f32,
+) -> Array2<f32> {
+    let batch_size = u.nrows();
+    let dim = u.ncols();
+    let space_dim = dim - 1;
+    let mut grad_input = Array2::<f32>::zeros(u.raw_dim());
+
+    for i in 0..batch_size {
+        let t = u[[i, 0]];
+        // space vector s
+        let mut space_norm_sq = 0.0f32;
+        for j in 0..space_dim {
+            let v = u[[i, j + 1]];
+            space_norm_sq += v * v;
+        }
+
+        // forward pieces needed
+        let denom = (t * t - 1.0 / c).max(EPS);
+        let ns = space_norm_sq.sqrt();
+        let ns_safe = ns.max(EPS);
+        let sqrt_denom = denom.sqrt();
+        let norm = (ns / sqrt_denom).max(0.0);
+
+        let norm_clamp_top = 1.0 - EPS;
+        let scn = norm.min(norm_clamp_top);
+        let alpha = scn.atanh();
+        let theta = r * alpha;
+        let beta = theta.tanh();
+        let scale = if norm < EPS { r } else { beta / norm };
+
+        // s' and t'
+        let mut s_prime_sq = 0.0f32;
+        for j in 0..space_dim {
+            let sp = u[[i, j + 1]] * scale;
+            s_prime_sq += sp * sp;
+        }
+        let t_prime = (1.0 / c + s_prime_sq).sqrt();
+
+        // effective grad on s' includes time component path
+        let g_tprime = grad_output[[i, 0]];
+        // precompute d t' / d s'_j = s'_j / t'
+        // accumulate dot(g_sprime_eff, s)
+        let mut dot_gs_eff_s = 0.0f32;
+
+        // We will store effective grad_s' in a temporary vec for reuse
+        let mut g_sprime_eff: Vec<f32> = vec![0.0; space_dim];
+        for j in 0..space_dim {
+            let s_j = u[[i, j + 1]];
+            let s_prime_j = s_j * scale;
+            let g_sprime_j = grad_output[[i, j + 1]];
+            let g_eff = g_sprime_j + g_tprime * (s_prime_j / t_prime.max(EPS));
+            g_sprime_eff[j] = g_eff;
+            dot_gs_eff_s += g_eff * s_j;
+        }
+
+        // derivatives of norm
+        // d norm / d s_k = s_k / (ns * sqrt(denom))
+        // d norm / d t = - (t / denom) * norm
+        let inv_sqrt_denom = 1.0 / sqrt_denom;
+        let dnorm_dt = -(t / denom) * norm;
+
+        // d beta / d norm = r * (1 - beta^2) / (1 - scn^2) * dscn/dnorm
+        let dscn_dnorm = if norm <= norm_clamp_top { 1.0 } else { 0.0 };
+        let one_minus_beta_sq = 1.0 - beta * beta;
+        let one_minus_scn_sq = (1.0 - scn * scn).max(EPS);
+        let dbeta_dnorm = r * one_minus_beta_sq / one_minus_scn_sq * dscn_dnorm;
+
+        // d scale / d norm = (norm * dbeta_dnorm - beta) / norm^2  (safe for small norm)
+        let dscale_dnorm = if norm < 1e-6 {
+            0.0
+        } else {
+            (norm * dbeta_dnorm - beta) / (norm * norm)
+        };
+
+        // d scale / d s_k and d scale / d t
+        // dnorm/ds_k uses ns in denominator; safe guard
+        let mut dscale_ds: Vec<f32> = vec![0.0; space_dim];
+        for k in 0..space_dim {
+            let dnorm_dsk = if ns_safe < 1e-6 {
+                0.0
+            } else {
+                u[[i, k + 1]] * (1.0 / (ns_safe)) * inv_sqrt_denom
+            };
+            dscale_ds[k] = dscale_dnorm * dnorm_dsk;
+        }
+        let dscale_dt = dscale_dnorm * dnorm_dt;
+
+        // accumulate gradients
+        // grad wrt space components
+        for k in 0..space_dim {
+            let gk = g_sprime_eff[k] * scale + dot_gs_eff_s * dscale_ds[k];
+            grad_input[[i, k + 1]] = gk;
+        }
+
+        // grad wrt time component
+        let mut g_time = 0.0f32;
+        g_time += dot_gs_eff_s * dscale_dt;
+        grad_input[[i, 0]] = g_time;
+    }
+
+    grad_input
+}
+
 pub fn lorentz_to_poincare(x: &ArrayView2<f32>, c: f32) -> Array2<f32> {
     let batch_size = x.nrows();
     let dim = x.ncols() - 1;
@@ -228,27 +454,7 @@ pub fn lorentz_to_klein(x: &ArrayView2<f32>, _: f32) -> Array2<f32> {
 }
 
 /// Lorentz 스칼라 곱의 VJP를 계산합니다. (근사치)
-pub fn lorentz_scalar_vjp(
-    grad_output: &ArrayView2<f32>,
-    u: &ArrayView2<f32>,
-    r: f32,
-) -> Array2<f32> {
-    let _ = (grad_output, r);
-    Array2::zeros(u.raw_dim())
-}
-
-/// Lorentz 덧셈의 VJP를 계산합니다. (근사치)
-pub fn lorentz_add_vjp(
-    grad_output: &ArrayView2<f32>,
-    u: &ArrayView2<f32>,
-    v: &ArrayView2<f32>,
-) -> (Array2<f32>, Array2<f32>) {
-    let _ = grad_output;
-    (
-        Array2::<f32>::zeros(u.raw_dim()),
-        Array2::<f32>::zeros(v.raw_dim()),
-    )
-}
+// VJP 제거: 근사 구현을 제공하지 않습니다.
 
 /// Lorentz 모델의 순전파 레이어를 계산합니다.
 pub fn lorentz_layer_forward(
@@ -379,6 +585,174 @@ pub fn lorentz_layer_backward(
     }
 
     (gu, gv)
+}
+
+fn acosh_derivative(z: f32) -> f32 {
+    // d/dz acosh(z) = 1 / (sqrt(z-1) * sqrt(z+1)) for z>1
+    let zp = (z + 1.0).max(1.0 + EPS);
+    let zm = (z - 1.0).max(EPS);
+    1.0 / (zp.sqrt() * zm.sqrt())
+}
+
+/// 동적 곡률을 사용한 Lorentz 레이어 순전파
+pub fn lorentz_layer_dynamic(
+    u: &ArrayView2<f32>,
+    v: &ArrayView2<f32>,
+    dynamic_c: &crate::ops::DynamicCurvature,
+    t: f32,
+) -> (Array2<f32>, f32) {
+    let c = dynamic_c.compute_c();
+    let y = lorentz_layer_forward(u, v, c, t);
+    (y, c)
+}
+
+/// 동적 곡률을 사용한 Lorentz 레이어 역전파 (정석 미분, Poincaré 미사용)
+pub fn lorentz_layer_dynamic_backward(
+    grad_output: &ArrayView2<f32>,
+    u: &ArrayView2<f32>,
+    v: &ArrayView2<f32>,
+    dynamic_c: &crate::ops::DynamicCurvature,
+    t: f32,
+) -> (Array2<f32>, Array2<f32>, f32) {
+    let c = dynamic_c.compute_c();
+    let (grad_u, grad_v) = lorentz_layer_backward(grad_output, u, v, c, t);
+
+    // Compute grad_c via chain rule on weights w1,w2 wrt c
+    let batch_size = u.nrows();
+    let dim = u.ncols();
+    let mut grad_c = 0.0f32;
+    for i in 0..batch_size {
+        let p = u.row(i);
+        let q = v.row(i);
+        // Minkowski inner
+        let mut inner = p[0] * q[0];
+        for j in 1..dim {
+            inner -= p[j] * q[j];
+        }
+        let z = (-c * inner).max(1.0 + EPS);
+        let alpha = z.acosh();
+        let sinh_alpha = alpha.sinh().max(EPS);
+        let cosh_alpha = alpha.cosh();
+
+        // weights
+        let w1 = if alpha.abs() < 1e-6 {
+            1.0 - t
+        } else {
+            ((1.0 - t) * alpha).sinh() / sinh_alpha
+        };
+        let w2 = if alpha.abs() < 1e-6 {
+            t
+        } else {
+            (t * alpha).sinh() / sinh_alpha
+        };
+
+        // dw/dalpha (same as in backward)
+        let num1 = (1.0 - t) * ((1.0 - t) * alpha).cosh() * sinh_alpha
+            - ((1.0 - t) * alpha).sinh() * cosh_alpha;
+        let num2 = t * (t * alpha).cosh() * sinh_alpha - (t * alpha).sinh() * cosh_alpha;
+        let denom = (sinh_alpha * sinh_alpha).max(EPS);
+        let dw1_dalpha = if alpha.abs() < 1e-6 {
+            0.0
+        } else {
+            num1 / denom
+        };
+        let dw2_dalpha = if alpha.abs() < 1e-6 {
+            0.0
+        } else {
+            num2 / denom
+        };
+
+        // dalpha/dc = (d acosh(z)/dz) * dz/dc, with z = -c * inner
+        let dalpha_dz = acosh_derivative(z);
+        let dz_dc = -inner;
+        let dalpha_dc = dalpha_dz * dz_dc;
+
+        let dw1_dc = dw1_dalpha * dalpha_dc;
+        let dw2_dc = dw2_dalpha * dalpha_dc;
+
+        // dy/dc = dw1_dc * p + dw2_dc * q; accumulate grad_c = <grad_output, dy/dc>
+        for j in 0..dim {
+            let d_yj_dc = dw1_dc * p[j] + dw2_dc * q[j];
+            grad_c += grad_output[[i, j]] * d_yj_dc;
+        }
+    }
+
+    let dc_dkappa = dynamic_c.compute_dc_dkappa();
+    let grad_kappa = grad_c * dc_dkappa;
+    (grad_u, grad_v, grad_kappa)
+}
+
+/// 레이어별 곡률을 사용한 Lorentz 레이어 순전파
+pub fn lorentz_layer_layerwise(
+    u: &ArrayView2<f32>,
+    v: &ArrayView2<f32>,
+    layer_curvatures: &crate::ops::LayerWiseDynamicCurvature,
+    layer_idx: usize,
+    t: f32,
+) -> (Array2<f32>, f32) {
+    let c = layer_curvatures.compute_c(layer_idx);
+    let y = lorentz_layer_forward(u, v, c, t);
+    (y, c)
+}
+
+/// 레이어별 곡률을 사용한 Lorentz 레이어 역전파
+pub fn lorentz_layer_layerwise_backward(
+    grad_output: &ArrayView2<f32>,
+    u: &ArrayView2<f32>,
+    v: &ArrayView2<f32>,
+    layer_curvatures: &crate::ops::LayerWiseDynamicCurvature,
+    layer_idx: usize,
+    t: f32,
+) -> (Array2<f32>, Array2<f32>, f32) {
+    let c = layer_curvatures.compute_c(layer_idx);
+    let (grad_u, grad_v) = lorentz_layer_backward(grad_output, u, v, c, t);
+
+    // grad_c accumulation (same as dynamic version)
+    let batch_size = u.nrows();
+    let dim = u.ncols();
+    let mut grad_c = 0.0f32;
+    for i in 0..batch_size {
+        let p = u.row(i);
+        let q = v.row(i);
+        let mut inner = p[0] * q[0];
+        for j in 1..dim {
+            inner -= p[j] * q[j];
+        }
+        let z = (-c * inner).max(1.0 + EPS);
+        let alpha = z.acosh();
+        let sinh_alpha = alpha.sinh().max(EPS);
+        let cosh_alpha = alpha.cosh();
+
+        let num1 = (1.0 - t) * ((1.0 - t) * alpha).cosh() * sinh_alpha
+            - ((1.0 - t) * alpha).sinh() * cosh_alpha;
+        let num2 = t * (t * alpha).cosh() * sinh_alpha - (t * alpha).sinh() * cosh_alpha;
+        let denom = (sinh_alpha * sinh_alpha).max(EPS);
+        let dw1_dalpha = if alpha.abs() < 1e-6 {
+            0.0
+        } else {
+            num1 / denom
+        };
+        let dw2_dalpha = if alpha.abs() < 1e-6 {
+            0.0
+        } else {
+            num2 / denom
+        };
+
+        let dalpha_dz = acosh_derivative(z);
+        let dz_dc = -inner;
+        let dalpha_dc = dalpha_dz * dz_dc;
+        let dw1_dc = dw1_dalpha * dalpha_dc;
+        let dw2_dc = dw2_dalpha * dalpha_dc;
+
+        for j in 0..dim {
+            let d_yj_dc = dw1_dc * p[j] + dw2_dc * q[j];
+            grad_c += grad_output[[i, j]] * d_yj_dc;
+        }
+    }
+
+    let dc_dkappa = layer_curvatures.compute_dc_dkappa(layer_idx);
+    let grad_kappa = grad_c * dc_dkappa;
+    (grad_u, grad_v, grad_kappa)
 }
 
 #[cfg(test)]

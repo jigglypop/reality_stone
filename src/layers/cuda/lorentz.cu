@@ -47,7 +47,6 @@ __global__ void lorentz_layer_backward_kernel(
     float* grad_u, float* grad_v,
     float c, float t, int batch_size, int dim
 ) {
-    // Note: This is a placeholder due to VJP complexity.
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= batch_size) return;
     

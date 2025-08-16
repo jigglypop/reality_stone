@@ -70,6 +70,80 @@ def lorentz_to_klein(x: Tensor, c: float) -> Tensor:
     result_np = _rust.lorentz_to_klein(x.cpu().numpy(), c)
     return torch.from_numpy(result_np).to(x.device) 
 
+
+class LorentzBallLayer(Function):
+    @staticmethod
+    def forward(ctx, u: Tensor, v: Tensor, c: float = None, t: float = 0.5, kappas: Tensor = None, layer_idx: int = None, c_min: float = 0.1, c_max: float = 5.0) -> Tensor:
+        ctx.t = t
+        if kappas is not None and layer_idx is not None:
+            ctx.use_dynamic = True
+            ctx.layer_idx = layer_idx
+            ctx.c_min = c_min
+            ctx.c_max = c_max
+            ctx.save_for_backward(u, v, kappas)
+            if kappas.dim() == 0:
+                kappa_val = kappas.item()
+            else:
+                kappa_val = kappas[layer_idx].item()
+            out_np, c_val = _rust.lorentz_layer_layerwise_cpu(
+                u.cpu().numpy(), v.cpu().numpy(), kappa_val, layer_idx, c_min, c_max, t
+            )
+            ctx.c_val = c_val
+            return torch.from_numpy(out_np).to(u.device)
+        else:
+            ctx.use_dynamic = False
+            ctx.c = c if c is not None else 1.0
+            ctx.save_for_backward(u.clone(), v.clone())
+            out_np = _rust.lorentz_layer_forward(u.cpu().numpy(), v.cpu().numpy(), ctx.c, t)
+            return torch.from_numpy(out_np).to(u.device)
+
+    @staticmethod
+    def backward(ctx, grad_output: Tensor) -> tuple[Tensor | None, ...]:
+        t = ctx.t
+        if ctx.use_dynamic:
+            u, v, kappas = ctx.saved_tensors
+            layer_idx = ctx.layer_idx
+            c_min = ctx.c_min
+            c_max = ctx.c_max
+            if kappas.dim() == 0:
+                kappa_val = kappas.item()
+            else:
+                kappa_val = kappas[layer_idx].item()
+            gu_np, gv_np, gk_val = _rust.lorentz_layer_layerwise_backward_cpu(
+                grad_output.cpu().numpy(), u.cpu().numpy(), v.cpu().numpy(), kappa_val, layer_idx, c_min, c_max, t
+            )
+            grad_u = torch.from_numpy(gu_np).to(grad_output.device)
+            grad_v = torch.from_numpy(gv_np).to(grad_output.device)
+            if kappas.dim() == 0:
+                grad_kappas = torch.tensor(gk_val, device=kappas.device)
+            else:
+                grad_kappas = torch.zeros_like(kappas)
+                grad_kappas[layer_idx] = gk_val
+            return grad_u, grad_v, None, None, grad_kappas, None, None, None
+        else:
+            u, v = ctx.saved_tensors
+            c = ctx.c
+            if grad_output.is_cuda and _has_cuda:
+                grad_u = torch.empty_like(u)
+                grad_v = torch.empty_like(v)
+                _rust.lorentz_ball_layer_backward_cuda(
+                    grad_output.data_ptr(), u.data_ptr(), v.data_ptr(),
+                    grad_u.data_ptr(), grad_v.data_ptr(),
+                    c, t, u.shape[0], u.shape[1]
+                )
+                return grad_u, grad_v, None, None, None, None, None, None
+            else:
+                gu_np, gv_np = _rust.lorentz_ball_layer_backward_cpu(
+                    grad_output.cpu().numpy(), u.cpu().numpy(), v.cpu().numpy(), c, t
+                )
+                grad_u = torch.from_numpy(gu_np).to(grad_output.device)
+                grad_v = torch.from_numpy(gv_np).to(grad_output.device)
+                return grad_u, grad_v, None, None, None, None, None, None
+
+
+def lorentz_ball(u: Tensor, v: Tensor, c: float = None, t: float = 0.5, kappas: Tensor = None, layer_idx: int = None, c_min: float = 0.1, c_max: float = 5.0) -> Tensor:
+    return LorentzBallLayer.apply(u, v, c, t, kappas, layer_idx, c_min, c_max)
+
 class LorentzFromPoincare(Function):
     @staticmethod
     def forward(ctx, x: Tensor, c: float = None, kappas: Tensor = None, c_min: float = -2.0, c_max: float = -0.1) -> Tensor:

@@ -1,4 +1,7 @@
 import time
+import os
+import argparse
+import random
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -110,50 +113,96 @@ def train_model(model_name, model, loader_train, loader_test, epochs=10, lr=1e-3
 
 
 if __name__ == "__main__":
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    batch_size, lr, epochs = 256, 1e-3, 10
+    def set_seed(seed: int):
+        random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+    parser = argparse.ArgumentParser(description="MNIST Poincaré MLP test")
+    parser.add_argument("--mode", choices=["dynamic", "static", "both"], default="dynamic")
+    parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
+    parser.add_argument("--epochs", type=int, default=5)
+    parser.add_argument("--batch-size", type=int, default=256)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--t", type=float, default=0.7)
+    parser.add_argument("--c", type=float, default=1e-3)
+    parser.add_argument("--quick", action="store_true", help="use small subset for quick run")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--data-dir", type=str, default=os.path.join("tests", "data"))
+    args = parser.parse_args()
+
+    set_seed(args.seed)
+
+    if args.device == "auto":
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(args.device)
+
     transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.5,), (0.5,))
     ])
-    train_ds = datasets.MNIST('.', train=True, download=True, transform=transform)
-    test_ds = datasets.MNIST('.', train=False, download=True, transform=transform)
-    train_loader = torch.utils.data.DataLoader(train_ds, batch_size=batch_size, shuffle=True)
-    test_loader = torch.utils.data.DataLoader(test_ds, batch_size=batch_size, shuffle=False)
-    
-    print("=== Dynamic Curvature Test ===")
-    dynamic_model = PoincareMLP(use_dynamic=True, t=0.7).to(device)
-    
-    params = [
-        {'params': [p for n, p in dynamic_model.named_parameters() if 'kappas' not in n], 'lr': lr},
-        {'params': dynamic_model.kappas, 'lr': lr}
-    ]
-    
-    optimizer = optim.Adam(params)
-    display_name = "PoincareMLP (Dynamic Curvature)"
-    if hasattr(dynamic_model, 't'):
-        display_name = f"{display_name} (t={dynamic_model.t})"
-    print(f"\n--- {display_name} Training ---")
-    
-    if hasattr(dynamic_model, 'use_dynamic') and dynamic_model.use_dynamic:
-        initial_kappa = dynamic_model.kappas.item()
-    
-    test_accs = []
-    for ep in range(1, epochs+1):
-        loss, t = train_epoch(dynamic_model, train_loader, optimizer, device)
-        acc = test_epoch(dynamic_model, test_loader, device)
-        test_accs.append(acc)
-        
-        if hasattr(dynamic_model, 'use_dynamic') and dynamic_model.use_dynamic:
-            kappa = dynamic_model.kappas.item()
-            c = dynamic_model.c_min + (dynamic_model.c_max - dynamic_model.c_min) * torch.sigmoid(dynamic_model.kappas).item()
-            print(f"[{display_name}] Epoch {ep}/{epochs} loss={loss:.4f} time={t:.2f}s acc={acc*100:.2f}% | kappa={kappa:.4f}, c={c:.4f}")
-        else:
-            print(f"[{display_name}] Epoch {ep}/{epochs} loss={loss:.4f} time={t:.2f}s acc={acc*100:.2f}%")
-    
-    if hasattr(dynamic_model, 'use_dynamic') and dynamic_model.use_dynamic:
-        final_kappa = dynamic_model.kappas.item()
-        print(f"Kappa change: {initial_kappa:.4f} -> {final_kappa:.4f} (Δ={final_kappa-initial_kappa:.4f})")
-        
-    best_acc = max(test_accs) * 100
-    print(f"\n동적 곡률 최종 정확도: {best_acc:.2f}%")
+    os.makedirs(args.data_dir, exist_ok=True)
+    train_ds = datasets.MNIST(args.data_dir, train=True, download=True, transform=transform)
+    test_ds = datasets.MNIST(args.data_dir, train=False, download=True, transform=transform)
+
+    if args.quick:
+        # 작은 서브셋으로 빠른 실행
+        train_ds = torch.utils.data.Subset(train_ds, list(range(0, min(10000, len(train_ds)))))
+        test_ds = torch.utils.data.Subset(test_ds, list(range(0, min(2000, len(test_ds)))))
+
+    train_loader = torch.utils.data.DataLoader(
+        train_ds, batch_size=args.batch_size, shuffle=True,
+        num_workers=0, pin_memory=(device.type == "cuda")
+    )
+    test_loader = torch.utils.data.DataLoader(
+        test_ds, batch_size=args.batch_size, shuffle=False,
+        num_workers=0, pin_memory=(device.type == "cuda")
+    )
+
+    def run_dynamic():
+        print("=== Dynamic Curvature Test ===")
+        model = PoincareMLP(use_dynamic=True, t=args.t).to(device)
+        params = [
+            {"params": [p for n, p in model.named_parameters() if 'kappas' not in n], "lr": args.lr},
+            {"params": model.kappas, "lr": args.lr},
+        ]
+        optimizer = optim.Adam(params)
+        display_name = "PoincareMLP (Dynamic Curvature)"
+        if hasattr(model, 't'):
+            display_name = f"{display_name} (t={model.t})"
+        print(f"\n--- {display_name} Training ---")
+        if hasattr(model, 'use_dynamic') and model.use_dynamic:
+            initial_kappa = model.kappas.item()
+
+        test_accs = []
+        for ep in range(1, args.epochs + 1):
+            loss, t = train_epoch(model, train_loader, optimizer, device)
+            acc = test_epoch(model, test_loader, device)
+            test_accs.append(acc)
+            if hasattr(model, 'use_dynamic') and model.use_dynamic:
+                kappa = model.kappas.item()
+                c_val = model.c_min + (model.c_max - model.c_min) * torch.sigmoid(model.kappas).item()
+                print(f"[{display_name}] Epoch {ep}/{args.epochs} loss={loss:.4f} time={t:.2f}s acc={acc*100:.2f}% | kappa={kappa:.4f}, c={c_val:.4f}")
+            else:
+                print(f"[{display_name}] Epoch {ep}/{args.epochs} loss={loss:.4f} time={t:.2f}s acc={acc*100:.2f}%")
+        if hasattr(model, 'use_dynamic') and model.use_dynamic:
+            final_kappa = model.kappas.item()
+            print(f"Kappa change: {initial_kappa:.4f} -> {final_kappa:.4f} (Δ={final_kappa-initial_kappa:.4f})")
+        best_acc = max(test_accs) * 100
+        print(f"\n동적 곡률 최종 정확도: {best_acc:.2f}%")
+
+    def run_static():
+        print("=== Static Curvature Test ===")
+        model = PoincareMLP(use_dynamic=False, t=args.t, c=args.c).to(device)
+        _ = train_model("PoincareMLP (Static Curvature)", model, train_loader, test_loader, epochs=args.epochs, lr=args.lr, device=device)
+
+    if args.mode == "dynamic":
+        run_dynamic()
+    elif args.mode == "static":
+        run_static()
+    else:
+        run_dynamic()
+        run_static()

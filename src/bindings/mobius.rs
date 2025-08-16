@@ -74,7 +74,7 @@ pub fn mobius_add_dynamic_cpu<'py>(
 ) -> (&'py PyArray2<f32>, f32) {
     let u_arr = u.as_array();
     let v_arr = v.as_array();
-    let dynamic_c = mobius::DynamicCurvature::new(kappa, c_min, c_max);
+    let dynamic_c = crate::ops::DynamicCurvature::new(kappa, c_min, c_max);
     let (result, c) = mobius::mobius_add_dynamic(&u_arr, &v_arr, &dynamic_c);
     (result.into_pyarray(py), c)
 }
@@ -93,7 +93,7 @@ pub fn mobius_add_dynamic_backward_cpu<'py>(
     let grad_output_arr = grad_output.as_array();
     let u_arr = u.as_array();
     let v_arr = v.as_array();
-    let dynamic_c = mobius::DynamicCurvature::new(kappa, c_min, c_max);
+    let dynamic_c = crate::ops::DynamicCurvature::new(kappa, c_min, c_max);
     let (grad_u, grad_v, grad_kappa) =
         mobius::mobius_add_dynamic_backward(&grad_output_arr, &u_arr, &v_arr, &dynamic_c);
     (grad_u.into_pyarray(py), grad_v.into_pyarray(py), grad_kappa)
@@ -111,7 +111,7 @@ pub fn mobius_add_layerwise_cpu<'py>(
 ) -> (&'py PyArray2<f32>, f32) {
     let u_arr = u.as_array();
     let v_arr = v.as_array();
-    let layer_curvatures = mobius::LayerWiseDynamicCurvature::from_kappas(kappas, c_min, c_max);
+    let layer_curvatures = crate::ops::LayerWiseDynamicCurvature::from_kappas(kappas, c_min, c_max);
     let (result, c) = mobius::mobius_add_layerwise(&u_arr, &v_arr, &layer_curvatures, layer_idx);
     (result.into_pyarray(py), c)
 }
@@ -130,7 +130,7 @@ pub fn mobius_add_layerwise_backward_cpu<'py>(
     let grad_output_arr = grad_output.as_array();
     let u_arr = u.as_array();
     let v_arr = v.as_array();
-    let layer_curvatures = mobius::LayerWiseDynamicCurvature::from_kappas(kappas, c_min, c_max);
+    let layer_curvatures = crate::ops::LayerWiseDynamicCurvature::from_kappas(kappas, c_min, c_max);
     let (grad_u, grad_v, grad_kappa) = mobius::mobius_add_layerwise_backward(
         &grad_output_arr,
         &u_arr,

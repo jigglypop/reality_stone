@@ -92,6 +92,19 @@ print(f"추론 결과 shape: {output.shape}")
 └── tests/                    # 🧪 테스트 코드
 ```
 
+### 🧪 Python MNIST quick tests
+
+```
+python -m tests.poincare --mode both --quick --epochs 2 --batch-size 256
+python -m tests.lorentz --quick --epochs 2 --batch-size 256
+python -m tests.klein --quick --epochs 2 --batch-size 256
+```
+
+옵션:
+- `--device {auto,cpu,cuda}`
+- `--data-dir tests/data`
+- `--t, --c, --epochs, --batch-size, --seed`
+
 ## 🌟 하이퍼볼릭 기하학과 RBE
 
 RBE는 유클리드 공간을 넘어, 특히 **하이퍼볼릭 기하학**과 같은 비유클리드 공간에서 강력한 성능을 발휘합니다. 계층적 데이터나 그래프 구조를 임베딩하는 데 뛰어난 푸앵카레 볼(Poincaré Ball) 모델과 RBE를 결합하면, 극도의 압축률과 높은 표현력을 동시에 달성할 수 있습니다.

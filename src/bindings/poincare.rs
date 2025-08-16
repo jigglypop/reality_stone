@@ -57,6 +57,95 @@ pub fn poincare_ball_layer_backward_cpu<'py>(
     (grad_u.into_pyarray(py), grad_v.into_pyarray(py))
 }
 
+// --- Dynamic / Layerwise bindings ---
+
+#[pyfunction]
+pub fn poincare_ball_layer_dynamic_cpu<'py>(
+    py: Python<'py>,
+    u: PyReadonlyArray2<f32>,
+    v: PyReadonlyArray2<f32>,
+    kappa: f32,
+    c_min: f32,
+    c_max: f32,
+    t: f32,
+) -> (&'py PyArray2<f32>, f32) {
+    let u_arr = u.as_array();
+    let v_arr = v.as_array();
+    let dynamic_c = crate::ops::DynamicCurvature::new(kappa, c_min, c_max);
+    let (out, c) = poincare::poincare_ball_layer_dynamic(&u_arr, &v_arr, &dynamic_c, t);
+    (out.into_pyarray(py), c)
+}
+
+#[pyfunction]
+pub fn poincare_ball_layer_dynamic_backward_cpu<'py>(
+    py: Python<'py>,
+    grad_output: PyReadonlyArray2<f32>,
+    u: PyReadonlyArray2<f32>,
+    v: PyReadonlyArray2<f32>,
+    kappa: f32,
+    c_min: f32,
+    c_max: f32,
+    t: f32,
+) -> (&'py PyArray2<f32>, &'py PyArray2<f32>, f32) {
+    let grad_output_arr = grad_output.as_array();
+    let u_arr = u.as_array();
+    let v_arr = v.as_array();
+    let dynamic_c = crate::ops::DynamicCurvature::new(kappa, c_min, c_max);
+    let (gu, gv, gk) = poincare::poincare_ball_layer_dynamic_backward(
+        &grad_output_arr,
+        &u_arr,
+        &v_arr,
+        &dynamic_c,
+        t,
+    );
+    (gu.into_pyarray(py), gv.into_pyarray(py), gk)
+}
+
+#[pyfunction]
+pub fn poincare_ball_layer_layerwise_cpu<'py>(
+    py: Python<'py>,
+    u: PyReadonlyArray2<f32>,
+    v: PyReadonlyArray2<f32>,
+    kappa: f32,
+    layer_idx: usize,
+    c_min: f32,
+    c_max: f32,
+    t: f32,
+) -> (&'py PyArray2<f32>, f32) {
+    let u_arr = u.as_array();
+    let v_arr = v.as_array();
+    let lw = crate::ops::LayerWiseDynamicCurvature::from_kappas(vec![kappa], c_min, c_max);
+    let (out, c) = poincare::poincare_ball_layer_layerwise(&u_arr, &v_arr, &lw, layer_idx, t);
+    (out.into_pyarray(py), c)
+}
+
+#[pyfunction]
+pub fn poincare_ball_layer_layerwise_backward_cpu<'py>(
+    py: Python<'py>,
+    grad_output: PyReadonlyArray2<f32>,
+    u: PyReadonlyArray2<f32>,
+    v: PyReadonlyArray2<f32>,
+    kappa: f32,
+    layer_idx: usize,
+    c_min: f32,
+    c_max: f32,
+    t: f32,
+) -> (&'py PyArray2<f32>, &'py PyArray2<f32>, f32) {
+    let grad_output_arr = grad_output.as_array();
+    let u_arr = u.as_array();
+    let v_arr = v.as_array();
+    let lw = crate::ops::LayerWiseDynamicCurvature::from_kappas(vec![kappa], c_min, c_max);
+    let (gu, gv, gk) = poincare::poincare_ball_layer_layerwise_backward(
+        &grad_output_arr,
+        &u_arr,
+        &v_arr,
+        &lw,
+        layer_idx,
+        t,
+    );
+    (gu.into_pyarray(py), gv.into_pyarray(py), gk)
+}
+
 #[pyfunction]
 pub fn mobius_add_vjp_cpu<'py>(
     py: Python<'py>,
@@ -103,6 +192,18 @@ pub fn register(m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(mobius_add_vjp_cpu, m)?)?;
     m.add_function(wrap_pyfunction!(mobius_scalar_vjp_cpu, m)?)?;
     m.add_function(wrap_pyfunction!(project_to_ball_cpu, m)?)?;
+
+    // Dynamic / Layerwise
+    m.add_function(wrap_pyfunction!(poincare_ball_layer_dynamic_cpu, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        poincare_ball_layer_dynamic_backward_cpu,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(poincare_ball_layer_layerwise_cpu, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        poincare_ball_layer_layerwise_backward_cpu,
+        m
+    )?)?;
 
     // ... (Dynamic/Layerwise/CUDA 함수 등록) ...
 

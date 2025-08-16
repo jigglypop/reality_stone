@@ -49,3 +49,29 @@ uv.lock
 Cargo.lock
 target
 original_model
+
+# Python caches
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# Python wheels / shared libs
+*.whl
+*.so
+*.dll
+*.dylib
+python/reality_stone/_rust*.so
+
+# Local outputs
+metrikey_spec.json
+
+# Large model/cache artifacts
+compressed_rbe_model/
+*.pt
+*.bin
+*.safetensors
+.cache/
+**/.cache/
+.hf_cache/
+**/.hf_cache/

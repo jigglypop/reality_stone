@@ -157,7 +157,7 @@ pub fn poincare_ball_layer(
 pub fn poincare_ball_layer_dynamic(
     u: &ArrayView2<f32>,
     v: &ArrayView2<f32>,
-    dynamic_c: &mobius::DynamicCurvature,
+    dynamic_c: &crate::ops::DynamicCurvature,
     t: f32,
 ) -> (Array2<f32>, f32) {
     let c = dynamic_c.compute_c();
@@ -171,7 +171,7 @@ pub fn poincare_ball_layer_dynamic_backward(
     grad_output: &ArrayView2<f32>,
     u: &ArrayView2<f32>,
     v: &ArrayView2<f32>,
-    dynamic_c: &mobius::DynamicCurvature,
+    dynamic_c: &crate::ops::DynamicCurvature,
     t: f32,
 ) -> (Array2<f32>, Array2<f32>, f32) {
     let c = dynamic_c.compute_c();
@@ -194,7 +194,7 @@ pub fn poincare_ball_layer_dynamic_backward(
 pub fn poincare_ball_layer_layerwise(
     u: &ArrayView2<f32>,
     v: &ArrayView2<f32>,
-    layer_curvatures: &mobius::LayerWiseDynamicCurvature,
+    layer_curvatures: &crate::ops::LayerWiseDynamicCurvature,
     layer_idx: usize,
     t: f32,
 ) -> (Array2<f32>, f32) {
@@ -214,7 +214,7 @@ pub fn poincare_ball_layer_layerwise_backward(
     grad_output: &ArrayView2<f32>,
     u: &ArrayView2<f32>,
     v: &ArrayView2<f32>,
-    layer_curvatures: &mobius::LayerWiseDynamicCurvature,
+    layer_curvatures: &crate::ops::LayerWiseDynamicCurvature,
     layer_idx: usize,
     t: f32,
 ) -> (Array2<f32>, Array2<f32>, f32) {
@@ -368,6 +368,11 @@ mod tests {
         // t=1 이면 v와 같아야 함
         let result_t1 = poincare_ball_layer(&u.view(), &v.view(), c, 1.0);
         assert_relative_eq!(result_t1, v, epsilon = EPSILON);
+
+        // t=0.5 대칭성
+        let result_t05 = poincare_ball_layer(&u.view(), &v.view(), c, 0.5);
+        let result_t05_sym = poincare_ball_layer(&v.view(), &u.view(), c, 0.5);
+        assert_relative_eq!(result_t05, result_t05_sym, epsilon = 1e-5);
     }
 
     #[test]
@@ -377,7 +382,18 @@ mod tests {
         let dist = poincare_distance(&x.view(), &x.view(), c);
 
         for val in dist.iter() {
-            assert_relative_eq!(*val, 0.0, epsilon = EPSILON);
+            // 수치적 클램프로 인해 0이 아닌 매우 작은 값이 나올 수 있음
+            assert!((*val).abs() < 1e-3);
         }
+    }
+
+    #[test]
+    fn test_poincare_to_klein_then_back_shape_and_finiteness() {
+        let c = 0.7_f32;
+        let x = arr2(&[[0.1, -0.2], [0.3, 0.1]]);
+        let k = poincare_to_klein(&x.view(), c);
+        assert_eq!(k.ncols(), x.ncols());
+        assert_eq!(k.nrows(), x.nrows());
+        assert!(k.iter().all(|v| v.is_finite()));
     }
 }

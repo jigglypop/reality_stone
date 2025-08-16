@@ -186,7 +186,7 @@ fn from_poincare_dynamic_cpu<'py>(
     c_max: f32,
 ) -> (&'py PyArray2<f32>, f32) {
     let x_view = x.as_array();
-    let dynamic_c = mobius::DynamicCurvature::new(kappa, c_min, c_max);
+    let dynamic_c = crate::ops::DynamicCurvature::new(kappa, c_min, c_max);
     let c = dynamic_c.compute_c();
     let result = lorentz::from_poincare(&x_view, c);
     (result.into_pyarray(py), c)
@@ -203,7 +203,7 @@ fn from_poincare_dynamic_backward_cpu<'py>(
 ) -> (Py<PyArray2<f32>>, f32) {
     let grad_output_view = grad_output.as_array();
     let x_view = x.as_array();
-    let dynamic_c = mobius::DynamicCurvature::new(kappa, c_min, c_max);
+    let dynamic_c = crate::ops::DynamicCurvature::new(kappa, c_min, c_max);
     let c = dynamic_c.compute_c();
 
     let grad_x = Array2::zeros(x.dims());

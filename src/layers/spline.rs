@@ -191,3 +191,37 @@ struct CatmullRomGradients {
     p2_grads: Vec<Array1<f32>>,
     p3_grads: Vec<Array1<f32>>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use numpy::ToPyArray;
+
+    #[test]
+    fn test_spline_interpolate_shape_and_ratio() {
+        let k = 8;
+        let in_features = 4;
+        let out_features = 10;
+        let layer = SplineLayer::new(k, in_features, out_features);
+        let weight = layer.interpolate_internal();
+        assert_eq!(weight.dim(), (out_features, in_features));
+        let ratio = layer.get_compression_ratio();
+        assert!(ratio > 1.0);
+    }
+
+    #[test]
+    fn test_spline_forward_linearity_on_zero() {
+        let k = 6;
+        let in_features = 3;
+        let out_features = 5;
+        let layer = SplineLayer::new(k, in_features, out_features);
+        // 입력 0이면 출력도 0
+        let input = Array2::<f32>::zeros((2, in_features));
+        pyo3::prepare_freethreaded_python();
+        pyo3::Python::with_gil(|py| {
+            let out = layer.forward(py, input.view().to_pyarray(py).readonly());
+            let out_arr = unsafe { out.as_array() };
+            assert!(out_arr.iter().all(|v| v.abs() < 1e-6));
+        });
+    }
+}

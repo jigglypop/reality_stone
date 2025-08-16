@@ -1,6 +1,6 @@
 use crate::{
     layers::poincare::mobius_add_vjp,
-    ops::{batch::EPS, dot_batched, norm_sq_batched},
+    ops::{batch::EPS, dot_batched, norm_sq_batched, DynamicCurvature, LayerWiseDynamicCurvature},
 };
 use ndarray::{Array2, ArrayView2, Axis};
 
@@ -99,71 +99,6 @@ pub fn mobius_scalar_grad_c(u: &ArrayView2<f32>, c: f32, r: f32) -> Array2<f32> 
     }
 }
 
-// 동적 곡률 구조체
-#[derive(Debug, Clone)]
-pub struct DynamicCurvature {
-    pub kappa: f32,
-    pub c_min: f32,
-    pub c_max: f32,
-}
-
-impl DynamicCurvature {
-    pub fn new(kappa: f32, c_min: f32, c_max: f32) -> Self {
-        Self {
-            kappa,
-            c_min,
-            c_max,
-        }
-    }
-
-    pub fn compute_c(&self) -> f32 {
-        let sigmoid = 1.0 / (1.0 + (-self.kappa).exp());
-        self.c_min + (self.c_max - self.c_min) * sigmoid
-    }
-
-    pub fn compute_dc_dkappa(&self) -> f32 {
-        let sigmoid = 1.0 / (1.0 + (-self.kappa).exp());
-        (self.c_max - self.c_min) * sigmoid * (1.0 - sigmoid)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct LayerWiseDynamicCurvature {
-    pub kappas: Vec<f32>,
-    pub c_min: f32,
-    pub c_max: f32,
-}
-
-impl LayerWiseDynamicCurvature {
-    pub fn new(num_layers: usize, c_min: f32, c_max: f32) -> Self {
-        Self {
-            kappas: vec![0.0; num_layers],
-            c_min,
-            c_max,
-        }
-    }
-
-    pub fn from_kappas(kappas: Vec<f32>, c_min: f32, c_max: f32) -> Self {
-        Self {
-            kappas,
-            c_min,
-            c_max,
-        }
-    }
-
-    pub fn compute_c(&self, layer_idx: usize) -> f32 {
-        let kappa = self.kappas.get(layer_idx).unwrap_or(&0.0);
-        let sigmoid = 1.0 / (1.0 + (-kappa).exp());
-        self.c_min + (self.c_max - self.c_min) * sigmoid
-    }
-
-    pub fn compute_dc_dkappa(&self, layer_idx: usize) -> f32 {
-        let kappa = self.kappas.get(layer_idx).unwrap_or(&0.0);
-        let sigmoid = 1.0 / (1.0 + (-kappa).exp());
-        (self.c_max - self.c_min) * sigmoid * (1.0 - sigmoid)
-    }
-}
-
 pub fn mobius_add_grad_c(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32) -> Array2<f32> {
     let u2 = norm_sq_batched(u).insert_axis(Axis(1));
     let v2 = norm_sq_batched(v).insert_axis(Axis(1));
@@ -230,6 +165,51 @@ pub fn mobius_add_layerwise_backward(
     let grad_kappa = grad_c * dc_dkappa;
     let (grad_u, grad_v) = mobius_add_vjp(grad_output, u, v, c);
     (grad_u, grad_v, grad_kappa)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_relative_eq;
+    use ndarray::arr2;
+
+    #[test]
+    fn test_mobius_add_identity_and_commutativity_small() {
+        let c = 0.1_f32;
+        let x = arr2(&[[0.05, 0.02]]);
+        let z = arr2(&[[0.0, 0.0]]);
+        // 항등원
+        let res1 = mobius_add(&x.view(), &z.view(), c);
+        assert_relative_eq!(res1, x, epsilon = 1e-6);
+        // 작은 벡터에서 근사 가환성: 허용 오차 완화
+        let y = arr2(&[[0.01, -0.03]]);
+        let xy = mobius_add(&x.view(), &y.view(), c);
+        let yx = mobius_add(&y.view(), &x.view(), c);
+        assert!(((&xy - &yx).mapv(f32::abs)).sum() < 1e-3);
+    }
+
+    #[test]
+    fn test_mobius_scalar_limits() {
+        let c = 0.5_f32;
+        let x = arr2(&[[0.1, 0.2], [0.05, -0.05]]);
+        // r=0 => 0 벡터
+        let y0 = mobius_scalar(&x.view(), c, 0.0);
+        assert!((y0.mapv(f32::abs)).sum() < 1e-6);
+        // r=1 => 자기 자신 (근사)
+        let y1 = mobius_scalar(&x.view(), c, 1.0);
+        assert!(((&y1 - &x).mapv(f32::abs)).sum() < 1e-3);
+    }
+
+    #[test]
+    fn test_mobius_add_grad_c_non_trivial() {
+        let c = 0.3_f32;
+        let u = arr2(&[[0.1, 0.2]]);
+        let v = arr2(&[[0.05, -0.1]]);
+        let g = mobius_add_grad_c(&u.view(), &v.view(), c);
+        // 차원/유한성 체크
+        assert_eq!(g.shape(), &[1, 2]);
+        assert!(g.iter().all(|x| x.is_finite()));
+    }
 }
 
 #[cfg(feature = "cuda")]

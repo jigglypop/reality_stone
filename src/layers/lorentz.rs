@@ -227,6 +227,45 @@ pub fn lorentz_layer_backward(
     (grad_u, grad_v)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_relative_eq;
+    use ndarray::arr2;
+
+    #[test]
+    fn test_lorentz_inner_basic() {
+        let u = arr2(&[[2.0_f32, 1.0, 1.0]]);
+        let v = arr2(&[[2.0_f32, -1.0, 0.5]]);
+        let inner = lorentz_inner(&u.view(), &v.view());
+        assert!((inner[0] - (2.0 * 2.0 - 1.0 * -1.0 - 1.0 * 0.5)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_lorentz_distance_non_negative() {
+        let c = 1.0_f32;
+        // 동일한 점(하이퍼볼릭 거리 0)이 되도록 시간성분을 1보다 크게 유지하고 동일한 좌표 설정
+        let u = arr2(&[[1.5_f32, 0.1, 0.2]]);
+        let v = arr2(&[[1.5_f32, 0.1, 0.2]]);
+        let d = lorentz_distance(&u.view(), &v.view(), c);
+        assert!(d[0] >= 0.0);
+        assert!(d[0].abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_lorentz_add_scaling_consistency() {
+        let c = 0.8_f32;
+        let u = arr2(&[[1.5_f32, 0.1, 0.2]]);
+        let v = arr2(&[[1.3_f32, 0.05, -0.1]]);
+        let s = lorentz_scalar(&u.view(), c, 0.0);
+        // r=0이면 공간 성분 0, 시간 성분은 양수(>=1)로 유지되는 근사
+        assert!(s[[0, 1]].abs() < 1e-6 && s[[0, 2]].abs() < 1e-6 && s[[0, 0]] >= 1.0);
+        let w = lorentz_add(&u.view(), &v.view(), c);
+        assert_eq!(w.ncols(), u.ncols());
+        assert!(w.iter().all(|x| x.is_finite()));
+    }
+}
+
 #[cfg(feature = "cuda")]
 pub mod cuda {
     mod ffi {

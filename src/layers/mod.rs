@@ -9,7 +9,6 @@ pub mod klein;
 pub mod lorentz;
 pub mod poincare;
 pub mod spline;
-pub mod utils;
 
 pub use self::poincare::{
     poincare_ball_layer, poincare_ball_layer_backward, poincare_distance, poincare_to_klein,

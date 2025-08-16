@@ -284,6 +284,39 @@ pub fn apply_linear_f64(
     vecs.dot(&matrix.t())
 }
 
+/// Compact composition using a single master key and a simple mass schedule.
+/// keys: key_i = format!("{}#{}", master_key, i)
+/// masses: mass_i = mass_base + i * mass_step
+pub fn compose_layers_gravity_compact_f64(
+    master_key: &str,
+    num_layers: usize,
+    dim: usize,
+    min_lambda: f64,
+    max_lambda: f64,
+    mass_base: f64,
+    mass_step: f64,
+) -> ndarray::Array2<f64> {
+    assert!(num_layers > 0);
+    let mut acc = ndarray::Array2::<f64>::eye(dim);
+    for i in 0..num_layers {
+        let key_i = format!("{}#{}", master_key, i);
+        let q = deterministic_orthogonal_from_key_f64(&key_i, dim);
+        let seed = seed_from_key(&key_i);
+        let mut rng = SmallRng::seed_from_u64(seed ^ 0x9E3779B185EBCA87);
+        let mass = mass_base + (i as f64) * mass_step;
+        assert!(mass > 0.0);
+        let mut d_sqrt = ndarray::Array2::<f64>::zeros((dim, dim));
+        for j in 0..dim {
+            let u: f64 = rng.gen();
+            let lam = min_lambda + (max_lambda - min_lambda) * u.clamp(0.0, 1.0);
+            d_sqrt[(j, j)] = lam.powf(0.5 * mass);
+        }
+        let t_l = q.t().dot(&d_sqrt.dot(&q));
+        acc = t_l.dot(&acc);
+    }
+    acc
+}
+
 pub fn metric_factor_cholesky(g: &Array2<f32>) -> Array2<f32> {
     let (n, m) = g.dim();
     assert_eq!(n, m, "G must be square");
@@ -380,6 +413,109 @@ pub fn rotate_metric_factor_block(key: &str, l: &Array2<f32>, global_dim: usize)
     let dept_dim = n - global_dim;
     let r_s = block_orthogonal_from_key(key, global_dim, dept_dim);
     r_s.dot(l)
+}
+
+// === Implicit transforms: Householder chain / Givens chain / Low-rank + Diagonal ===
+
+fn random_unit_vector_f32(dim: usize, rng: &mut SmallRng) -> Array1<f32> {
+    let mut v = Array1::<f32>::zeros(dim);
+    for i in 0..dim {
+        v[i] = rng.gen::<f32>() * 2.0 - 1.0;
+    }
+    let n = v.dot(&v).sqrt().max(EPS);
+    v / n
+}
+
+fn householder_vectors_from_key(key: &str, dim: usize, num: usize) -> Vec<Array1<f32>> {
+    let mut vecs = Vec::with_capacity(num);
+    let mut rng = SmallRng::seed_from_u64(seed_from_key(key));
+    for _ in 0..num {
+        vecs.push(random_unit_vector_f32(dim, &mut rng));
+    }
+    vecs
+}
+
+fn apply_householder_chain(vecs: &[Array1<f32>], x: &Array1<f32>, reverse: bool) -> Array1<f32> {
+    let mut y = x.clone();
+    if reverse {
+        for v in vecs.iter().rev() {
+            let alpha = 2.0 * y.dot(v);
+            y -= &(v * alpha);
+        }
+    } else {
+        for v in vecs.iter() {
+            let alpha = 2.0 * y.dot(v);
+            y -= &(v * alpha);
+        }
+    }
+    y
+}
+
+pub fn householder_chain_apply_from_key(
+    key: &str,
+    dim: usize,
+    num: usize,
+    x: &Array1<f32>,
+) -> Array1<f32> {
+    let vecs = householder_vectors_from_key(key, dim, num);
+    apply_householder_chain(&vecs, x, false)
+}
+
+pub fn householder_chain_apply_transpose_from_key(
+    key: &str,
+    dim: usize,
+    num: usize,
+    x: &Array1<f32>,
+) -> Array1<f32> {
+    let vecs = householder_vectors_from_key(key, dim, num);
+    // For Householder, H is symmetric, so Q^T = H_1 ... H_k (reverse order)
+    apply_householder_chain(&vecs, x, true)
+}
+
+pub fn lowrank_plus_diag_apply_from_key(
+    key_u: &str,
+    key_v: &str,
+    s_diag: &Array1<f32>,
+    rank: usize,
+    x: &Array1<f32>,
+) -> Array1<f32> {
+    let dim = x.len();
+    assert_eq!(s_diag.len(), dim);
+    let mut rng_u = SmallRng::seed_from_u64(seed_from_key(key_u));
+    let mut rng_v = SmallRng::seed_from_u64(seed_from_key(key_v));
+    let mut y = s_diag * x;
+    for _ in 0..rank {
+        let a = random_unit_vector_f32(dim, &mut rng_u);
+        let b = random_unit_vector_f32(dim, &mut rng_v);
+        let coeff = b.dot(x);
+        y += &(a * coeff);
+    }
+    y
+}
+
+pub fn givens_chain_apply_from_key(
+    key: &str,
+    dim: usize,
+    num: usize,
+    x: &Array1<f32>,
+) -> Array1<f32> {
+    let mut rng = SmallRng::seed_from_u64(seed_from_key(key) ^ 0xABCDEF0123456789);
+    let mut y = x.clone();
+    for _ in 0..num {
+        let i = (rng.gen::<u32>() as usize) % dim;
+        let mut j = (rng.gen::<u32>() as usize) % dim;
+        if j == i {
+            j = (j + 1) % dim;
+        }
+        let theta = rng.gen::<f32>() * 2.0 * std::f32::consts::PI;
+        let c = theta.cos();
+        let s = theta.sin();
+        let yi = y[i];
+        let yj = y[j];
+        y[i] = c * yi - s * yj;
+        y[j] = s * yi + c * yj;
+    }
+    y
 }
 
 #[cfg(test)]

@@ -7,23 +7,6 @@ from .. import _rust, _has_cuda
 from ..core.mobius import MobiusAdd, MobiusScalarMul
 import math
 
-class ProjectToBall(Function):
-    @staticmethod
-    def forward(ctx, x: Tensor, epsilon: float = 1e-5) -> Tensor:
-        ctx.epsilon = epsilon
-        ctx.save_for_backward(x)
-        output_np = _rust.project_to_ball_cpu(x.detach().cpu().numpy(), epsilon)
-        return torch.from_numpy(output_np).to(x.device)
-    
-    @staticmethod
-    def backward(ctx, grad_output: Tensor) -> tuple[Tensor, None]:
-        x, = ctx.saved_tensors
-        norm = torch.norm(x, p=2, dim=-1, keepdim=True)
-        # 노름이 1-epsilon보다 작으면 gradient 그대로 통과
-        mask = (norm < 1.0 - ctx.epsilon).float()
-        grad_x = grad_output * mask
-        return grad_x, None
-
 def project_to_ball(x: Tensor, epsilon: float = 1e-5) -> Tensor:
     """텐서를 푸앵카레 공으로 투영합니다. 모든 차원을 지원합니다."""
     # 순수 PyTorch 구현으로 대체 (Rust 바인딩이 2D만 지원하므로)
@@ -140,11 +123,11 @@ def poincare_distance(x: Tensor, y: Tensor, c: float) -> Tensor:
         return torch.from_numpy(output_np).to(x.device)
 
 def poincare_to_lorentz(x: Tensor, c: float) -> Tensor:
-    output_np = _rust.poincare_to_lorentz(x.cpu().numpy(), c)
+    output_np = _rust.poincare_to_lorentz_cpu(x.cpu().numpy(), c)
     return torch.from_numpy(output_np).to(x.device)
 
 def poincare_to_klein(x: Tensor, c: float) -> Tensor:
-    output_np = _rust.poincare_to_klein(x.cpu().numpy(), c)
+    output_np = _rust.poincare_to_klein_cpu(x.cpu().numpy(), c)
     return torch.from_numpy(output_np).to(x.device)
 
 # --- HyperbolicLinear 및 관련 함수 ---
@@ -286,39 +269,19 @@ class HyperbolicLinear(nn.Module):
 
     @classmethod
     def from_linear(cls, linear_layer: nn.Module, c: float = 1.0):
-        if 'Conv1D' in str(type(linear_layer)):
-             in_features=linear_layer.weight.shape[0]
-             out_features=linear_layer.weight.shape[1]
-             has_bias = linear_layer.bias is not None
-        else:
-             in_features=linear_layer.in_features
-             out_features=linear_layer.out_features
-             has_bias = linear_layer.bias is not None
-
+        in_features, out_features, weight, has_bias = _extract_linear_like(linear_layer)
         hyperbolic_layer = cls(in_features=in_features, out_features=out_features, c=c, bias=has_bias)
-        
-        # 기존 가중치를 쌍곡 공간에 맞게 스케일링
         with torch.no_grad():
-            if 'Conv1D' in str(type(linear_layer)):
-                weight = linear_layer.weight.t()
-            else:
-                weight = linear_layer.weight.data
-            
-            # 가중치를 더 작은 스케일로 조정 (쌍곡 공간에서의 안정성)
             weight_norm = torch.norm(weight, p='fro')
             target_norm = torch.sqrt(torch.tensor(weight.shape[0] * weight.shape[1]).float()) * 0.1
             scale_factor = target_norm / weight_norm
-            
             hyperbolic_layer.weight.data.copy_(weight * scale_factor)
-
             if has_bias:
-                # 편향도 스케일링
                 hyperbolic_layer.bias.data.copy_(linear_layer.bias.data * 0.1)
-            
         return hyperbolic_layer
 
 
-import torch.nn as nn
+# duplicate import removed
 
 class PoincareWrapper(nn.Module):
 
@@ -407,30 +370,12 @@ class GeodesicLinear(nn.Module):
     @classmethod
     def from_linear(cls, linear_layer: nn.Module, c: float = 1.0):
         """기존 선형 레이어로부터 GeodesicLinear 생성"""
-        if hasattr(linear_layer, 'in_features'):
-            in_features = linear_layer.in_features
-            out_features = linear_layer.out_features
-            has_bias = linear_layer.bias is not None
-        else:  # Conv1D
-            in_features = linear_layer.weight.shape[0]
-            out_features = linear_layer.weight.shape[1]
-            has_bias = linear_layer.bias is not None
-        
+        in_features, out_features, weight, has_bias = _extract_linear_like(linear_layer)
         geodesic_layer = cls(in_features, out_features, c=c, bias=has_bias)
-        
-        # 기존 가중치를 매우 작게 스케일링하여 복사
         with torch.no_grad():
-            if hasattr(linear_layer, 'weight'):
-                weight = linear_layer.weight.data
-            else:  # Conv1D
-                weight = linear_layer.weight.t()
-            
-            # 가중치를 매우 작게 스케일링
             geodesic_layer.weight.data = weight * 0.01
-            
             if has_bias:
                 geodesic_layer.bias.data = linear_layer.bias.data * 0.01
-        
         return geodesic_layer 
 
 class EquivalentHyperbolicLinear(nn.Module):
@@ -480,28 +425,12 @@ class EquivalentHyperbolicLinear(nn.Module):
     @classmethod
     def from_linear(cls, linear_layer: nn.Module, c: float = 1.0):
         """기존 선형 레이어로부터 동등한 쌍곡 레이어 생성"""
-        # Conv1D 처리
-        if 'Conv1D' in str(type(linear_layer)):
-            # Conv1D는 weight shape이 (nf, nx)이고, Linear와 반대
-            in_features = linear_layer.weight.shape[0]
-            out_features = linear_layer.weight.shape[1]
-            weight = linear_layer.weight.t()  # 전치해서 Linear 형태로
-        else:
-            in_features = linear_layer.in_features
-            out_features = linear_layer.out_features
-            weight = linear_layer.weight.data
-        
-        has_bias = linear_layer.bias is not None
-        
+        in_features, out_features, weight, has_bias = _extract_linear_like(linear_layer)
         equiv_layer = cls(in_features, out_features, c=c, bias=has_bias)
-        
-        # 기존 가중치를 복사
         with torch.no_grad():
             equiv_layer.euclidean_weight.data.copy_(weight)
-            
             if has_bias:
                 equiv_layer.bias.data.copy_(linear_layer.bias.data)
-        
         return equiv_layer 
 
 class CompactEquivalentHyperbolicLinear(nn.Module):
@@ -565,25 +494,23 @@ class CompactEquivalentHyperbolicLinear(nn.Module):
     @classmethod
     def from_linear(cls, linear_layer: nn.Module, c: float = 1.0):
         """기존 선형 레이어로부터 컴팩트 쌍곡 레이어 생성"""
-        # Conv1D 처리
-        if 'Conv1D' in str(type(linear_layer)):
-            in_features = linear_layer.weight.shape[0]
-            out_features = linear_layer.weight.shape[1]
-            weight = linear_layer.weight.t()
-        else:
-            in_features = linear_layer.in_features
-            out_features = linear_layer.out_features
-            weight = linear_layer.weight.data
-        
-        has_bias = linear_layer.bias is not None
-        
+        in_features, out_features, weight, has_bias = _extract_linear_like(linear_layer)
         compact_layer = cls(in_features, out_features, c=c, bias=has_bias)
-        
-        # 기존 가중치를 복사
         with torch.no_grad():
             compact_layer.weight.data.copy_(weight)
-            
             if has_bias:
                 compact_layer.bias.data.copy_(linear_layer.bias.data)
-        
         return compact_layer 
+def _extract_linear_like(linear_layer: nn.Module) -> tuple[int, int, torch.Tensor, bool]:
+    """Extract (in_features, out_features, weight_matrix, has_bias) from Linear or Conv1D-like layers."""
+    if 'Conv1D' in str(type(linear_layer)):
+        in_features = linear_layer.weight.shape[0]
+        out_features = linear_layer.weight.shape[1]
+        weight = linear_layer.weight.t()
+        has_bias = linear_layer.bias is not None
+    else:
+        in_features = linear_layer.in_features
+        out_features = linear_layer.out_features
+        weight = linear_layer.weight.data
+        has_bias = linear_layer.bias is not None
+    return in_features, out_features, weight, has_bias

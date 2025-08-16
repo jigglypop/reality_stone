@@ -1,10 +1,9 @@
 mod klein;
 mod lorentz;
+mod metrikey;
 mod mobius;
 mod poincare;
-mod rbe;
 mod spline;
-mod metrikey;
 
 #[macro_use]
 mod macros;
@@ -26,8 +25,8 @@ pub fn _rust(_py: Python, m: &PyModule) -> PyResult<()> {
     klein::register(m)?;
     // Spline Layer
     spline::register_spline_module(_py, m)?;
-    // RBE (Riemannian Basis Encoding) Module
-    rbe::init_module(_py, m)?;
+    // RBE (Riemannian Basis Encoding) Module - disabled
+    // rbe::init_module(_py, m)?;
     // MetriKey Module
     metrikey::init_module(_py, m)?;
     Ok(())

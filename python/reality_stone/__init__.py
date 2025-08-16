@@ -4,7 +4,7 @@ from pathlib import Path
 
 # 현재 파일의 디렉토리를 기준으로 .so 파일 경로를 명시적으로 지정
 _lib_path = Path(__file__).parent.resolve()
-_so_file = list(_lib_path.glob('_rust*.so'))
+_so_file = list(_lib_path.glob('_rust*.so')) or list(_lib_path.glob('_rust*.pyd'))
 
 _has_rust_ext = False
 _has_cuda = False
@@ -20,7 +20,7 @@ if _so_file:
         print(f" Reality Stone: Found .so file, but failed to import: {_so_file[0]}")
         print(f" Error: {e}")
 else:
-    print(" Reality Stone: Rust extension (.so file) not found in package directory.")
+    print(" Reality Stone: Rust extension (.so/.pyd) not found in package directory.")
     print(" Please build the project first (e.g., `maturin develop`).")
 
 

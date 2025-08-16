@@ -43,7 +43,7 @@ helm upgrade --install qdrant qdrant/qdrant \
   --set resources.requests.memory=256Mi
 ```
 
-3) 서비스 확인 및 NodePort 파악
+3) 서비스 확인 및 NodePort 파악 (또는 ClusterIP 내부 접근)
 
 ```bash
 kubectl get svc -n qdrant qdrant -o wide
@@ -51,7 +51,7 @@ kubectl get svc -n qdrant qdrant -o wide
 
 출력의 `PORT(S)`에서 `http`의 NodePort를 확인합니다(예: 30080→6333/TCP). Docker Desktop 환경에서는 보통 `127.0.0.1:<NodePort>`로 접근 가능합니다.
 
-4) 컬렉션 생성(REST)
+4) 컬렉션 생성(REST) — NodePort 또는 클러스터 내부 Job으로 실행
 
 ```bash
 curl -s -X PUT "http://127.0.0.1:<NODEPORT>/collections/documents" \
@@ -102,6 +102,11 @@ curl -s -X POST "http://127.0.0.1:<NODEPORT>/collections/documents/points/search
   - 세션 회전: `rotate_metric_factor_block(session_key, L_k, global_dim)`
 - 합성: `compose_layers_order_preserving([T_l])` → `T_total`
 - 재랭크: `mahalanobis_distance_sq_g(x, y, G_k)` 또는 `*_sq_l`
+
+## 권한 데모(로컬 시뮬)
+
+- 예제: `examples/metrikey_rag_auth_demo.py`
+- 마할라노비스 재랭크 기반으로 권한 부여/회수에 따른 top‑k 변화 시연
 
 ## 성능/캐시 팁
 

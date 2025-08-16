@@ -22,8 +22,14 @@ pub use metrikey::{
 
 // f64 high-precision exports (not all functions; only where useful)
 pub use metrikey::{
-    apply_linear_f64, compose_layers_gravity_f64, deterministic_orthogonal_from_key_f64,
-    spd_metric_from_key_f64,
+    apply_linear_f64, compose_layers_gravity_compact_f64, compose_layers_gravity_f64,
+    deterministic_orthogonal_from_key_f64, spd_metric_from_key_f64,
+};
+
+// Implicit transforms
+pub use metrikey::{
+    givens_chain_apply_from_key, householder_chain_apply_from_key,
+    householder_chain_apply_transpose_from_key, lowrank_plus_diag_apply_from_key,
 };
 
 /// MSE loss의 gradient를 계산합니다.

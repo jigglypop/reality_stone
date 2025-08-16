@@ -2,6 +2,7 @@ import torch
 from torch import Tensor
 from torch.autograd import Function
 from .. import _rust, _has_cuda
+from .poincare import poincare_to_lorentz
 
 class LorentzLayer(Function):
     @staticmethod
@@ -9,7 +10,6 @@ class LorentzLayer(Function):
         ctx.c = c
         ctx.t = t
         ctx.save_for_backward(u.clone(), v.clone())
-        
         if u.is_cuda and _has_cuda:
             output = torch.empty_like(u)
             _rust.lorentz_layer_forward_cuda(
@@ -87,9 +87,10 @@ class LorentzFromPoincare(Function):
         else:
             ctx.use_dynamic = False
             ctx.c = c if c is not None else 1.0
-            output_np = _rust.from_poincare_cpu(x.cpu().numpy(), ctx.c)
+            # Delegate to poincare_to_lorentz for non-dynamic path
+            output = poincare_to_lorentz(x, ctx.c)
             ctx.save_for_backward(x)
-            return torch.from_numpy(output_np).to(x.device)
+            return output
 
     @staticmethod
     def backward(ctx, grad_output: Tensor) -> tuple[Tensor | None, ...]:

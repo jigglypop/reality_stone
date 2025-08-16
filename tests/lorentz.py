@@ -9,6 +9,7 @@ import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 import faulthandler; faulthandler.enable()
 import reality_stone as rs
+import math
 
 def project_to_ball(x, epsilon=1e-5):
     norm = torch.norm(x, p=2, dim=1, keepdim=True)
@@ -25,11 +26,11 @@ class LorentzMLP(nn.Module):
         self.use_dynamic = use_dynamic
         self.c_min = c_min
         self.c_max = c_max
-        self.weights1 = nn.Parameter(torch.randn(in_dim, hid) * 0.01)
+        self.weights1 = nn.Parameter(torch.randn(in_dim, hid) * 0.002)
         self.bias1 = nn.Parameter(torch.zeros(hid))
-        self.weights2 = nn.Parameter(torch.randn(hid, hid) * 0.01)
+        self.weights2 = nn.Parameter(torch.randn(hid, hid) * 0.002)
         self.bias2 = nn.Parameter(torch.zeros(hid))
-        self.out_weights = nn.Parameter(torch.randn(hid, out_dim) * 0.01)
+        self.out_weights = nn.Parameter(torch.randn(hid, out_dim) * 0.002)
         self.out_bias = nn.Parameter(torch.zeros(out_dim))
         
         if use_dynamic:
@@ -39,17 +40,48 @@ class LorentzMLP(nn.Module):
         x = x.view(x.size(0), -1)
         h = x @ self.weights1 + self.bias1
         h = torch.tanh(h)
+        # project optional (keep bounded)
         h = project_to_ball(h)
         u = h @ self.weights2 + self.bias2
         u = torch.tanh(u)
         u = project_to_ball(u)
-        
-        # Lorentz 정식 레이어 사용 (동적 곡률 미지원)
-        z = rs.lorentz_layer(h, u, c=self.c, t=self.t)
-            
+
+        # Build Lorentz Minkowski coordinates (time + space)
+        def to_lorentz_coords(sp: torch.Tensor, c: float) -> torch.Tensor:
+            # x0 = sqrt(1/c + ||x||^2)
+            x2 = (sp * sp).sum(dim=1, keepdim=True)
+            x0 = torch.sqrt(torch.clamp(1.0 / c + x2, min=1e-6))
+            return torch.cat([x0, sp], dim=1)
+
+        hl = to_lorentz_coords(h, self.c)
+        ul = to_lorentz_coords(u, self.c)
+
+        # Lorentz layer → Minkowski output
+        z_l = rs.lorentz_layer(hl, ul, c=self.c, t=self.t)
+
+        # Log-map to tangent at origin for Euclidean head
+        def lorentz_log0_space(x_l: torch.Tensor, c: float) -> torch.Tensor:
+            x0 = x_l[:, :1]
+            xs = x_l[:, 1:]
+            sqrtc = math.sqrt(c)
+            s = torch.acosh(torch.clamp(sqrtc * x0, min=1.0 + 1e-6))
+            denom = torch.clamp(torch.sinh(s), min=1e-6)
+            scale = s / (denom * sqrtc)
+            return xs * scale
+
+        z = lorentz_log0_space(z_l, self.c)
         if torch.isnan(z).any():
             z = h
         output = z @ self.out_weights + self.out_bias
+
+        # Constraint penalty (hyperboloid): (x0^2 - ||x||^2 - 1/c)^2
+        h0 = hl[:, :1]
+        hs = hl[:, 1:]
+        u0 = ul[:, :1]
+        us = ul[:, 1:]
+        res_h = (h0 * h0 - (hs * hs).sum(dim=1, keepdim=True) - 1.0 / self.c)
+        res_u = (u0 * u0 - (us * us).sum(dim=1, keepdim=True) - 1.0 / self.c)
+        self._constraint_penalty = ((res_h ** 2).mean() + (res_u ** 2).mean())
         return output
 
 def train_epoch(model, loader, optimizer, device):
@@ -61,7 +93,11 @@ def train_epoch(model, loader, optimizer, device):
         optimizer.zero_grad()
         logits = model(imgs)
         loss = nn.functional.cross_entropy(logits, labels)
+        # add constraint penalty if computed
+        if hasattr(model, '_constraint_penalty') and isinstance(model._constraint_penalty, torch.Tensor):
+            loss = loss + 1e-4 * model._constraint_penalty.to(loss.dtype).to(loss.device)
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         total_loss += loss.item() * imgs.size(0)
     

@@ -2,6 +2,8 @@ import torch
 from torch import Tensor
 from torch.autograd import Function
 from .. import _rust, _has_cuda
+import math
+from .poincare import poincare_to_klein
 
 class KleinLayer(Function):
     @staticmethod
@@ -83,9 +85,10 @@ class KleinFromPoincare(Function):
         else:
             ctx.use_dynamic = False
             ctx.c = c if c is not None else 1.0
-            output_np = _rust.from_poincare_cpu(x.cpu().numpy(), ctx.c)
+            # Delegate to poincare_to_klein for non-dynamic path
+            output = poincare_to_klein(x, ctx.c)
             ctx.save_for_backward(x)
-            return torch.from_numpy(output_np).to(x.device)
+            return output
 
     @staticmethod
     def backward(ctx, grad_output: Tensor) -> tuple[Tensor | None, ...]:
@@ -105,3 +108,12 @@ class KleinFromPoincare(Function):
 
 def from_poincare(x: Tensor, c: float = None, kappas: Tensor = None, c_min: float = -2.0, c_max: float = -0.1) -> Tensor:
     return KleinFromPoincare.apply(x, c, kappas, c_min, c_max) 
+
+
+def project_to_klein(x: Tensor, c: float, epsilon: float = 1e-5) -> Tensor:
+    """Project to Klein disk radius 1/sqrt(c) with safety margin."""
+    radius = (1.0 / math.sqrt(c)) if c > 0 else 1.0
+    norm = torch.norm(x, p=2, dim=-1, keepdim=True)
+    max_norm = radius - epsilon
+    scale = torch.where(norm > max_norm, max_norm / norm, torch.ones_like(norm))
+    return x * scale

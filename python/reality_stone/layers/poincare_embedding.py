@@ -39,14 +39,9 @@ class PoincareEmbedding(nn.Module):
                 self.weight[padding_idx].fill_(0)
     
     def reset_parameters(self):
-        """임베딩을 푸앵카레 볼 내부에 균등하게 초기화"""
+        """임베딩 초기화"""
         with torch.no_grad():
-            # 유클리드 공간에서 초기화
             nn.init.uniform_(self.weight, -0.1, 0.1)
-            
-            # 정합성 테스트를 위해 project_to_ball 비활성화
-            # 푸앵카레 볼로 투영 (반지름 내부로 제한)
-            # self.weight.data = project_to_ball(self.weight.data)
     
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         """푸앵카레 볼 공간에서 임베딩 조회"""
@@ -55,9 +50,6 @@ class PoincareEmbedding(nn.Module):
             input, self.weight, self.padding_idx, self.max_norm,
             self.norm_type, self.scale_grad_by_freq, self.sparse
         )
-        
-        # 정합성 테스트를 위해 project_to_ball 비활성화
-        # embedded = project_to_ball(embedded)
         
         return embedded
     
@@ -75,11 +67,8 @@ class PoincareEmbedding(nn.Module):
             sparse=embedding.sparse,
         )
         
-        # 가중치 복사 (변환 없이)
         with torch.no_grad():
             euclidean_weights = embedding.weight.data
-            # 정합성 테스트를 위해 project_to_ball 비활성화
-            # poincare_weights = project_to_ball(euclidean_weights)
             poincare_emb.weight.data = euclidean_weights.clone()
             
             # padding_idx 처리
@@ -97,8 +86,7 @@ class PoincareEmbedding(nn.Module):
         # return self.poincare.log_map_zero(self.weight)
     
     def compress_to_seed(self, block_size: int = 64) -> dict:
-        """임베딩을 RBE 시드로 압축"""
-        # 임베딩 행렬을 블록으로 나누어 압축
+        """임베딩 압축 메타데이터만 생성 (RBE 제거됨)."""
         weight_np = self.weight.detach().cpu().numpy()
         num_embeddings, embedding_dim = weight_np.shape
         
@@ -126,9 +114,7 @@ class PoincareEmbedding(nn.Module):
                 end_j = min((j + 1) * block_size, embedding_dim)
                 
                 block = weight_np[start_i:end_i, start_j:end_j]
-                # 실제 압축은 RBE compressor 사용
-                # seed = compress_block(block)
-                # seeds.append(seed)
+                # 압축 로직 제거됨(RBE 비활성화)
         
         return {'seeds': seeds, 'block_info': block_info}
 

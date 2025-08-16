@@ -3,14 +3,16 @@ import gc
 import torch
 import torch.nn as nn
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
-from reality_stone.layers import EquivalentHyperbolicLinear, RBELinear
-from reality_stone.layers.rbe import calculate_compression_stats, encode_model_to_seeds
+from reality_stone.layers import EquivalentHyperbolicLinear
 import time
 import sys
 from tqdm import tqdm
 import ctypes
 import numpy as np
 import copy
+
+# This test previously covered RBE conversion. RBE is removed; keeping only
+# helper to convert to EquivalentHyperbolicLinear for reference.
 
 def get_model_size(model):
     """모델의 파라미터 크기를 계산합니다 (MB 단위)"""
@@ -46,81 +48,20 @@ def save_model(model, tokenizer, save_path):
 
 def convert_to_equivalent_hyperbolic(model: nn.Module, c: float = 1.0):
     """모델의 모든 선형 레이어를 EquivalentHyperbolicLinear로 교체합니다."""
-    # 먼저 모든 변환 대상 레이어를 찾음
     layers_to_convert = []
     for name, module in model.named_modules():
         if isinstance(module, nn.Linear) or 'Conv1D' in str(type(module)):
             layers_to_convert.append((name, module))
-    
-    # tqdm으로 진행 상황 표시
     for name, module in tqdm(layers_to_convert, desc="Converting to Hyperbolic"):
-        # 부모 모듈과 속성명 찾기
         parts = name.split('.')
         parent = model
         for part in parts[:-1]:
             parent = getattr(parent, part)
-        
-        # EquivalentHyperbolicLinear로 변환
         equiv_layer = EquivalentHyperbolicLinear.from_linear(module, c=c)
         setattr(parent, parts[-1], equiv_layer)
-    
     return len(layers_to_convert)
 
-def convert_to_rbe(model, use_fast_compression=True):
-    num_converted = 0
-    for name, module in model.named_modules():
-        if isinstance(module, nn.Linear) and not isinstance(module, RBELinear):
-            parent_name = '.'.join(name.split('.')[:-1])
-            child_name = name.split('.')[-1]
-            parent = model
-            for part in parent_name.split('.'):
-                if part:
-                    parent = getattr(parent, part)
-            
-            # 레이어 크기에 따른 블록 크기 결정
-            in_features = module.in_features
-            out_features = module.out_features
-            total_params = in_features * out_features
-            
-            # 레이어 크기에 따른 블록 크기 조정
-            if total_params > 1_000_000:
-                block_size = 32  # 대형 레이어는 작은 블록
-            elif total_params > 100_000:
-                block_size = 64  # 중형 레이어
-            else:
-                block_size = 128  # 소형 레이어는 큰 블록
-                
-            # RBELinear로 교체 - 빠른 압축 모드 사용
-            rbe_layer = RBELinear(
-                in_features, 
-                out_features, 
-                bias=module.bias is not None, 
-                block_size=block_size,
-                use_fast_compression=use_fast_compression
-            )
-            
-            # 블록 정보 출력
-            if hasattr(rbe_layer, 'block_info') and rbe_layer.block_info:
-                info = rbe_layer.block_info
-                num_blocks = info['out_blocks'] * info['in_blocks']
-                print(f"   Block size: {info['block_size']}×{info['block_size']}")
-                print(f"   Number of blocks: {num_blocks}")
-            
-            # 기존 가중치와 편향 복사는 이미 __init__에서 처리됨
-            if module.bias is not None:
-                rbe_layer.bias.data = module.bias.data.clone()
-                
-            setattr(parent, child_name, rbe_layer)
-            num_converted += 1
-            
-            # RMSE 계산 (빠른 압축 모드에서는 근사치)
-            if use_fast_compression:
-                print(f"   Fast compression mode enabled")
-            else:
-                rmse = rbe_layer.get_rmse()
-                print(f"   RMSE: {rmse:.6f}")
-    
-    return num_converted
+# RBE-specific utilities and flows removed.
 
 def benchmark_generation(model, tokenizer, prompts, num_runs=3):
     """생성 속도를 벤치마크합니다"""
@@ -280,4 +221,4 @@ def main():
         print(f"Seeds file size: {os.path.getsize(f'{save_path}/rbe_seeds.pt') / 1024 / 1024:.2f} MB")
 
 if __name__ == "__main__":
-    main() 
+    print("RBE tests removed. Use other tests.") 

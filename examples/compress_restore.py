@@ -3,9 +3,7 @@ import json
 import math
 import os
 from typing import List, Tuple
-
 import numpy as np
-
 import reality_stone as rs
 
 

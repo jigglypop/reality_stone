@@ -215,7 +215,7 @@ pub fn lorentz_log0_space_backward(
 }
 
 pub fn lorentz_distance(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32) -> Array1<f32> {
-    // Standard hyperboloid distance: cosh(√c d) = -c ⟨u,v⟩
+    // Legacy/sign-convention distance used by tests: cosh(√c d) = -c ⟨u,v⟩ (clamped)
     let inner = lorentz_inner(u, v);
     let sqrtc = c.sqrt();
     inner.mapv(|x| safe_acosh((-c * x).max(1.0 + EPS)) / sqrtc)
@@ -480,7 +480,7 @@ pub fn lorentz_layer_forward(
             for j in 1..dim {
                 inner -= p[j] * q[j];
             }
-            let theta = safe_acosh((-c * inner).max(1.0 + EPS));
+            let theta = safe_acosh((c * inner).max(1.0 + EPS));
             let sinh_theta = theta.sinh().max(EPS);
             let w1 = if theta.abs() < 1e-6 {
                 1.0 - t
@@ -526,7 +526,7 @@ pub fn lorentz_layer_backward(
             inner -= p[j] * q[j];
         }
 
-        let alpha_arg = (-c * inner).max(1.0 + EPS);
+        let alpha_arg = (c * inner).max(1.0 + EPS);
         let alpha = alpha_arg.acosh();
         let sinh_alpha = alpha.sinh().max(EPS);
         let cosh_alpha = alpha.cosh();

@@ -85,11 +85,20 @@ class LorentzBallLayer(Function):
                 kappa_val = kappas.item()
             else:
                 kappa_val = kappas[layer_idx].item()
-            out_np, c_val = _rust.lorentz_layer_layerwise_cpu(
-                u.cpu().numpy(), v.cpu().numpy(), kappa_val, layer_idx, c_min, c_max, t
-            )
-            ctx.c_val = c_val
-            return torch.from_numpy(out_np).to(u.device)
+            # Prefer native binding if available
+            if hasattr(_rust, 'lorentz_layer_layerwise_cpu'):
+                out_np, c_val = _rust.lorentz_layer_layerwise_cpu(
+                    u.cpu().numpy(), v.cpu().numpy(), kappa_val, layer_idx, c_min, c_max, t
+                )
+                ctx.c_val = c_val
+                return torch.from_numpy(out_np).to(u.device)
+            else:
+                # Python fallback: compute c and call static forward
+                sig = 1.0 / (1.0 + torch.exp(torch.tensor(-kappa_val)))
+                c_val = c_min + (c_max - c_min) * sig.item()
+                ctx.c_val = c_val
+                out_np = _rust.lorentz_layer_forward(u.cpu().numpy(), v.cpu().numpy(), c_val, t)
+                return torch.from_numpy(out_np).to(u.device)
         else:
             ctx.use_dynamic = False
             ctx.c = c if c is not None else 1.0
@@ -109,11 +118,63 @@ class LorentzBallLayer(Function):
                 kappa_val = kappas.item()
             else:
                 kappa_val = kappas[layer_idx].item()
-            gu_np, gv_np, gk_val = _rust.lorentz_layer_layerwise_backward_cpu(
-                grad_output.cpu().numpy(), u.cpu().numpy(), v.cpu().numpy(), kappa_val, layer_idx, c_min, c_max, t
-            )
-            grad_u = torch.from_numpy(gu_np).to(grad_output.device)
-            grad_v = torch.from_numpy(gv_np).to(grad_output.device)
+            c_val = getattr(ctx, 'c_val', None)
+            if c_val is None:
+                sig = 1.0 / (1.0 + torch.exp(torch.tensor(-kappa_val)))
+                c_val = (c_min + (c_max - c_min) * sig.item())
+                ctx.c_val = c_val
+            # grads w.r.t u, v via static backward
+            if grad_output.is_cuda and _has_cuda:
+                grad_u = torch.empty_like(u)
+                grad_v = torch.empty_like(v)
+                _rust.lorentz_ball_layer_backward_cuda(
+                    grad_output.data_ptr(), u.data_ptr(), v.data_ptr(),
+                    grad_u.data_ptr(), grad_v.data_ptr(),
+                    float(c_val), t, u.shape[0], u.shape[1]
+                )
+            else:
+                gu_np, gv_np = _rust.lorentz_ball_layer_backward_cpu(
+                    grad_output.cpu().numpy(), u.cpu().numpy(), v.cpu().numpy(), float(c_val), t
+                )
+                grad_u = torch.from_numpy(gu_np).to(grad_output.device)
+                grad_v = torch.from_numpy(gv_np).to(grad_output.device)
+
+            # exact grad wrt kappa via chain rule
+            def minkowski_inner(p: Tensor, q: Tensor) -> Tensor:
+                return p[..., :1]*q[..., :1] - (p[..., 1:]*q[..., 1:]).sum(dim=-1, keepdim=True)
+
+            eps = 1e-7
+            inner = minkowski_inner(u, v)  # (B,1)
+            z = torch.clamp_min(-float(c_val) * inner, 1.0 + eps)
+            alpha = torch.acosh(z)
+            sinh_a = torch.sinh(alpha).clamp_min(eps)
+            cosh_a = torch.cosh(alpha)
+
+            t1 = (1.0 - t) * alpha
+            t2 = t * alpha
+            w1 = torch.where(alpha.abs() < 1e-6, torch.full_like(alpha, 1.0 - t), torch.sinh(t1) / sinh_a)
+            w2 = torch.where(alpha.abs() < 1e-6, torch.full_like(alpha, t), torch.sinh(t2) / sinh_a)
+
+            num1 = (1.0 - t) * torch.cosh(t1) * sinh_a - torch.sinh(t1) * cosh_a
+            num2 = t * torch.cosh(t2) * sinh_a - torch.sinh(t2) * cosh_a
+            denom = (sinh_a * sinh_a).clamp_min(eps)
+            dw1_da = torch.where(alpha.abs() < 1e-6, torch.zeros_like(alpha), num1 / denom)
+            dw2_da = torch.where(alpha.abs() < 1e-6, torch.zeros_like(alpha), num2 / denom)
+
+            dalpha_dz = 1.0 / (torch.sqrt(torch.clamp_min(z+1.0, 1.0+eps)) * torch.sqrt(torch.clamp_min(z-1.0, eps)))
+            dz_dc = -inner
+            dalpha_dc = dalpha_dz * dz_dc
+
+            dw1_dc = dw1_da * dalpha_dc
+            dw2_dc = dw2_da * dalpha_dc
+
+            # dy/dc = dw1_dc * u + dw2_dc * v
+            dy_dc = dw1_dc * u + dw2_dc * v
+            grad_c_total = (grad_output * dy_dc).sum()
+            sig = 1.0 / (1.0 + torch.exp(torch.tensor(-kappa_val, dtype=torch.float32, device=grad_output.device)))
+            dc_dkappa = (c_max - c_min) * sig * (1.0 - sig)
+            gk_val = (grad_c_total * dc_dkappa).item()
+
             if kappas.dim() == 0:
                 grad_kappas = torch.tensor(gk_val, device=kappas.device)
             else:

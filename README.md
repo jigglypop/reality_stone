@@ -1,119 +1,168 @@
 
-# `Reality Stone`: 리만 기하학 기반 신경망을 위한 기저 필드 인코딩 (RBE)
+# Reality Stone: 하이퍼볼릭 신경망을 위한 Rust/CUDA 가속 라이브러리
 
-[![PyTorch](https://img.shields.io/badge/PyTorch-1.7+-ee4c2c.svg)](https://pytorch.org/)
-[![Python](https://img.shields.io/badge/python-3.7%2B-blue)](https://www.python.org/)
-[![라이선스](https://img.shields.io/badge/라이선스-MIT-green.svg)](https://opensource.org/licenses/MIT)
+Reality Stone은 Poincaré/Lorentz/Klein 하이퍼볼릭 모델의 핵심 연산과 레이어를 Rust(+CUDA)로 구현하고, PyTorch Autograd로 노출하는 라이브러리입니다. 동적 곡률 최적화와 스플라인 기반 가중치 보간(압축)을 지원합니다.
 
-**`Reality Stone`**은 PyTorch를 위한 최첨단 신경망 압축 프레임워크로, **리만 기하학 기저 인코딩(Riemannian Basis Encoding, RBE)**이라는 새로운 패러다임을 제시합니다. 본 라이브러리는 거대한 가중치 행렬을 해당 기하학적 공간에 최적화된 소수의 **기저 함수(Basis Functions)** 조합으로 분해하여, 전례 없는 수준의 압축률과 정확도 보존을 동시에 달성합니다.
-
-Rust의 고성능 코어와 CUDA 가속을 통해, `Reality Stone`은 수십억 파라미터 모델을 개인용 컴퓨터에서도 효율적으로 구동하는 AI의 민주화를 목표로 합니다.
-
-### 핵심 혁신: 리만 기하학 기저 인코딩 (RBE)
-
-RBE는 가중치 행렬을 두 가지 핵심 요소로 분해합니다:
-
-1.  **기저 청사진 (The Blueprint / Basis Field):**
-    *   가중치 변환의 핵심적인 구조적 패턴을 담은, 고도로 압축된 **단일 64비트 시드**입니다.
-    *   이 비트 필드는 특정 리만 공간(예: 푸앵카레 볼)을 가장 잘 표현하는 미리 정의된 **기저 함수들**을 어떻게 선택하고 조합할지에 대한 '설계도' 역할을 합니다.
-    .
-2.  **잔차 보정 (The Residual):**
-    *   기저 청사진만으로는 표현되지 않는 미세한 오차를 보정하기 위한, 훨씬 작은 크기의 학습 가능한 행렬입니다.
-    *   이를 통해 모델은 핵심 패턴과 세부 정보를 분리하여 학습함으로써, 표현력 손실을 최소화합니다.
-
-| 메트릭        | 성능      | 설명                                                           |
-| ------------- | --------- | -------------------------------------------------------------- |
-| **압축률**    | **186x**  | RBE를 통해 가중치 행을 단 **22비트**로 인코딩                  |
-| **정확도**    | **98.6%** | 기하학적 구조에 최적화된 기저 함수로 복잡한 분포를 표현        |
-| **추론 속도** | **3-4x**  | 압축된 청사진과 잔차로부터 직접 추론하여 메모리 병목 현상 완화 |
+현재 릴리스: 0.2.0, 라이선스: MIT, Python 3.8–3.12, PyTorch 2.0+ 지원.
 
 
-## 🎉 주요 기능
+## 주요 기능
 
-- **RBE 압축 엔진**: `nn.Linear`를 `RBELinear`로 대체하여, RBE의 강력한 압축 및 추론 성능을 제공합니다.
-- **기하학-인식 레이어 (Geometry-Aware Layers)**: `Poincaré`, `Lorentz`, `Klein` 등 RBE가 최대의 효율을 발휘하는 하이퍼볼릭 레이어를 네이티브로 지원합니다.
-- **동적 곡률 최적화**: 모델 학습 중 각 레이어의 곡률을 자동으로 최적화하여 표현력을 극대화합니다.
-- **고성능 Rust 코어 및 CUDA 가속**: CPU와 GPU 모두에서 최고의 성능을 발휘하도록 설계되었습니다.
+- 하이퍼볼릭 모델 지원: Poincaré, Lorentz, Klein
+- 기본 연산: 덧셈, 스칼라 곱, 거리, 모델 간 변환(Poincaré↔Lorentz/Klein)
+- 레이어: `PoincareBallLayer`, `LorentzLayer`, `KleinLayer`
+- 동적 곡률: 레이어별 `kappa`로 곡률 `c`를 학습 (정확한 backward 포함)
+- 스플라인 압축: `SplineLinear`로 가중치 보간 + 잔차 보정
+- 고성능 코어: Rust/ndarray 병렬화, CUDA 커널 가속
 
-## 🚀 빠른 시작
 
-### 1. 설치
+## 설치 및 빌드
 
-Docker를 사용하여 가장 간단하게 환경을 구성하고 빌드할 수 있습니다.
+사전 준비물
+- Python 3.8 이상, pip
+- Rust toolchain (stable), Cargo
+- PyTorch 2.0 이상
+- CUDA 사용 시: NVIDIA CUDA Toolkit 설치, 환경 변수 `CUDA_HOME` 또는 `CUDA_PATH` 설정
 
+가상환경 생성 및 필수 패키지 설치
 ```bash
-docker-compose up --build -d
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
 ```
 
-### 2. RBE를 `nn.Linear` 레이어에 적용하기
+CPU 전용 빌드
+```bash
+maturin develop
+python -c "import reality_stone as rs; print(rs._has_rust_ext, rs._has_cuda)"
+```
 
-기존 `nn.Linear` 레이어를 RBE 압축 레이어로 변환하여 극한 압축의 이점을 즉시 활용할 수 있습니다.
+CUDA 빌드
+```bash
+export CUDA_HOME=/usr/local/cuda   # Windows: set CUDA_PATH=C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.x
+maturin develop --features cuda --release
+python -c "import reality_stone as rs; print(rs._has_rust_ext, rs._has_cuda)"
+```
 
+주의: 기본 CUDA 아키텍처 플래그는 `sm_70`입니다. 다른 GPU를 사용한다면 `build.rs`의 `-arch=sm_70`을 환경에 맞게 수정하세요.
+
+
+## 빠른 예제
+
+Poincaré 레이어
+```python
+import torch
+import reality_stone as rs
+
+u = torch.randn(4, 8)
+v = torch.randn(4, 8)
+y = rs.poincare_ball_layer(u, v, c=1e-3, t=0.7)
+```
+
+거리와 좌표 변환
+```python
+import torch
+import reality_stone as rs
+
+x = torch.randn(2, 4)
+y = torch.randn(2, 4)
+d = rs.poincare_distance(x, y, c=1e-3)
+xL = rs.poincare_to_lorentz(x, c=1e-3)
+xK = rs.poincare_to_klein(x, c=1e-3)
+```
+
+스플라인 기반 압축 레이어
 ```python
 import torch
 import torch.nn as nn
-from reality_stone.layers import RBELinear
+import reality_stone as rs
 
-# 1. 압축할 기존 nn.Linear 레이어 정의
-original_layer = nn.Linear(in_features=768, out_features=256)
-# original_layer.load_state_dict(...) # 사전 학습된 가중치 로드
-
-# 2. RBELinear로 변환하여 RBE 적용
-# .from_linear 메소드가 가중치를 푸앵카레 디스크 상의 단일 시드로 압축합니다.
-compressed_layer = RBELinear.from_linear(original_layer)
-
-print(f"원본 레이어: {original_layer}")
-print(f"RBE 적용 레이어: {compressed_layer}")
-
-# 3. 압축된 레이어로 직접 추론 (메모리 및 속도 이점)
-input_tensor = torch.randn(16, 768)
-output = compressed_layer(input_tensor)
-
-print(f"추론 결과 shape: {output.shape}")
+linear = nn.Linear(512, 256)
+spline = rs.SplineLinear.from_linear(linear, k=8, learning_rate=0.01, steps=100, use_residual=True)
+out = spline(torch.randn(2, 512))
 ```
 
-## 🔬 아키텍처
+모델을 하이퍼볼릭 레이어로 변환
+```python
+import torch.nn as nn
+from reality_stone.layers import EquivalentHyperbolicLinear
+from reality_stone.conversion import convert_to_hyperbolic
 
-`Reality Stone`은 성능과 유연성을 극대화하기 위해 명확한 계층 구조로 설계되었습니다.
-
-```plaintext
-/
-├── src/                      # 🦀 Rust 핵심 로직 (RBE 알고리즘, 기하학 연산)
-│   ├── layers/               #   - Poincaré, Lorentz, RBE 등 핵심 연산 (ndarray)
-│   │   └── cuda/             #   - GPU 가속을 위한 CUDA 커널 (.cu)
-│   ├── ops/                  #   - 일반적인 수학 연산
-│   └── bindings/             #   - PyO3를 통한 Python-Rust 인터페이스
-├── python/                   # 🐍 Python API 및 PyTorch 래퍼
-│   └── reality_stone/
-│       ├── layers/           #   - PoincareBallLayer, RBELinear 등 사용자용 nn.Module
-│       └── core/             #   - 핵심 연산을 위한 Python 인터페이스
-├── docs/                     # 📚 문서 및 논문 (RBE 상세 설명)
-├── examples/                 # 💡 사용 예제 코드
-└── tests/                    # 🧪 테스트 코드
+model = nn.Sequential(nn.Linear(128, 64), nn.ReLU(), nn.Linear(64, 10))
+convert_to_hyperbolic(model, {nn.Linear: EquivalentHyperbolicLinear}, c=1e-3)
 ```
 
-### 🧪 Python MNIST quick tests
 
+## 아키텍처 개요
+
+디렉터리 구조
 ```
+src/            # Rust 코어 (layers, ops, bindings, cuda)
+python/         # Python API 및 Autograd 레이어
+tests/          # 예제/검증 스크립트
+docs/           # 문서
+```
+
+데이터 플로우
+- Python `torch.autograd.Function` → PyO3 모듈 `_rust` → Rust ndarray 구현 → (선택) CUDA 커널
+- GPU 사용 시 PyTorch 텐서 포인터를 커널에 직접 전달하여 불필요한 복사를 최소화합니다.
+
+
+## API 개요 (Python)
+
+상위 함수
+- `poincare_ball_layer(u, v, c, t)`
+- `lorentz_layer(u, v, c, t)`
+- `klein_layer(u, v, c, t)`
+
+거리/변환
+- `poincare_distance(x, y, c)`
+- `poincare_to_lorentz(x, c)`, `poincare_to_klein(x, c)`
+- `lorentz_to_poincare(x, c)`, `lorentz_to_klein(x, c)`
+- `klein_to_poincare(x, c)`, `klein_to_lorentz(x, c)`
+
+레이어
+- `PoincareBallLayer`, `LorentzLayer`, `KleinLayer`
+- 하이퍼볼릭 선형 변형: `HyperbolicLinear`, `GeodesicLinear`, `EquivalentHyperbolicLinear`
+- 압축: `SplineLinear`
+
+기타
+- 투영: `project_to_ball(x, epsilon)`
+- 메트릭 합성: `from reality_stone import metrikey` (SPD 메트릭/합성/암시적 변환 함수 제공)
+
+
+## 테스트 실행
+
+MNIST 간단 테스트
+```bash
 python -m tests.poincare --mode both --quick --epochs 2 --batch-size 256
-python -m tests.lorentz --quick --epochs 2 --batch-size 256
-python -m tests.klein --quick --epochs 2 --batch-size 256
+python -m tests.lorentz  --quick --epochs 2 --batch-size 256
+python -m tests.klein    --quick --epochs 2 --batch-size 256
 ```
 
-옵션:
-- `--device {auto,cpu,cuda}`
-- `--data-dir tests/data`
-- `--t, --c, --epochs, --batch-size, --seed`
+공통 옵션: `--device {auto,cpu,cuda}`, `--data-dir tests/data`, `--epochs`, `--batch-size`, `--lr`, `--t`, `--c`, `--quick`, `--seed`
 
-## 🌟 하이퍼볼릭 기하학과 RBE
 
-RBE는 유클리드 공간을 넘어, 특히 **하이퍼볼릭 기하학**과 같은 비유클리드 공간에서 강력한 성능을 발휘합니다. 계층적 데이터나 그래프 구조를 임베딩하는 데 뛰어난 푸앵카레 볼(Poincaré Ball) 모델과 RBE를 결합하면, 극도의 압축률과 높은 표현력을 동시에 달성할 수 있습니다.
+## 문제 해결
 
-### 푸앵카레 볼 모델 (Poincaré Ball Model)
+- Rust 확장 모듈을 찾지 못함: `maturin develop`로 빌드 후 다시 시도하세요.
+- CUDA가 비활성으로 표시됨: `CUDA_HOME`/`CUDA_PATH` 확인, GPU 드라이버/Toolkit 설치 상태 점검, CUDA 피처로 빌드했는지 확인.
+- Windows 빌드: Visual C++ Build Tools 설치 필요. PowerShell 대신 CMD/Developer Prompt 또는 Git Bash 사용 가능.
+- CUDA 아키텍처 오류: `build.rs`의 `-arch=sm_70`을 환경에 맞게 수정.
+- NumPy 2.x와의 호환성: 현재 `numpy>=1.21,<2.0`을 사용합니다.
 
-곡률 $c > 0$인 $N$차원 쌍곡공간은 다음과 같이 정의됩니다:
 
-$$ \mathbb{D}^N_c = \{x \in \mathbb{R}^N : c\,\|x\|_2^2 < 1\} $$
+## 변경 사항 요약 (v0.2.0)
 
-`Reality Stone`은 이 공간 내의 연산(덧셈, 스칼라 곱, 거리 계산 등)을 위한 최적화된 CPU/GPU 커널을 제공하며, RBE는 이 공간의 기저를 활용하여 신경망을 압축합니다.
+- Poincaré/Lorentz/Klein 레이어 및 연산의 Python Autograd 경로 정비
+- 동적/레이어별 곡률 API 추가: `poincare_ball_layer_layerwise_cpu` 및 정확한 backward
+- 스플라인 압축 레이어 `SplineLinear` 추가 및 `from_linear` 최적화 파이프라인 도입
+- 하이퍼볼릭 선형 변형 레이어군 추가: `HyperbolicLinear`, `GeodesicLinear`, `EquivalentHyperbolicLinear`, `CompactEquivalentHyperbolicLinear`
+- `metrikey` 서브모듈 공개: SPD 메트릭 합성/적용, 암시적 변환 체인
+- RBE 모듈은 현재 비활성화됨(코어에 잔존 코드와 문서 일부는 유지되나 런타임에서 사용되지 않음)
+
+
+## 라이선스
+
+MIT License
 

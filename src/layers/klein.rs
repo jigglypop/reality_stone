@@ -264,9 +264,10 @@ pub fn to_poincare_grad_c(x: &ArrayView2<f32>, c: f32) -> Array2<f32> {
 }
 
 pub fn from_poincare(x: &ArrayView2<f32>, c: f32) -> Array2<f32> {
+    // Poincaré -> Klein: 2x / (1 + c||x||^2)
     let x_norm_sq = norm_sq_batched(x).insert_axis(Axis(1));
-    let den = (1.0 + (1.0 - c * x_norm_sq).mapv(|v| safe_sqrt(v))).mapv(|v| v.max(EPS));
-    x / &den
+    let den = (1.0 + c * &x_norm_sq).mapv(|v| v.max(EPS));
+    (2.0 * x) / &den
 }
 
 pub fn from_poincare_grad_c(x: &ArrayView2<f32>, c: f32) -> Array2<f32> {

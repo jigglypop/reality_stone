@@ -9,15 +9,14 @@ import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 import faulthandler; faulthandler.enable()
 import reality_stone as rs
+from reality_stone.layers.klein import project_to_klein as _project_to_klein
+from reality_stone.layers.poincare import log_map_zero as _log_map_zero
 
-def project_to_ball(x, epsilon=1e-5):
-    norm = torch.norm(x, p=2, dim=1, keepdim=True)
-    max_norm = 1.0 - epsilon
-    scale = torch.where(norm > max_norm, max_norm / norm, torch.ones_like(norm))
-    return x * scale
+def project_to_ball_with_c(x, c: float, epsilon=1e-5):
+    return _project_to_klein(x, c, epsilon)
 
 class KleinMLP(nn.Module):
-    def __init__(self, in_dim=784, hid=128, out_dim=10, c=1e-3, L=2, t=0.7, use_dynamic=False, c_min=1e-4, c_max=0.05):
+    def __init__(self, in_dim=784, hid=256, out_dim=10, c=1e-3, L=2, t=0.7, use_dynamic=False, c_min=1e-4, c_max=0.05):
         super().__init__()
         self.c = c
         self.L = L
@@ -25,31 +24,29 @@ class KleinMLP(nn.Module):
         self.use_dynamic = use_dynamic
         self.c_min = c_min
         self.c_max = c_max
-        self.weights1 = nn.Parameter(torch.randn(in_dim, hid) * 0.01)
-        self.bias1 = nn.Parameter(torch.zeros(hid))
-        self.weights2 = nn.Parameter(torch.randn(hid, hid) * 0.01)
-        self.bias2 = nn.Parameter(torch.zeros(hid))
-        self.out_weights = nn.Parameter(torch.randn(hid, out_dim) * 0.01)
-        self.out_bias = nn.Parameter(torch.zeros(out_dim))
+        # Use standard Linear layers for better initialization and fused kernels
+        self.fc1 = nn.Linear(in_dim, hid)
+        self.fc2 = nn.Linear(hid, hid)
+        self.out = nn.Linear(hid, out_dim)
         
         if use_dynamic:
             self.kappas = nn.Parameter(torch.tensor(-1.0))
 
     def forward(self, x):
         x = x.view(x.size(0), -1)
-        h = x @ self.weights1 + self.bias1
-        h = torch.tanh(h)
-        h = project_to_ball(h)
-        u = h @ self.weights2 + self.bias2
-        u = torch.tanh(u)
-        u = project_to_ball(u)
+        h = self.fc1(x)
+        h = torch.relu(h)
+        h = project_to_ball_with_c(h, self.c)
+        u = self.fc2(h)
+        u = torch.relu(u)
+        u = project_to_ball_with_c(u, self.c)
         
         # Klein 정식 레이어 사용 (동적 곡률 미지원)
         z = rs.klein_layer(h, u, c=self.c, t=self.t)
             
         if torch.isnan(z).any():
             z = h
-        output = z @ self.out_weights + self.out_bias
+        output = self.out(z)
         return output
 
 def train_epoch(model, loader, optimizer, device):
@@ -57,11 +54,12 @@ def train_epoch(model, loader, optimizer, device):
     total_loss = 0.0
     t0 = time.time()
     for imgs, labels in loader:
-        imgs, labels = imgs.to(device), labels.to(device)
+        imgs, labels = imgs.to(device, non_blocking=True), labels.to(device, non_blocking=True)
         optimizer.zero_grad()
         logits = model(imgs)
         loss = nn.functional.cross_entropy(logits, labels)
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         total_loss += loss.item() * imgs.size(0)
     
@@ -72,7 +70,7 @@ def test_epoch(model, loader, device):
     correct = 0
     with torch.no_grad():
         for imgs, labels in loader:
-            imgs, labels = imgs.to(device), labels.to(device)
+            imgs, labels = imgs.to(device, non_blocking=True), labels.to(device, non_blocking=True)
             pred = model(imgs).argmax(dim=1)
             correct += (pred == labels).sum().item()
     return correct / len(loader.dataset)
@@ -118,15 +116,32 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     set_seed(args.seed)
+    # Encourage parallelism in Rust ndarray (rayon) and PyTorch CPU
+    os.environ.setdefault("RAYON_NUM_THREADS", str(max(2, (os.cpu_count() or 4) // 2)))
+    try:
+        torch.set_num_threads(max(2, (os.cpu_count() or 4) // 2))
+    except Exception:
+        pass
 
     if args.device == "auto":
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     else:
         device = torch.device(args.device)
 
+    # If CUDA kernels for Klein are unavailable, avoid GPU<->CPU transfers by using CPU
+    if device.type == "cuda" and not rs._has_cuda:
+        print("Note: Klein CUDA kernels unavailable. Switching to CPU to avoid transfer overhead.")
+        device = torch.device("cpu")
+
+    # Optional kernel-level speedups
+    try:
+        torch.set_float32_matmul_precision("high")
+    except Exception:
+        pass
+
     transform = transforms.Compose([
         transforms.ToTensor(),
-        transforms.Normalize((0.5,), (0.5,))
+        transforms.Normalize((0.1307,), (0.3081,))
     ])
     os.makedirs(args.data_dir, exist_ok=True)
     train_ds = datasets.MNIST(args.data_dir, train=True, download=True, transform=transform)
@@ -134,13 +149,15 @@ if __name__ == "__main__":
     if args.quick:
         train_ds = torch.utils.data.Subset(train_ds, list(range(0, min(10000, len(train_ds)))))
         test_ds = torch.utils.data.Subset(test_ds, list(range(0, min(2000, len(test_ds)))))
+    use_pin = (device.type == "cuda") and rs._has_cuda
+    workers = max(2, os.cpu_count() // 2)
     train_loader = torch.utils.data.DataLoader(
         train_ds, batch_size=args.batch_size, shuffle=True,
-        num_workers=0, pin_memory=(device.type == "cuda")
+        num_workers=workers, pin_memory=use_pin, persistent_workers=True, prefetch_factor=2
     )
     test_loader = torch.utils.data.DataLoader(
         test_ds, batch_size=args.batch_size, shuffle=False,
-        num_workers=0, pin_memory=(device.type == "cuda")
+        num_workers=workers, pin_memory=use_pin, persistent_workers=True, prefetch_factor=2
     )
 
     model = KleinMLP(use_dynamic=False, t=args.t, c=args.c).to(device)

@@ -15,7 +15,27 @@ if _so_file:
             sys.path.insert(0, str(_lib_path))
         from . import _rust
         _has_rust_ext = True
-        _has_cuda = torch.cuda.is_available()
+        # CUDA 가용 여부는 PyTorch CUDA 가능 + Rust 확장에 CUDA 심볼 존재 여부 모두 확인
+        if torch.cuda.is_available():
+            required_cuda_symbols = [
+                # Möbius
+                'mobius_add_cuda',
+                'mobius_scalar_cuda',
+                # Poincaré
+                'poincare_ball_layer_backward_cuda',
+                'poincare_distance_cuda',
+                # Lorentz
+                'lorentz_layer_forward_cuda',
+                'lorentz_ball_layer_backward_cuda',
+                'lorentz_distance_cuda',
+                # Klein
+                'klein_layer_forward_cuda',
+                'klein_ball_layer_backward_cuda',
+                'klein_distance_cuda',
+            ]
+            _has_cuda = all(hasattr(_rust, name) for name in required_cuda_symbols)
+        else:
+            _has_cuda = False
     except ImportError as e:
         print(f" Reality Stone: Found .so file, but failed to import: {_so_file[0]}")
         print(f" Error: {e}")

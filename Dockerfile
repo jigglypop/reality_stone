@@ -48,11 +48,12 @@ ENV CUDA_PATH=/usr/local/cuda \
 WORKDIR /workspace
 
 # 의존성 파일 복사
-COPY Cargo.toml Cargo.lock pyproject.toml ./
+COPY Cargo.toml pyproject.toml ./
 
 # 더미 src 디렉토리로 Rust 의존성 빌드
 RUN mkdir src && \
     echo "fn main() {}" > src/lib.rs && \
+    cargo generate-lockfile && \
     cargo fetch && \
     rm -rf src
 

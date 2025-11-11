@@ -16,9 +16,26 @@ def convert_to_hyperbolic(model: nn.Module, layer_map: dict, **kwargs):
             convert_to_hyperbolic(module, layer_map, **kwargs)
 
         # 맵에 정의된 레이어 타입이면 변환 수행
+        replaced = False
         for old_layer_type, new_layer_class in layer_map.items():
             if isinstance(module, old_layer_type):
                 new_layer = new_layer_class.from_linear(module, **kwargs)
                 setattr(model, name, new_layer)
-                print(f"✅ Replaced '{name}' with {new_layer_class.__name__}")
-                break  # 한 번 변환되면 루프 종료 
+                try:
+                    print(f"Replaced '{name}' -> {new_layer_class.__name__}")
+                except Exception:
+                    pass
+                replaced = True
+                break  # 한 번 변환되면 루프 종료
+
+        # HuggingFace GPT 계열의 Conv1D 처리 (유형명이 문자열로만 구분되는 경우)
+        if not replaced and 'Conv1D' in str(type(module)):
+            # layer_map의 첫 번째 타깃 클래스를 사용
+            if layer_map:
+                new_layer_class = list(layer_map.values())[0]
+                new_layer = new_layer_class.from_linear(module, **kwargs)
+                setattr(model, name, new_layer)
+                try:
+                    print(f"Replaced Conv1D '{name}' -> {new_layer_class.__name__}")
+                except Exception:
+                    pass

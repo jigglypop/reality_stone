@@ -42,3 +42,4 @@ glob = "0.3"
 
 [features]
 cuda = []
+abi3-py38 = ["pyo3/abi3-py38", "pyo3/extension-module"]

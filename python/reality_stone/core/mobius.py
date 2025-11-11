@@ -33,7 +33,8 @@ class MobiusAdd(Function):
                 output = torch.empty_like(x)
                 _rust.mobius_add_cuda(x.data_ptr(), y.data_ptr(), output.data_ptr(), x.shape[0], x.shape[1], ctx.c)
                 return output
-            return torch.from_numpy(_rust.mobius_add_cpu(x.cpu().numpy(), y.cpu().numpy(), ctx.c))
+            # CPU 경로: 입력이 CUDA여도 결과를 원래 디바이스로 되돌린다
+            return torch.from_numpy(_rust.mobius_add_cpu(x.cpu().numpy(), y.cpu().numpy(), ctx.c)).to(x.device)
 
     @staticmethod
     def backward(ctx, grad_output: Tensor):
@@ -85,7 +86,8 @@ class MobiusScalarMul(Function):
             output = torch.empty_like(x)
             _rust.mobius_scalar_cuda(x.data_ptr(), output.data_ptr(), x.shape[0], x.shape[1], r, c)
             return output
-        return torch.from_numpy(_rust.mobius_scalar_cpu(x.cpu().numpy(), r, c))
+        # CPU 경로: 입력이 CUDA여도 결과를 원래 디바이스로 되돌린다
+        return torch.from_numpy(_rust.mobius_scalar_cpu(x.cpu().numpy(), r, c)).to(x.device)
         
     @staticmethod
     def backward(ctx, grad_output: Tensor):

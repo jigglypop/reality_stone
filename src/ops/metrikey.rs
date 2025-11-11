@@ -395,12 +395,369 @@ pub fn compose_layers_order_preserving(layers: &[Array2<f32>]) -> Array2<f32> {
     acc
 }
 
+/// f64 variant: Order-preserving composition of square layers
+pub fn compose_layers_order_preserving_f64(
+    layers: &[ndarray::Array2<f64>],
+) -> ndarray::Array2<f64> {
+    assert!(!layers.is_empty(), "layers must be non-empty");
+    let (n, m) = layers[0].dim();
+    assert_eq!(n, m, "only square layers supported");
+    let mut acc = ndarray::Array2::<f64>::eye(n);
+    for l in layers {
+        assert_eq!(l.dim(), (n, n));
+        acc = l.dot(&acc);
+    }
+    acc
+}
+
 pub fn apply_linear(matrix: &Array2<f32>, vecs: &Array2<f32>) -> Array2<f32> {
     // matrix: (out, in), vecs: (batch, in) -> (batch, out)
     let (_, in_dim) = matrix.dim();
     let (_batch, in_dim_vec) = vecs.dim();
     assert_eq!(in_dim, in_dim_vec);
     vecs.dot(&matrix.t())
+}
+
+// ===== Exact inference ops (f32) for reversible path =====
+
+/// LayerNorm forward (per-row) with epsilon, returns (y, mu, rstd)
+pub fn layer_norm_forward_exact_f32(
+    x: &Array2<f32>,
+    gamma: &ndarray::Array1<f32>,
+    beta: &ndarray::Array1<f32>,
+    eps: f32,
+) -> (Array2<f32>, ndarray::Array1<f32>, ndarray::Array1<f32>) {
+    let (batch, dim) = x.dim();
+    assert_eq!(gamma.len(), dim);
+    assert_eq!(beta.len(), dim);
+    let mut y = Array2::<f32>::zeros((batch, dim));
+    let mut mu = ndarray::Array1::<f32>::zeros(batch);
+    let mut rstd = ndarray::Array1::<f32>::zeros(batch);
+    for i in 0..batch {
+        let xi = x.row(i);
+        let m = xi.sum() / (dim as f32);
+        mu[i] = m;
+        // variance
+        let mut var = 0.0f32;
+        for j in 0..dim {
+            let d = xi[j] - m;
+            var += d * d;
+        }
+        var /= dim as f32;
+        let rs = 1.0f32 / (var + eps).sqrt();
+        rstd[i] = rs;
+        for j in 0..dim {
+            let norm = (xi[j] - m) * rs;
+            y[(i, j)] = norm * gamma[j] + beta[j];
+        }
+    }
+    (y, mu, rstd)
+}
+
+/// GPT-2 gelu_new activation (tanh-based) applied elementwise to (batch, dim)
+pub fn gelu_new_f32(x: &Array2<f32>) -> Array2<f32> {
+    let (batch, dim) = x.dim();
+    let mut y = Array2::<f32>::zeros((batch, dim));
+    // constants
+    let k: f32 = std::f32::consts::FRAC_2_SQRT_PI * 0.5f32; // 0.5*sqrt(2/pi)
+    for i in 0..batch {
+        for j in 0..dim {
+            let v = x[(i, j)];
+            let v3 = v * v * v;
+            let t = (k * (v + 0.044715f32 * v3)).tanh();
+            y[(i, j)] = 0.5f32 * v * (1.0f32 + t);
+        }
+    }
+    y
+}
+
+/// Stable softmax along last dimension of a 2D tensor (batch, dim)
+pub fn softmax_lastdim_f32(x: &Array2<f32>) -> Array2<f32> {
+    let (batch, dim) = x.dim();
+    let mut y = Array2::<f32>::zeros((batch, dim));
+    for i in 0..batch {
+        // subtract max for stability
+        let mut max_v = std::f32::NEG_INFINITY;
+        for j in 0..dim {
+            let v = x[(i, j)];
+            if v > max_v {
+                max_v = v;
+            }
+        }
+        let mut sum = 0.0f32;
+        for j in 0..dim {
+            let e = (x[(i, j)] - max_v).exp();
+            y[(i, j)] = e;
+            sum += e;
+        }
+        let inv = 1.0f32 / sum.max(EPS);
+        for j in 0..dim {
+            y[(i, j)] *= inv;
+        }
+    }
+    y
+}
+
+/// Apply causal mask in-place to 2D scores (seq, seq): set j>i to large negative
+pub fn apply_causal_mask_inplace_f32(scores: &mut Array2<f32>, neg_large: f32) {
+    let (n, m) = scores.dim();
+    assert_eq!(n, m);
+    for i in 0..n {
+        for j in (i + 1)..n {
+            scores[(i, j)] = neg_large;
+        }
+    }
+}
+
+// f64 counterparts
+pub fn layer_norm_forward_exact_f64(
+    x: &ndarray::Array2<f64>,
+    gamma: &ndarray::Array1<f64>,
+    beta: &ndarray::Array1<f64>,
+    eps: f64,
+) -> (
+    ndarray::Array2<f64>,
+    ndarray::Array1<f64>,
+    ndarray::Array1<f64>,
+) {
+    let (batch, dim) = x.dim();
+    assert_eq!(gamma.len(), dim);
+    assert_eq!(beta.len(), dim);
+    let mut y = ndarray::Array2::<f64>::zeros((batch, dim));
+    let mut mu = ndarray::Array1::<f64>::zeros(batch);
+    let mut rstd = ndarray::Array1::<f64>::zeros(batch);
+    for i in 0..batch {
+        let xi = x.row(i);
+        let m = xi.sum() / (dim as f64);
+        mu[i] = m;
+        let mut var = 0.0f64;
+        for j in 0..dim {
+            let d = xi[j] - m;
+            var += d * d;
+        }
+        var /= dim as f64;
+        let rs = 1.0f64 / (var + (eps as f64)).sqrt();
+        rstd[i] = rs;
+        for j in 0..dim {
+            let norm = (xi[j] - m) * rs;
+            y[(i, j)] = norm * gamma[j] + beta[j];
+        }
+    }
+    (y, mu, rstd)
+}
+
+pub fn gelu_new_f64(x: &ndarray::Array2<f64>) -> ndarray::Array2<f64> {
+    let (batch, dim) = x.dim();
+    let mut y = ndarray::Array2::<f64>::zeros((batch, dim));
+    let k: f64 = std::f64::consts::FRAC_2_SQRT_PI * 0.5f64;
+    for i in 0..batch {
+        for j in 0..dim {
+            let v = x[(i, j)];
+            let v3 = v * v * v;
+            let t = (k * (v + 0.044715f64 * v3)).tanh();
+            y[(i, j)] = 0.5f64 * v * (1.0f64 + t);
+        }
+    }
+    y
+}
+
+pub fn softmax_lastdim_f64(x: &ndarray::Array2<f64>) -> ndarray::Array2<f64> {
+    let (batch, dim) = x.dim();
+    let mut y = ndarray::Array2::<f64>::zeros((batch, dim));
+    for i in 0..batch {
+        let mut max_v = std::f64::NEG_INFINITY;
+        for j in 0..dim {
+            let v = x[(i, j)];
+            if v > max_v {
+                max_v = v;
+            }
+        }
+        let mut sum = 0.0f64;
+        for j in 0..dim {
+            let e = (x[(i, j)] - max_v).exp();
+            y[(i, j)] = e;
+            sum += e;
+        }
+        let inv = 1.0f64 / sum.max(EPS64);
+        for j in 0..dim {
+            y[(i, j)] *= inv;
+        }
+    }
+    y
+}
+
+pub fn apply_causal_mask_inplace_f64(scores: &mut ndarray::Array2<f64>, neg_large: f64) {
+    let (n, m) = scores.dim();
+    assert_eq!(n, m);
+    for i in 0..n {
+        for j in (i + 1)..n {
+            scores[(i, j)] = neg_large;
+        }
+    }
+}
+
+// ===== f64 linear/attention/ffn exact forwards (GPT-2 style) =====
+
+pub fn linear_f64(
+    x: &ndarray::Array2<f64>,         // (batch, in)
+    w: &ndarray::Array2<f64>,         // (out, in)
+    b: Option<&ndarray::Array1<f64>>, // (out)
+) -> ndarray::Array2<f64> {
+    let y = x.dot(&w.t());
+    if let Some(bias) = b {
+        let mut out = y;
+        for mut row in out.rows_mut() {
+            row += &bias.view();
+        }
+        out
+    } else {
+        y
+    }
+}
+
+pub fn attention_forward_f64(
+    x: &ndarray::Array2<f64>, // (seq, d_model)
+    wq: &ndarray::Array2<f64>,
+    wk: &ndarray::Array2<f64>,
+    wv: &ndarray::Array2<f64>,
+    wo: &ndarray::Array2<f64>,
+    bq: Option<&ndarray::Array1<f64>>,
+    bk: Option<&ndarray::Array1<f64>>,
+    bv: Option<&ndarray::Array1<f64>>,
+    bo: Option<&ndarray::Array1<f64>>,
+    n_heads: usize,
+    causal: bool,
+) -> (ndarray::Array2<f64>, ndarray::Array2<f64>) {
+    // (y, attn_probs_flat)
+    let (seq, d_model) = x.dim();
+    assert_eq!(wq.dim().1, d_model);
+    let d_q = wq.dim().0; // out dim for Q
+    assert_eq!(d_q % n_heads, 0);
+    let dh = d_q / n_heads;
+
+    let q = linear_f64(x, wq, bq); // (seq, d_q)
+    let k = linear_f64(x, wk, bk); // (seq, d_q)
+    let v = linear_f64(x, wv, bv); // (seq, d_q)
+
+    // reshape to heads: (n_heads, seq, dh)
+    let mut y_heads = ndarray::Array3::<f64>::zeros((n_heads, seq, dh));
+    let mut probs_all = ndarray::Array3::<f64>::zeros((n_heads, seq, seq));
+    let scale = 1.0f64 / (dh as f64).sqrt();
+    for h in 0..n_heads {
+        // slices
+        let qs = q.slice(ndarray::s![.., h * dh..(h + 1) * dh]).to_owned(); // (seq, dh)
+        let ks = k.slice(ndarray::s![.., h * dh..(h + 1) * dh]).to_owned();
+        let vs = v.slice(ndarray::s![.., h * dh..(h + 1) * dh]).to_owned();
+        // scores = Q K^T * scale
+        let mut scores = qs.dot(&ks.t()); // (seq, seq)
+        scores.mapv_inplace(|z| z * scale);
+        if causal {
+            apply_causal_mask_inplace_f64(&mut scores, -1e9f64);
+        }
+        // softmax
+        let probs = softmax_lastdim_f64(&scores);
+        // out_h = probs V
+        let out_h = probs.dot(&vs);
+        y_heads.slice_mut(ndarray::s![h, .., ..]).assign(&out_h);
+        probs_all.slice_mut(ndarray::s![h, .., ..]).assign(&probs);
+    }
+    // merge heads -> (seq, d_q)
+    let mut yh = ndarray::Array2::<f64>::zeros((seq, d_q));
+    for h in 0..n_heads {
+        let s = y_heads.slice(ndarray::s![h, .., ..]);
+        yh.slice_mut(ndarray::s![.., h * dh..(h + 1) * dh])
+            .assign(&s);
+    }
+    let y = linear_f64(&yh, wo, bo); // (seq, d_model)
+                                     // Flatten heads: (n_heads, seq, seq) -> (n_heads*seq, seq)
+    let probs_flat = probs_all.into_shape((n_heads * seq, seq)).unwrap();
+    (y, probs_flat)
+}
+
+pub fn ffn_gelu_forward_f64(
+    x: &ndarray::Array2<f64>,
+    w1: &ndarray::Array2<f64>,
+    b1: Option<&ndarray::Array1<f64>>,
+    w2: &ndarray::Array2<f64>,
+    b2: Option<&ndarray::Array1<f64>>,
+) -> ndarray::Array2<f64> {
+    let h = linear_f64(x, w1, b1);
+    let a = gelu_new_f64(&h);
+    linear_f64(&a, w2, b2)
+}
+
+pub fn transformer_block_forward_f64(
+    x: &ndarray::Array2<f64>,
+    // LN1
+    ln1_g: &ndarray::Array1<f64>,
+    ln1_b: &ndarray::Array1<f64>,
+    eps1: f64,
+    // Attn
+    wq: &ndarray::Array2<f64>,
+    wk: &ndarray::Array2<f64>,
+    wv: &ndarray::Array2<f64>,
+    wo: &ndarray::Array2<f64>,
+    bq: Option<&ndarray::Array1<f64>>,
+    bk: Option<&ndarray::Array1<f64>>,
+    bv: Option<&ndarray::Array1<f64>>,
+    bo: Option<&ndarray::Array1<f64>>,
+    n_heads: usize,
+    // LN2
+    ln2_g: &ndarray::Array1<f64>,
+    ln2_b: &ndarray::Array1<f64>,
+    eps2: f64,
+    // FFN
+    w1: &ndarray::Array2<f64>,
+    b1: Option<&ndarray::Array1<f64>>,
+    w2: &ndarray::Array2<f64>,
+    b2: Option<&ndarray::Array1<f64>>,
+    causal: bool,
+) -> (
+    ndarray::Array2<f64>,
+    ndarray::Array1<f64>,
+    ndarray::Array1<f64>,
+    ndarray::Array1<f64>,
+    ndarray::Array1<f64>,
+) {
+    // LN1
+    let (x1, mu1, rstd1) = layer_norm_forward_exact_f64(x, ln1_g, ln1_b, eps1);
+    // Attn
+    let (attn_out, _probs) =
+        attention_forward_f64(&x1, wq, wk, wv, wo, bq, bk, bv, bo, n_heads, causal);
+    let x_res1 = x + &attn_out;
+    // LN2
+    let (x2, mu2, rstd2) = layer_norm_forward_exact_f64(&x_res1, ln2_g, ln2_b, eps2);
+    // FFN
+    let ffn_out = ffn_gelu_forward_f64(&x2, w1, b1, w2, b2);
+    let y = x_res1 + &ffn_out;
+    (y, mu1, rstd1, mu2, rstd2)
+}
+
+/// Compute effective SPD metric G = T^T T for a given transform T (f64)
+pub fn effective_metric_from_transform_f64(t: &ndarray::Array2<f64>) -> ndarray::Array2<f64> {
+    t.t().dot(t)
+}
+
+/// Simple Cholesky factorization (upper-triangular) in f64: returns U with G = U^T U
+pub fn metric_factor_cholesky_f64(g: &ndarray::Array2<f64>) -> ndarray::Array2<f64> {
+    let (n, m) = g.dim();
+    assert_eq!(n, m, "G must be square");
+    let mut l = ndarray::Array2::<f64>::zeros((n, n));
+    for i in 0..n {
+        for j in 0..=i {
+            let mut sum = g[(i, j)];
+            for k in 0..j {
+                sum -= l[(i, k)] * l[(j, k)];
+            }
+            if i == j {
+                l[(i, j)] = (sum.max(EPS64)).sqrt();
+            } else {
+                l[(i, j)] = sum / l[(j, j)].max(EPS64);
+            }
+        }
+    }
+    // Return upper-triangular factor U = L_lower^T so that G = U^T U holds
+    l.t().to_owned()
 }
 
 /// Session-rotation of the metric factor. Given an SPD factor L (G = L^T L),

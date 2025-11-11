@@ -5,5 +5,7 @@ MNIST
 dist
 uv.lock
 Cargo.lock
+__pycache__
+__pycache__/*
 
 target

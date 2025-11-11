@@ -23,7 +23,16 @@ pub use metrikey::{
 // f64 high-precision exports (not all functions; only where useful)
 pub use metrikey::{
     apply_linear_f64, compose_layers_gravity_compact_f64, compose_layers_gravity_f64,
-    deterministic_orthogonal_from_key_f64, spd_metric_from_key_f64,
+    deterministic_orthogonal_from_key_f64, effective_metric_from_transform_f64,
+    metric_factor_cholesky_f64, spd_metric_from_key_f64,
+};
+
+// Exact ops re-export
+pub use metrikey::{
+    apply_causal_mask_inplace_f32, gelu_new_f32, layer_norm_forward_exact_f32, softmax_lastdim_f32,
+};
+pub use metrikey::{
+    apply_causal_mask_inplace_f64, gelu_new_f64, layer_norm_forward_exact_f64, softmax_lastdim_f64,
 };
 
 // Implicit transforms

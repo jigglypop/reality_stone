@@ -18,7 +18,7 @@ def project_to_ball(x, epsilon=1e-5):
     return x * scale
 
 class LorentzMLP(nn.Module):
-    def __init__(self, in_dim=784, hid=128, out_dim=10, c=1e-3, L=2, t=0.7, use_dynamic=False, c_min=1e-4, c_max=0.05):
+    def __init__(self, in_dim=784, hid=256, out_dim=10, c=1e-2, L=2, t=0.5, use_dynamic=False, c_min=1e-4, c_max=0.05):
         super().__init__()
         self.c = c
         self.L = L
@@ -26,11 +26,11 @@ class LorentzMLP(nn.Module):
         self.use_dynamic = use_dynamic
         self.c_min = c_min
         self.c_max = c_max
-        self.weights1 = nn.Parameter(torch.randn(in_dim, hid) * 0.002)
+        self.weights1 = nn.Parameter(torch.randn(in_dim, hid) * 0.05)
         self.bias1 = nn.Parameter(torch.zeros(hid))
-        self.weights2 = nn.Parameter(torch.randn(hid, hid) * 0.002)
+        self.weights2 = nn.Parameter(torch.randn(hid, hid) * 0.05)
         self.bias2 = nn.Parameter(torch.zeros(hid))
-        self.out_weights = nn.Parameter(torch.randn(hid, out_dim) * 0.002)
+        self.out_weights = nn.Parameter(torch.randn(hid, out_dim) * 0.05)
         self.out_bias = nn.Parameter(torch.zeros(out_dim))
         
         if use_dynamic:
@@ -39,11 +39,11 @@ class LorentzMLP(nn.Module):
     def forward(self, x):
         x = x.view(x.size(0), -1)
         h = x @ self.weights1 + self.bias1
-        h = torch.tanh(h)
+        h = torch.relu(h)
         # project optional (keep bounded)
         h = project_to_ball(h)
         u = h @ self.weights2 + self.bias2
-        u = torch.tanh(u)
+        u = torch.relu(u)
         u = project_to_ball(u)
 
         # Build Lorentz Minkowski coordinates (time + space)
@@ -162,7 +162,7 @@ if __name__ == "__main__":
 
     transform = transforms.Compose([
         transforms.ToTensor(),
-        transforms.Normalize((0.5,), (0.5,))
+        transforms.Normalize((0.1307,), (0.3081,))
     ])
     os.makedirs(args.data_dir, exist_ok=True)
     train_ds = datasets.MNIST(args.data_dir, train=True, download=True, transform=transform)

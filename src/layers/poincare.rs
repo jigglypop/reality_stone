@@ -143,6 +143,58 @@ pub fn poincare_to_klein(x: &ArrayView2<f32>, c: f32) -> Array2<f32> {
     (2.0 * x) / &den_clamped
 }
 
+/// General exponential map on the Poincaré ball at point x with tangent vector v.
+/// Stable implementation following: Exp_x(v) = x ⊕_c (tanh( (λ_x^c * sqrt(c) * ||v||)/2 ) * v / (sqrt(c) * ||v||))
+pub fn poincare_exp_at(x: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32) -> Array2<f32> {
+    // λ_x = 2 / (1 - c ||x||^2)
+    let x2 = norm_sq_batched(x).insert_axis(Axis(1));
+    let one_minus_cx2 = (1.0 - c * &x2).mapv(|z| z.max(EPS));
+    let lambda_x = 2.0 / &one_minus_cx2;
+
+    // ||v|| and safe scales
+    let vnorm = norm_sq_batched(v).mapv(f32::sqrt).insert_axis(Axis(1));
+    let vnorm_safe = vnorm.mapv(|z| z.max(EPS));
+
+    if c.abs() < EPS {
+        // Euclidean limit: Exp ≈ x + v
+        return x + v;
+    }
+
+    let sqrtc = c.sqrt();
+    // u = tanh( (λ_x * sqrt(c) * ||v||)/2 ) / (sqrt(c) * ||v||) * v
+    let arg = (&lambda_x * sqrtc * &vnorm_safe) * 0.5;
+    let coeff = arg.mapv(|a| a.tanh()) / (sqrtc * &vnorm_safe);
+    let u = &coeff * v;
+    mobius::mobius_add(x, &u.view(), c)
+}
+
+/// General logarithmic map on the Poincaré ball at point x for point y.
+/// Stable implementation: Log_x(y) = (2 / (sqrt(c) λ_x)) * atanh( sqrt(c) ||(-x) ⊕_c y|| ) * ((-x) ⊕_c y) / ||(-x) ⊕_c y||
+pub fn poincare_log_at(x: &ArrayView2<f32>, y: &ArrayView2<f32>, c: f32) -> Array2<f32> {
+    // λ_x = 2 / (1 - c ||x||^2)
+    let x2 = norm_sq_batched(x).insert_axis(Axis(1));
+    let one_minus_cx2 = (1.0 - c * &x2).mapv(|z| z.max(EPS));
+    let lambda_x = 2.0 / &one_minus_cx2;
+
+    if c.abs() < EPS {
+        // Euclidean limit: Log ≈ y - x
+        return y - x;
+    }
+
+    // z = (-x) ⊕_c y
+    let neg_x = -x;
+    let z = mobius::mobius_add(&neg_x.view(), y, c);
+    let znorm = norm_sq_batched(&z.view())
+        .mapv(f32::sqrt)
+        .insert_axis(Axis(1));
+    let znorm_clip = znorm.mapv(|r| r.min(1.0 - EPS).max(EPS));
+
+    let sqrtc = c.sqrt();
+    let atanh_term = (&znorm_clip * sqrtc).mapv(|u| u.atanh());
+    let scale = (2.0 / (sqrtc * &lambda_x)) * &atanh_term / &znorm_clip;
+    &scale * &z
+}
+
 pub fn poincare_ball_layer(
     u: &ArrayView2<f32>,
     v: &ArrayView2<f32>,

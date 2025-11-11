@@ -11,6 +11,8 @@ class SplineLinear(nn.Module):
         self.out_features = out_features
         self.k = k
         self.use_residual = use_residual
+        self._cached_weight = None  # cached materialized weight for eval
+        self.register_buffer('blend_matrix', None)  # [out_features, k+1]
         
         self.control_points = nn.Parameter(torch.randn(k + 1, in_features) * 0.02)
         if bias:
@@ -24,14 +26,19 @@ class SplineLinear(nn.Module):
             self.register_parameter('residual', None)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        base_weight = self.interpolate_weights_torch()
-        
-        final_weight = base_weight
+        # Fast factored forward: y = (x @ C^T) @ B^T [+ x @ R^T] + b
+        if self.blend_matrix is None or self.blend_matrix.shape[0] != self.out_features or self.blend_matrix.shape[1] != (self.k + 1):
+            self._refresh_blend_matrix()
+
+        # (batch, k+1)
+        proj_k = input.matmul(self.control_points.t())
+        # (batch, out)
+        y = proj_k.matmul(self.blend_matrix.t())
         if self.use_residual and self.residual is not None:
-            final_weight = final_weight + self.residual
-            
-        output = F.linear(input, final_weight, self.bias)
-        return output
+            y = y + input.matmul(self.residual.t())
+        if self.bias is not None:
+            y = y + self.bias
+        return y
 
     @staticmethod
     def interpolate_weights_static(control_points, k, out_features):
@@ -59,6 +66,39 @@ class SplineLinear(nn.Module):
     def interpolate_weights_torch(self) -> torch.Tensor:
         return self.interpolate_weights_static(self.control_points, self.k, self.out_features)
 
+    def precompute_weight(self) -> None:
+        """Precompute and cache the materialized weight for faster inference."""
+        with torch.no_grad():
+            self._cached_weight = self.interpolate_weights_torch().to(device=self.control_points.device, dtype=self.control_points.dtype)
+
+    def _refresh_blend_matrix(self) -> None:
+        # Build dense blend matrix [out_features, k+1] with at most 4 non-zeros per row
+        import numpy as np
+        k = self.k
+        out = self.out_features
+        B = np.zeros((out, k + 1), dtype='float32')
+        for i in range(out):
+            t = i / max(1, (out - 1))
+            t_scaled = t * k
+            j = int(np.floor(t_scaled))
+            j = max(1, min(j, k - 2))
+            t_local = t_scaled - j
+            t2, t3 = t_local * t_local, t_local * t_local * t_local
+            c0 = -0.5 * t3 + t2 - 0.5 * t_local
+            c1 = 1.5 * t3 - 2.5 * t2 + 1.0
+            c2 = -1.5 * t3 + 2.0 * t2 + 0.5 * t_local
+            c3 = 0.5 * t3 - 0.5 * t2
+            idx0 = max(0, j - 1)
+            idx1 = j
+            idx2 = min(k, j + 1)
+            idx3 = min(k, j + 2)
+            B[i, idx0] += c0
+            B[i, idx1] += c1
+            B[i, idx2] += c2
+            B[i, idx3] += c3
+        bm = torch.from_numpy(B).to(device=self.control_points.device, dtype=self.control_points.dtype)
+        self.blend_matrix = bm
+
     @classmethod
     def from_linear(cls, linear: nn.Linear, k: int = 8, 
                    learning_rate: float = 0.01, steps: int = 100, use_residual: bool = True) -> 'SplineLinear':
@@ -83,6 +123,9 @@ class SplineLinear(nn.Module):
         
         if linear.bias is not None:
             spline_layer.bias.data.copy_(linear.bias.data)
+
+        # Cache materialized weight for fast inference
+        spline_layer.precompute_weight()
         
         return spline_layer
 

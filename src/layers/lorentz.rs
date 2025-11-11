@@ -215,10 +215,10 @@ pub fn lorentz_log0_space_backward(
 }
 
 pub fn lorentz_distance(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32) -> Array1<f32> {
-    // Legacy/sign-convention distance used by tests: cosh(√c d) = -c ⟨u,v⟩ (clamped)
+    // Standard hyperboloid distance: cosh(√c d) = c ⟨u,v⟩_L, with clamp for numeric safety
     let inner = lorentz_inner(u, v);
     let sqrtc = c.sqrt();
-    inner.mapv(|x| safe_acosh((-c * x).max(1.0 + EPS)) / sqrtc)
+    inner.mapv(|x| safe_acosh((c * x).max(1.0 + EPS)) / sqrtc)
 }
 
 pub fn lorentz_add(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32) -> Array2<f32> {
@@ -629,7 +629,7 @@ pub fn lorentz_layer_dynamic_backward(
         for j in 1..dim {
             inner -= p[j] * q[j];
         }
-        let z = (-c * inner).max(1.0 + EPS);
+        let z = (c * inner).max(1.0 + EPS);
         let alpha = z.acosh();
         let sinh_alpha = alpha.sinh().max(EPS);
         let cosh_alpha = alpha.cosh();
@@ -662,9 +662,9 @@ pub fn lorentz_layer_dynamic_backward(
             num2 / denom
         };
 
-        // dalpha/dc = (d acosh(z)/dz) * dz/dc, with z = -c * inner
+        // dalpha/dc = (d acosh(z)/dz) * dz/dc, with z = c * inner
         let dalpha_dz = acosh_derivative(z);
-        let dz_dc = -inner;
+        let dz_dc = inner;
         let dalpha_dc = dalpha_dz * dz_dc;
 
         let dw1_dc = dw1_dalpha * dalpha_dc;
@@ -718,7 +718,7 @@ pub fn lorentz_layer_layerwise_backward(
         for j in 1..dim {
             inner -= p[j] * q[j];
         }
-        let z = (-c * inner).max(1.0 + EPS);
+        let z = (c * inner).max(1.0 + EPS);
         let alpha = z.acosh();
         let sinh_alpha = alpha.sinh().max(EPS);
         let cosh_alpha = alpha.cosh();
@@ -739,7 +739,7 @@ pub fn lorentz_layer_layerwise_backward(
         };
 
         let dalpha_dz = acosh_derivative(z);
-        let dz_dc = -inner;
+        let dz_dc = inner;
         let dalpha_dc = dalpha_dz * dz_dc;
         let dw1_dc = dw1_dalpha * dalpha_dc;
         let dw2_dc = dw2_dalpha * dalpha_dc;
@@ -761,6 +761,20 @@ mod tests {
     use approx::assert_relative_eq;
     use ndarray::arr2;
 
+    fn to_lorentz_coords(space: &ndarray::Array2<f32>, c: f32) -> ndarray::Array2<f32> {
+        let mut out = ndarray::Array2::<f32>::zeros((space.nrows(), space.ncols() + 1));
+        for i in 0..space.nrows() {
+            let mut norm_sq = 0.0f32;
+            for j in 0..space.ncols() {
+                let v = space[[i, j]];
+                norm_sq += v * v;
+                out[[i, j + 1]] = v;
+            }
+            out[[i, 0]] = (1.0 / c + norm_sq).sqrt();
+        }
+        out
+    }
+
     #[test]
     fn test_lorentz_inner_basic() {
         let u = arr2(&[[2.0_f32, 1.0, 1.0]]);
@@ -772,9 +786,9 @@ mod tests {
     #[test]
     fn test_lorentz_distance_non_negative() {
         let c = 1.0_f32;
-        // 동일한 점(하이퍼볼릭 거리 0)이 되도록 시간성분을 1보다 크게 유지하고 동일한 좌표 설정
-        let u = arr2(&[[1.5_f32, 0.1, 0.2]]);
-        let v = arr2(&[[1.5_f32, 0.1, 0.2]]);
+        let sp = arr2(&[[0.1_f32, 0.2_f32]]);
+        let u = to_lorentz_coords(&sp, c);
+        let v = to_lorentz_coords(&sp, c);
         let d = lorentz_distance(&u.view(), &v.view(), c);
         assert!(d[0] >= 0.0);
         assert!(d[0].abs() < 1e-3);

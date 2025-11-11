@@ -3,6 +3,7 @@ mod lorentz;
 mod metrikey;
 mod mobius;
 mod poincare;
+mod riemann;
 mod spline;
 
 #[macro_use]
@@ -23,6 +24,8 @@ pub fn _rust(_py: Python, m: &PyModule) -> PyResult<()> {
     lorentz::register(m)?;
     // Klein operations
     klein::register(m)?;
+    // Riemann low-rank ops
+    riemann::register(m)?;
     // Spline Layer
     spline::register_spline_module(_py, m)?;
     // RBE (Riemannian Basis Encoding) Module - disabled

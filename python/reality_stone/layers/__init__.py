@@ -3,6 +3,7 @@ from .lorentz import LorentzLayer, lorentz_add, lorentz_scalar_mul, lorentz_dist
 from .klein import KleinLayer, klein_add, klein_scalar_mul, klein_distance, klein_to_poincare, klein_to_lorentz
 from .spline import SplineLinear
 from .poincare_embedding import PoincareEmbedding, EquivalentPoincareEmbedding
+from .metric_attention import MetricAttention, SPDMetric, normalize, build_topo_topk, masked_gather, aggregate, get_default_topk_cfg
 
 __all__ = [
     'PoincareBallLayer',
@@ -31,4 +32,11 @@ __all__ = [
     'SplineLinear',
     'PoincareEmbedding',
     'EquivalentPoincareEmbedding',
+    'MetricAttention',
+    'SPDMetric',
+    'normalize',
+    'build_topo_topk',
+    'masked_gather',
+    'aggregate',
+    'get_default_topk_cfg',
 ] 

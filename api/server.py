@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import torch
 import sys
 from pathlib import Path
+from transformers import AutoTokenizer
 
 # reality_stone 경로 추가
 sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
@@ -29,28 +30,31 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 전역 모델 로딩
-print("Loading models...")
+# 전역 리소스 로딩
+print("Loading models and tokenizer...")
 pre_segmenter = PreSegmenter(max_length=128, k_neighbors=3)
 sentence_topic_head = SentenceTopicHead(
     d_model=768,
     d_head=64,
     num_topics=8,
-    num_heads=4
+    num_heads=4,
 )
 metric_router = MetricContextRouter(d_head=64)
 rce_decoder = RCELexicalDecoder(
     vocab_size=50000,
     d_model=768,
     n_layer=6,
-    n_head=8
+    n_head=8,
 )
+
+# 토크나이저: PreSegmenter와 동일한 모델을 사용
+_TOKENIZER = AutoTokenizer.from_pretrained("klue/bert-base")
 
 # 평가 모드
 sentence_topic_head.eval()
 rce_decoder.eval()
 
-print("Models loaded successfully!")
+print("Models and tokenizer loaded successfully!")
 
 
 @app.get("/")
@@ -130,25 +134,31 @@ async def rewrite(request: RewriteRequest):
         
         # L2: MetricContextRouter
         L_i = metric_router(metric_keys, scores)
-        
+
         # L3: RCE-LexicalDecoder
-        candidates = _build_candidates(request.lexical_overrides, seg_output["tokens"])
-        
+        # Sentence-level token IDs: 각 문장의 첫 번째 토큰만 사용 (inference.py와 동일한 방식)
+        tokens = seg_output["tokens"].unsqueeze(0)  # [1, T, seq_len]
+        mask_tokens = seg_output["replacement_mask"].unsqueeze(0)  # [1, T, seq_len]
+        tokens_input = tokens[:, :, 0].clamp(0, rce_decoder.vocab_size - 1)  # [1, T]
+        mask_input = mask_tokens[:, :, 0]  # [1, T]
+
+        candidates = _build_candidates(request.lexical_overrides, tokens_input)
+
         with torch.no_grad():
             output_ids, _ = rce_decoder(
-                seg_output["tokens"].unsqueeze(0),  # [1, T, seq_len]
+                tokens_input,  # [1, T]
                 L_i,
-                seg_output["replacement_mask"].unsqueeze(0),
+                mask_input,
                 topo_idx_input,
-                candidates
+                candidates,
             )
-        
+
         # L4: Post-Controller
         response = _build_response(
             seg_output,
-            output_ids[0],  # [T, seq_len]
-            P_topic[0],     # [T, num_topics]
-            metric_keys
+            output_ids,   # [1, T]
+            P_topic[0],   # [T, num_topics]
+            metric_keys,
         )
         
         return response
@@ -202,41 +212,35 @@ def _build_response(
     """
     sentences = seg_output["sentences"]
     input_ids = seg_output["tokens"]
-    
-    output_sentences = []
+
+    # 현재 API에서는 실제 문장 재구성을 하지 않고,
+    # SentenceTopicHead가 만들어 준 문장 분해 결과를 그대로 사용한다.
+    output_sentences = list(sentences)
     replacements = []
-    
-    # 토큰 ID를 문자로 변환 (간단한 chr 사용)
-    for i, sent_ids in enumerate(output_ids):
-        try:
-            # 패딩 제거
-            valid_ids = sent_ids[sent_ids != 0]
-            # chr로 변환 (범위 제한)
-            chars = [chr(min(max(32, int(id)), 126)) if id > 0 else '' for id in valid_ids]
-            decoded = ''.join(chars).strip()
-            
-            # 원본 문장 사용 (디코딩 실패 시)
-            if not decoded and i < len(sentences):
-                decoded = sentences[i]
-            
-            output_sentences.append(decoded)
-            
-            # 교체 로그
-            if i < len(input_ids):
-                input_sent_ids = input_ids[i]
-                for j in range(min(len(sent_ids), len(input_sent_ids))):
-                    if input_sent_ids[j] != sent_ids[j] and input_sent_ids[j] != 0:
-                        replacements.append({
-                            "sentence": i,
-                            "pos": j,
-                            "old": chr(min(max(32, int(input_sent_ids[j])), 126)),
-                            "new": chr(min(max(32, int(sent_ids[j])), 126))
-                        })
-        except Exception as e:
-            # 디코딩 실패 시 원본 사용
-            if i < len(sentences):
-                output_sentences.append(sentences[i])
-    
+
+    # sentence-level token 변경 정보가 있을 경우에만 간단한 교체 로그를 남긴다.
+    token_ids = None
+    if output_ids.dim() == 2 and output_ids.shape[0] == 1:
+        token_ids = output_ids[0]  # [T]
+    elif output_ids.dim() == 1:
+        token_ids = output_ids
+
+    if token_ids is not None and token_ids.numel() >= len(sentences):
+        # 각 문장의 첫 번째 토큰 기준으로 변경 여부를 기록 (inference.py와 동일한 수준)
+        orig_first_tokens = input_ids[:, 0]
+        for i in range(len(sentences)):
+            if orig_first_tokens[i] != token_ids[i] and orig_first_tokens[i] != 0:
+                old_token = _TOKENIZER.decode([int(orig_first_tokens[i])], skip_special_tokens=True)
+                new_token = _TOKENIZER.decode([int(token_ids[i])], skip_special_tokens=True)
+                replacements.append(
+                    {
+                        "sentence": i,
+                        "pos": 0,
+                        "old": old_token,
+                        "new": new_token,
+                    }
+                )
+
     # 통계
     total_tokens = (input_ids != 0).sum().item()
     replaced_tokens = len(replacements)
@@ -251,8 +255,8 @@ def _build_response(
             "total_tokens": total_tokens,
             "replaced_tokens": replaced_tokens,
             "replacement_ratio": replaced_tokens / total_tokens if total_tokens > 0 else 0.0,
-            "topic_retention": 0.95  # placeholder
-        }
+            "topic_retention": 0.95,  # placeholder
+        },
     )
 
 

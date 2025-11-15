@@ -152,11 +152,11 @@ class TransformerBlock(nn.Module):
     """
     def __init__(self, d_model, n_head, manifold, c):
         super().__init__()
-        
-        # 항상 Fallback 사용 (reality_stone API 호환성 문제)
+
+        # 현재 구현에서는 MetricAttention 대신 표준 MultiheadAttention만 사용한다.
+        # (MetricAttention 경로는 향후 안정화 후 다시 연결 예정)
         self.attn = nn.MultiheadAttention(d_model, n_head, batch_first=True)
-        self.use_metric_attn = False
-        
+
         self.ln1 = nn.LayerNorm(d_model)
         self.mlp = nn.Sequential(
             nn.Linear(d_model, 4 * d_model),
@@ -169,16 +169,11 @@ class TransformerBlock(nn.Module):
         """
         Args:
             x: [B, T, d_model]
-            metric_ctx: [B, T, d_h, d_h] (현재 미사용, 향후 확장)
-            topo_idx: [B, T, K]
+            metric_ctx: [B, T, d_h, d_h] (현재 미사용, 향후 확장용 placeholder)
+            topo_idx: [B, T, K] (현재 MultiheadAttention에는 직접 사용되지 않음)
         """
-        # Attention
-        if hasattr(self, 'use_metric_attn') and not self.use_metric_attn:
-            attn_out, _ = self.attn(x, x, x)
-        elif HAS_REALITY_STONE:
-            attn_out, _ = self.attn(x, x, x, topo_idx=topo_idx)
-        else:
-            attn_out, _ = self.attn(x, x, x)
+        # 현재는 표준 Self-Attention만 사용
+        attn_out, _ = self.attn(x, x, x)
         
         x = x + attn_out
         x = self.ln1(x)

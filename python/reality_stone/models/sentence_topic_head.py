@@ -31,7 +31,7 @@ class SentenceTopicHead(nn.Module):
         d_head: int = 64,
         num_topics: int = 8,
         num_heads: int = 4,
-        c_poincare: float = -1.0,
+        c_poincare: float = 1e-3,
         temperature: float = 0.1
     ):
         super().__init__()
@@ -40,18 +40,12 @@ class SentenceTopicHead(nn.Module):
         self.num_topics = num_topics
         
         # Poincaré embedding
-        if HAS_REALITY_STONE:
-            try:
-                self.poincare_embed = PoincareEmbedding(vocab_size=10000, embedding_dim=d_head, c=c_poincare)
-                self.use_poincare = True
-            except Exception as e:
-                print(f"Warning: PoincareEmbedding init failed ({e}), using Linear fallback")
-                self.poincare_embed = nn.Linear(d_model, d_head)
-                self.use_poincare = False
-        else:
-            # Fallback: 간단한 선형 변환
-            self.poincare_embed = nn.Linear(d_model, d_head)
-            self.use_poincare = False
+        # 현재 SentenceTopicHead는 "문장 임베딩 x: [B, T, d_model]" 을 입력으로 받는다.
+        # PoincareEmbedding 은 정수 ID를 입력으로 받는 임베딩 레이어이므로,
+        # 여기서는 d_model → d_head 선형 변환으로 매핑만 수행한다.
+        # (향후 토큰 ID 기반 Poincaré 임베딩을 쓰는 버전은 별도로 분리하는 것이 안전하다.)
+        self.poincare_embed = nn.Linear(d_model, d_head)
+        self.use_poincare = False
         
         # Head projection for MetricAttention
         self.num_heads = num_heads

@@ -20,6 +20,7 @@ namespace {
 }
 
 // Klein Distance CUDA Kernel
+// Klein distance: d_K(u,v) = (1/√c) * acosh((1 - c⟨u,v⟩) / √((1-c||u||²)(1-c||v||²)))
 __global__ void klein_distance_kernel(float* out, const float* u, const float* v, float c, int batch_size, int dim) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= batch_size) return;
@@ -31,13 +32,12 @@ __global__ void klein_distance_kernel(float* out, const float* u, const float* v
     float v_norm_sq = norm_sq(v_row, dim);
     float uv_dot = dot(u_row, v_row, dim);
 
-    float num = 2.0f * (u_norm_sq * v_norm_sq - uv_dot * uv_dot);
-    float den = fmaxf((1.0f - c * u_norm_sq) * (1.0f - c * v_norm_sq), EPS);
-    float lambda_sq = num / den;
-    float lambda = sqrtf(lambda_sq);
+    // 표준 Klein distance 공식
+    float numerator = 1.0f - c * uv_dot;
+    float denominator = sqrtf(fmaxf((1.0f - c * u_norm_sq) * (1.0f - c * v_norm_sq), EPS));
+    float arg = fmaxf(numerator / denominator, 1.0f + EPS);
     
-    float val = (2.0f + lambda) / fmaxf(2.0f - lambda, EPS);
-    out[idx] = acoshf(val) / sqrtf(c);
+    out[idx] = acoshf(arg) / sqrtf(c);
 }
 
 // Klein Layer Forward CUDA Kernel

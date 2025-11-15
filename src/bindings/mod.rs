@@ -5,6 +5,7 @@ mod mobius;
 mod poincare;
 mod riemann;
 mod spline;
+pub mod geodesic_attention;
 
 #[macro_use]
 mod macros;

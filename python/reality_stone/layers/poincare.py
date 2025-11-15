@@ -46,11 +46,20 @@ class PoincareBallLayer(Function):
         else:
             ctx.use_dynamic = False
             ctx.c = c if c is not None else 1.0
-            u_prime = poincare_scalar_mul(u, 1.0 - t, ctx.c)
-            v_prime = poincare_scalar_mul(v, t, ctx.c)
-            output = poincare_add(u_prime, v_prime, ctx.c)
-            ctx.save_for_backward(u.clone(), v.clone(), u_prime.clone(), v_prime.clone())
-            return output
+            ctx.save_for_backward(u, v)
+            if u.is_cuda and _has_cuda:
+                output = torch.empty_like(u)
+                _rust.poincare_ball_layer_cuda(
+                    output.data_ptr(), u.data_ptr(), v.data_ptr(),
+                    ctx.c, t, u.shape[0], u.shape[1]
+                )
+                return output
+            else:
+                # CPU Path
+                output_np = _rust.poincare_ball_layer_cpu(
+                    u.cpu().numpy(), v.cpu().numpy(), ctx.c, t
+                )
+                return torch.from_numpy(output_np).to(u.device)
 
     @staticmethod
     def backward(ctx, grad_output: Tensor) -> tuple[Tensor | None, ...]:
@@ -85,7 +94,7 @@ class PoincareBallLayer(Function):
             
             return grad_u, grad_v, None, None, grad_kappas, None, None, None
         else:
-            u, v, u_prime, v_prime = ctx.saved_tensors
+            u, v = ctx.saved_tensors
             c = ctx.c
             grad_u = grad_v = None
             if grad_output.is_cuda and _has_cuda:
@@ -111,16 +120,43 @@ def poincare_scalar_mul(x: Tensor, r: float, c: float) -> Tensor:
     return MobiusScalarMul.apply(x, r, c)
 
 def poincare_distance(x: Tensor, y: Tensor, c: float) -> Tensor:
-    if x.is_cuda and _has_cuda:
-        output = torch.empty(x.shape[0], device=x.device)
-        _rust.poincare_distance_cuda(
-            x.data_ptr(), y.data_ptr(), output.data_ptr(),
-            x.shape[0], x.shape[1], c
-        )
-        return output
-    else:
-        output_np = _rust.poincare_distance_cpu(x.cpu().numpy(), y.cpu().numpy(), c)
-        return torch.from_numpy(output_np).to(x.device)
+    """
+    Poincaré ball distance with safe Rust/CUDA path when 가능, 없으면 순수 PyTorch fallback.
+    """
+    # Prefer Rust/CUDA when extension is available
+    if "_rust" in globals() and _rust is not None:
+        try:
+            if x.is_cuda and _has_cuda:
+                output = torch.empty(x.shape[0], device=x.device)
+                _rust.poincare_distance_cuda(
+                    x.data_ptr(), y.data_ptr(), output.data_ptr(),
+                    x.shape[0], x.shape[1], c
+                )
+                return output
+            else:
+                output_np = _rust.poincare_distance_cpu(x.cpu().numpy(), y.cpu().numpy(), c)
+                return torch.from_numpy(output_np).to(x.device)
+        except Exception:
+            # 실패 시 아래 PyTorch 경로로 폴백
+            pass
+
+    # Pure PyTorch fallback (음수 곡률 Poincaré ball 공식 근사)
+    eps = 1e-6
+    if abs(c) < eps:
+        # Eu클리드 한계
+        return torch.norm(x - y, dim=1)
+
+    # 공식: d(x,y) = (2/sqrt(c)) * atanh( sqrt(c) * ||(-x) ⊕_c y|| )
+    # 여기서는 보다 간단한 널리 쓰이는 근사식 사용:
+    #   d(x,y) = (2/sqrt(c)) * asinh( sqrt(c) * ||x-y|| / ( (1 - c||x||^2)^(1/2) (1 - c||y||^2)^(1/2) ) )
+    sqrtc = torch.tensor(c, dtype=x.dtype, device=x.device).sqrt()
+    x2 = (x * x).sum(dim=1)
+    y2 = (y * y).sum(dim=1)
+    diff2 = ((x - y) * (x - y)).sum(dim=1).clamp_min(eps)
+    den = (1.0 - c * x2).clamp_min(eps).sqrt() * (1.0 - c * y2).clamp_min(eps).sqrt()
+    num = (c * diff2).clamp_min(eps).sqrt()
+    arg = num / den.clamp_min(eps)
+    return (2.0 / sqrtc) * torch.asinh(arg)
 
 def poincare_to_lorentz(x: Tensor, c: float) -> Tensor:
     output_np = _rust.poincare_to_lorentz_cpu(x.cpu().numpy(), c)

@@ -39,15 +39,24 @@ if _so_file:
     except ImportError as e:
         print(f" Reality Stone: Found .so file, but failed to import: {_so_file[0]}")
         print(f" Error: {e}")
+        _rust = None  # type: ignore
 else:
     print(" Reality Stone: Rust extension (.so/.pyd) not found in package directory.")
     print(" Please build the project first (e.g., `maturin develop`).")
+    _rust = None  # type: ignore
 
 
 from .core.mobius import MobiusAdd, MobiusScalarMul
 from .layers import *
 from .layers.spline import SplineLinear
-from ._rust import metrikey
+# Optional MetriKey (Rust) binding
+try:
+    if _has_rust_ext:
+        from ._rust import metrikey  # type: ignore
+    else:
+        metrikey = None  # type: ignore
+except Exception:
+    metrikey = None  # type: ignore
 
 # 모델 변환 유틸리티 추가
 from .conversion import convert_to_hyperbolic

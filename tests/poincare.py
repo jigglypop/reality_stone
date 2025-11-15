@@ -112,6 +112,43 @@ def train_model(model_name, model, loader_train, loader_test, epochs=10, lr=1e-3
     return best_acc
 
 
+def test_poincare_cpu_cuda_consistency():
+    """Poincaré layer CPU/CUDA 일치성 테스트"""
+    if not torch.cuda.is_available():
+        print("CUDA not available, skipping consistency test")
+        return
+    
+    print("\n=== Poincaré CPU/CUDA Consistency Test ===")
+    torch.manual_seed(42)
+    B, d = 10, 16
+    c = 1.0
+    t = 0.5
+    
+    # CPU
+    h_cpu = torch.randn(B, d)
+    u_cpu = torch.randn(B, d)
+    h_cpu = project_to_ball(h_cpu)
+    u_cpu = project_to_ball(u_cpu)
+    
+    z_cpu = rs.poincare_ball_layer(h_cpu, u_cpu, c=c, t=t)
+    
+    # CUDA
+    h_cuda = h_cpu.cuda()
+    u_cuda = u_cpu.cuda()
+    z_cuda = rs.poincare_ball_layer(h_cuda, u_cuda, c=c, t=t)
+    
+    # 비교
+    diff = torch.abs(z_cpu - z_cuda.cpu()).max().item()
+    print(f"Max absolute difference: {diff:.6e}")
+    
+    if diff < 1e-5:
+        print("[OK] Poincare CPU/CUDA outputs match")
+    else:
+        print(f"[FAIL] Poincare CPU-CUDA mismatch: {diff:.6e}")
+    
+    return diff < 1e-5
+
+
 if __name__ == "__main__":
     def set_seed(seed: int):
         random.seed(seed)
@@ -121,6 +158,7 @@ if __name__ == "__main__":
         torch.backends.cudnn.benchmark = False
 
     parser = argparse.ArgumentParser(description="MNIST Poincaré MLP test")
+    parser.add_argument("--test-consistency", action="store_true", help="Run CPU/CUDA consistency test")
     parser.add_argument("--mode", choices=["dynamic", "static", "both"], default="dynamic")
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     parser.add_argument("--epochs", type=int, default=5)
@@ -199,7 +237,9 @@ if __name__ == "__main__":
         model = PoincareMLP(use_dynamic=False, t=args.t, c=args.c).to(device)
         _ = train_model("PoincareMLP (Static Curvature)", model, train_loader, test_loader, epochs=args.epochs, lr=args.lr, device=device)
 
-    if args.mode == "dynamic":
+    if args.test_consistency:
+        test_poincare_cpu_cuda_consistency()
+    elif args.mode == "dynamic":
         run_dynamic()
     elif args.mode == "static":
         run_static()

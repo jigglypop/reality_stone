@@ -39,7 +39,9 @@ rustfft = "6.4.0"
 [build-dependencies]
 cc = "1.0"
 glob = "0.3"
+bindgen = { version = "0.69", optional = true }
 
 [features]
-cuda = []
+default = []
+cuda = ["bindgen"]
 abi3-py38 = ["pyo3/abi3-py38", "pyo3/extension-module"]

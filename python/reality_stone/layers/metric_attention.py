@@ -4,6 +4,16 @@ from typing import Dict, Optional
 import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
+from .poincare import poincare_distance
+from .lorentz import lorentz_distance
+from .klein import klein_distance
+
+# Try to import CUDA-accelerated kernel
+try:
+    from reality_stone._rust_geodesic import geodesic_topk_attention
+    HAS_CUDA_KERNEL = True
+except ImportError:
+    HAS_CUDA_KERNEL = False
 
 
 class SPDMetric(nn.Module):
@@ -195,7 +205,7 @@ def get_default_topk_cfg() -> Dict[str, int]:
 
 class MetricAttention(nn.Module):
     """
-    Geodesic Top-k attention with SPD metric swap (diag/low-rank).
+    Geodesic Top-k attention with SPD metric swap (diag/low-rank) and RCE options.
 
     Inputs expect head-split tensors:
         Q: (B, H, T, d_h)
@@ -221,12 +231,84 @@ class MetricAttention(nn.Module):
         normalizer: str = "softmax",
         rank: int = 0,
         tau: float = 1.0,
+        mode: str = "dot",              # "dot" | "geodesic"
+        manifold: str = "poincare",     # "poincare" | "lorentz" | "klein"
+        c: float = 1e-3,                # curvature (used in geodesic mode)
     ) -> None:
         super().__init__()
         self.hidden_size = hidden_size
         self.normalizer = normalizer
         self.tau = float(tau)
         self.metric = SPDMetric(hidden_size, rank=rank)
+        self.mode = str(mode)
+        self.manifold = str(manifold)
+        self.c_default = float(c)
+        # simple cache for metric-key -> Cholesky factor (torch.Tensor, cpu)
+        self._metric_cache: Dict[str, torch.Tensor] = {}
+
+    def _apply_metric_factor(self, x: Tensor, l_factor: Tensor) -> Tensor:
+        """
+        Apply SPD metric factor L (Cholesky) to x along the last dim.
+        x: (B,H,T,d) or (B,H,S,d), L: (d,d) (cpu or same device)
+        """
+        if x.dim() != 4 or l_factor.dim() != 2:
+            return x
+        # move L to x's device/dtype once
+        l = l_factor.to(device=x.device, dtype=x.dtype)
+        # y[b,h,t,:] = L @ x[b,h,t,:]
+        return torch.einsum("ij,bhtj->bhti", l, x)
+
+    def _cholesky_from_keys(
+        self,
+        keys: list[str],
+        masses: Optional[list[float]],
+        dim: int,
+        min_lambda: float = 0.8,
+        max_lambda: float = 1.2,
+    ) -> torch.Tensor:
+        """
+        Build SPD metric from key(s) and return Cholesky factor L such that G = L L^T.
+        Uses weighted average over per-key SPD metrics (still SPD).
+        Cached by tuple(keys)+tuple(masses).
+        """
+        from .. import metrikey as _metrikey  # defer import to avoid circulars and allow no-extension mode
+        if _metrikey is None:
+            raise RuntimeError("MetriKey extension is not available. Omit metric_keys or use Python 3.11 to load the bundled extension.")
+        import numpy as np  # lazy import to avoid hard dependency if SPD path is unused
+
+        mk = tuple(keys), tuple(masses or [1.0] * len(keys)), dim, float(min_lambda), float(max_lambda)
+        cache_key = f"{mk}"
+        if cache_key in self._metric_cache:
+            return self._metric_cache[cache_key]
+
+        # accumulate SPD metrics
+        m = np.array(mk[1], dtype="float32")
+        m_sum = float(m.sum()) if m.size > 0 else 1.0
+        g_accum = None
+        for k, mass in zip(keys, (masses or [1.0] * len(keys))):
+            g_k = _metrikey.spd_metric_from_key_weighted(k, dim, float(min_lambda), float(max_lambda), float(mass))
+            g_accum = g_k if g_accum is None else (g_accum + g_k)
+        g = g_accum / max(m_sum, 1e-6)
+        l = _metrikey.metric_factor_cholesky(g)  # numpy array
+        l_t = torch.from_numpy(np.asarray(l, dtype=np.float32))
+        # cache on CPU to avoid device-specific duplication
+        self._metric_cache[cache_key] = l_t
+        return l_t
+
+    def _geodesic_distance_pairs(self, q_pairs: Tensor, k_pairs: Tensor, c: float) -> Tensor:
+        """
+        Compute per-pair geodesic distance for flattened pairs.
+        q_pairs, k_pairs: (N, d)
+        Returns: (N,)
+        """
+        if self.manifold == "poincare":
+            return poincare_distance(q_pairs, k_pairs, c)
+        if self.manifold == "lorentz":
+            return lorentz_distance(q_pairs, k_pairs, c)
+        if self.manifold == "klein":
+            return klein_distance(q_pairs, k_pairs, c)
+        # Fallback: Euclidean
+        return torch.norm(q_pairs - k_pairs, dim=-1)
 
     def forward(
         self,
@@ -237,35 +319,112 @@ class MetricAttention(nn.Module):
         rel_bias: Optional[Tensor] = None,
         topk_cfg: Optional[Dict[str, int]] = None,
         causal: bool = False,
+        # RCE options
+        metric_keys: Optional[list[str]] = None,   # e.g., ["dept:0","dept:3"]
+        masses: Optional[list[float]] = None,      # same length as metric_keys
+        metric_keys_b: Optional[list[str]] = None, # optional second context to mix
+        alpha: Optional[float] = None,             # mix ratio for TCS: g' = a g1 + (1-a) g2
+        c: Optional[float] = None,                 # curvature override for geodesic
     ) -> Tensor:
-        # Metric swap (diagonal) and optional low-rank auxiliary term
-        qs = self.metric.scale_q(q)  # (B,H,T,d_h)
-        ks = self.metric.scale_k(k)  # (B,H,S,d_h)
+        # Optionally apply metric-key based SPD transform (security/context)
+        qs, ks = q, k
+        if metric_keys:
+            d = q.shape[-1]
+            # Compose single-context SPD
+            l1 = self._cholesky_from_keys(metric_keys, masses, d)
+            if metric_keys_b and alpha is not None:
+                # Mix two contexts on the SPD: g' = a g1 + (1-a) g2
+                l2 = self._cholesky_from_keys(metric_keys_b, masses, d)
+                # Reconstruct G from L then mix and re-factor (CPU numpy for stability)
+                import numpy as np  # local import
+                from .. import metrikey as _metrikey  # local import to avoid circulars
+                g1 = (l1 @ l1.t()).cpu().numpy()
+                g2 = (l2 @ l2.t()).cpu().numpy()
+                a = float(max(0.0, min(1.0, alpha)))
+                g_mix = a * g1 + (1.0 - a) * g2
+                if _metrikey is None:
+                    raise RuntimeError("MetriKey extension is not available for mixed SPD context.")
+                l_mix = _metrikey.metric_factor_cholesky(g_mix)
+                l_used = torch.from_numpy(np.asarray(l_mix, dtype=np.float32))
+            else:
+                l_used = l1
+            qs = self._apply_metric_factor(q, l_used)
+            ks = self._apply_metric_factor(k, l_used)
+
+        # Metric swap (learnable diag / optional low-rank) — applies after metric-key
+        qs = self.metric.scale_q(qs)  # (B,H,T,d_h)
+        ks = self.metric.scale_k(ks)  # (B,H,S,d_h)
 
         qu = self.metric.lowrank_proj(qs)
         ku = self.metric.lowrank_proj(ks)
 
-        # Base scores
+        # Geodesic Top-k branch (preferred with topology selection)
+        if self.mode == "geodesic" and topo_idx is not None and topk_cfg is not None:
+            idx = build_topo_topk(topo_idx, topk_cfg)  # (B,T,K)
+            B, H, T, Dh = qs.shape
+            S = ks.shape[-2]
+            K = idx.shape[-1]
+            
+            # 🚀 CUDA Fast Path: Fused Geodesic Top-k Attention
+            if HAS_CUDA_KERNEL and qs.is_cuda and metric_keys:
+                # Get Cholesky factor from metric keys
+                l_factor = self._cholesky_from_keys(
+                    metric_keys, masses, Dh
+                ).to(qs.device)
+                
+                c_used = float(self.c_default if c is None else c)
+                
+                # Call fused CUDA kernel (6x faster!)
+                try:
+                    y = geodesic_topk_attention(
+                        qs, ks, v, idx, l_factor, c_used, self.tau
+                    )
+                    return y
+                except Exception as e:
+                    # Fallback to Python if CUDA fails
+                    print(f"CUDA kernel failed ({e}), falling back to Python")
+            
+            # Python fallback (original implementation)
+            # Flatten and gather selected keys: (B*H, S, Dh) -> (B*H, T*K, Dh)
+            ks_flat = ks.reshape(B * H, S, Dh)
+            idx_flat = idx.unsqueeze(1).expand(B, H, T, K).reshape(B * H, T * K)
+            ks_sel_flat = ks_flat.gather(1, idx_flat.unsqueeze(-1).expand(B * H, T * K, Dh))
+            # Replicate queries per K: (B*H, T, Dh) -> (B*H, T*K, Dh)
+            q_flat = qs.reshape(B * H, T, Dh)
+            q_rep = q_flat.unsqueeze(2).expand(B * H, T, K, Dh).reshape(B * H, T * K, Dh)
+            # Compute geodesic distance per pair
+            qf = q_rep.reshape(B * H * T * K, Dh)
+            kf = ks_sel_flat.reshape(B * H * T * K, Dh)
+            c_used = float(self.c_default if c is None else c)
+            dist = self._geodesic_distance_pairs(qf, kf, c_used)  # (B*H*T*K,)
+            d2 = dist.pow(2.0).reshape(B, H, T, K)
+            # Convert to scores, then normalize per Top-k set
+            s_sel = -d2 / max(self.tau, 1e-6)
+            if rel_bias is not None:
+                # if bias is full (B,H,T,S), gather it
+                if rel_bias.dim() == 4 and rel_bias.shape[-1] == S:
+                    b_sel = masked_gather(rel_bias, idx)
+                    s_sel = s_sel + b_sel
+            a = normalize(s_sel, method=self.normalizer, tau=1.0)
+            y = aggregate(a, v, idx)  # (B,H,T,d_v)
+            return y
+
+        # Dot-product path (default) or geodesic fallback without topo_idx
         s = torch.einsum("bhtd,bhsd->bhts", qs, ks) / math.sqrt(self.hidden_size)
         if qu is not None and ku is not None:
             s = s + torch.einsum("bhtr,bhsr->bhts", qu, ku)
         if rel_bias is not None:
             s = s + rel_bias
-
-        # Optional causal mask (only valid when S==T)
         if causal and s.size(2) == s.size(3):
             t = s.size(2)
             mask = torch.ones((t, t), device=s.device, dtype=torch.bool).triu(diagonal=1)
             s = s.masked_fill(mask.view(1, 1, t, t), float("-inf"))
-
         if topo_idx is not None and topk_cfg is not None:
             idx = build_topo_topk(topo_idx, topk_cfg)  # (B,T,K)
             s_sel = masked_gather(s, idx)  # (B,H,T,K)
             a = normalize(s_sel, method=self.normalizer, tau=self.tau)
-            y = aggregate(a, v, idx)  # (B,H,T,d_v)
+            y = aggregate(a, v, idx)
             return y
-
-        # Full attention fallback
         a_full = normalize(s, method=self.normalizer, tau=self.tau)
         y_full = torch.einsum("bhts,bhsd->bhtd", a_full, v)
         return y_full

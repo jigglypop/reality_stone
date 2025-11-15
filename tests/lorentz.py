@@ -133,6 +133,43 @@ def train_model(model_name, model, loader_train, loader_test, epochs=10, lr=1e-3
     return best_acc
 
 
+def test_lorentz_cpu_cuda_consistency():
+    """Lorentz layer CPU/CUDA 일치성 테스트"""
+    if not torch.cuda.is_available():
+        print("CUDA not available, skipping consistency test")
+        return
+    
+    print("\n=== Lorentz CPU/CUDA Consistency Test ===")
+    torch.manual_seed(42)
+    B, d = 10, 17  # Lorentz: d+1 dim
+    c = 1.0
+    t = 0.5
+    
+    # CPU (Lorentz: first dim > 0)
+    h_cpu = torch.randn(B, d)
+    h_cpu[:, 0] = torch.abs(h_cpu[:, 0]) + 1.0
+    u_cpu = torch.randn(B, d)
+    u_cpu[:, 0] = torch.abs(u_cpu[:, 0]) + 1.0
+    
+    z_cpu = rs.lorentz_layer(h_cpu, u_cpu, c=c, t=t)
+    
+    # CUDA
+    h_cuda = h_cpu.cuda()
+    u_cuda = u_cpu.cuda()
+    z_cuda = rs.lorentz_layer(h_cuda, u_cuda, c=c, t=t)
+    
+    # 비교
+    diff = torch.abs(z_cpu - z_cuda.cpu()).max().item()
+    print(f"Max absolute difference: {diff:.6e}")
+    
+    if diff < 1e-5:
+        print("[OK] Lorentz CPU/CUDA outputs match")
+    else:
+        print(f"[FAIL] Lorentz CPU-CUDA mismatch: {diff:.6e}")
+    
+    return diff < 1e-5
+
+
 if __name__ == "__main__":
     def set_seed(seed: int):
         random.seed(seed)
@@ -142,6 +179,7 @@ if __name__ == "__main__":
         torch.backends.cudnn.benchmark = False
 
     parser = argparse.ArgumentParser(description="MNIST Lorentz MLP test")
+    parser.add_argument("--test-consistency", action="store_true", help="Run CPU/CUDA consistency test")
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch-size", type=int, default=256)
@@ -179,5 +217,8 @@ if __name__ == "__main__":
         num_workers=0, pin_memory=(device.type == "cuda")
     )
 
-    model = LorentzMLP(use_dynamic=False, t=args.t, c=args.c).to(device)
-    _ = train_model("LorentzMLP (Static Curvature)", model, train_loader, test_loader, epochs=args.epochs, lr=args.lr, device=device)
+    if args.test_consistency:
+        test_lorentz_cpu_cuda_consistency()
+    else:
+        model = LorentzMLP(use_dynamic=False, t=args.t, c=args.c).to(device)
+        _ = train_model("LorentzMLP (Static Curvature)", model, train_loader, test_loader, epochs=args.epochs, lr=args.lr, device=device)

@@ -109,17 +109,22 @@ pub fn poincare_ball_layer_backward(
 }
 
 pub fn poincare_distance(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32) -> Array1<f32> {
+    // Poincaré distance: d = (2/√c) * atanh(√(c * ||x-y||² / ((1-c||x||²)(1-c||y||²))))
     let sqrtc = c.sqrt();
     let u2 = norm_sq_batched(u);
     let v2 = norm_sq_batched(v);
     let uv = dot_batched(u, v);
 
-    let norm_sq_diff = (&u2 + &v2 - 2.0 * &uv).mapv_into(|val| val.max(EPS));
+    let norm_sq_diff = (&u2 + &v2 - 2.0 * &uv).mapv_into(|val| val.max(0.0));  // 음수 방지만, 0은 허용
     let den = (1.0 - c * &u2) * (1.0 - c * &v2);
     let den_clamped = den.mapv_into(|val| val.max(EPS));
 
     let frac = norm_sq_diff / den_clamped;
-    frac.mapv_into(|val| (2.0 / sqrtc) * (c * val).sqrt().atanh())
+    // arg = √(c * frac), atanh 정의역 제한
+    frac.mapv_into(|val| {
+        let arg = (c * val).sqrt().min(1.0 - EPS);
+        (2.0 / sqrtc) * arg.atanh()
+    })
 }
 
 pub fn poincare_to_lorentz(x: &ArrayView2<f32>, c: f32) -> Array2<f32> {

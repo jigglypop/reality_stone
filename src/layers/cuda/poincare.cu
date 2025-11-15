@@ -190,17 +190,31 @@ __device__ void mobius_add_vjp(
     }
 }
 
-__device__ float poincare_dist_sq(const float* x, const float* y, int dim, float c, float eps) {
-    float xy = 0, x2 = 0, y2 = 0;
+__device__ float poincare_distance_impl(const float* x, const float* y, int dim, float c, float eps) {
+    // Poincaré distance: d = (2/√c) * atanh(√(c * ||x-y||² / ((1-c||x||²)(1-c||y||²))))
+    float norm_sq_diff = 0.0f;  // ||x-y||²
+    float x2 = 0.0f;            // ||x||²
+    float y2 = 0.0f;            // ||y||²
+    
     for (int i = 0; i < dim; ++i) {
-        xy += (x[i] - y[i]) * (x[i] - y[i]);
+        float diff = x[i] - y[i];
+        norm_sq_diff += diff * diff;
         x2 += x[i] * x[i];
         y2 += y[i] * y[i];
     }
-    float num = 2 * c * xy;
-    float den = (1 - c * x2) * (1 - c * y2);
+    
+    // frac = c * ||x-y||² / ((1-c||x||²)(1-c||y||²))
+    float den = (1.0f - c * x2) * (1.0f - c * y2);
     den = fmaxf(den, eps);
-    return acoshf(1.0f + num / den);
+    float frac = (c * norm_sq_diff) / den;
+    frac = fmaxf(frac, 0.0f);  // 음수 방지
+    
+    // d = (2/√c) * atanh(√frac)
+    float sqrtc = sqrtf(c);
+    float arg = sqrtf(frac);
+    arg = fminf(arg, 1.0f - eps);  // atanh 정의역 제한
+    
+    return (2.0f / sqrtc) * atanhf(arg);
 }
 
 __global__ void poincare_distance_kernel(const float* x, const float* y, float* out, int batch_size, int dim, float c) {
@@ -210,8 +224,7 @@ __global__ void poincare_distance_kernel(const float* x, const float* y, float* 
     const float* x_i = x + i * dim;
     const float* y_i = y + i * dim;
     
-    float dist_sq = poincare_dist_sq(x_i, y_i, dim, c, 1e-7f);
-    out[i] = dist_sq / sqrtf(c);
+    out[i] = poincare_distance_impl(x_i, y_i, dim, c, 1e-7f);
 }
 
 

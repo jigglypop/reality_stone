@@ -75,3 +75,4 @@ compressed_rbe_model/
 **/.cache/
 .hf_cache/
 **/.hf_cache/
+text.txt

@@ -14,17 +14,16 @@ fn safe_acosh(x: f32) -> f32 {
 const BOUNDARY_EPS: f32 = 1e-5;
 
 pub fn klein_distance(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32) -> Array1<f32> {
+    // Klein distance: d_K(u,v) = (1/√c) * acosh((1 - c⟨u,v⟩) / √((1-c||u||²)(1-c||v||²)))
     let sqrtc = c.sqrt();
     let u2 = norm_sq_batched(u);
     let v2 = norm_sq_batched(v);
     let uv = dot_batched(u, v);
 
-    // Stable lambda per Klein distance formulation
-    let num = 2.0 * (&u2 * &v2 - &uv * &uv);
-    let den = ((1.0 - c * &u2) * (1.0 - c * &v2)).mapv(|z| z.max(EPS));
-    let lambda = (num / den).mapv(|z| z.max(0.0).sqrt());
-    let ratio = ((2.0 + &lambda) / (2.0 - &lambda).mapv(|z| z.max(EPS)));
-    ratio.mapv(|r| safe_acosh(r) / sqrtc)
+    let numerator = 1.0 - c * &uv;
+    let denominator = ((1.0 - c * &u2) * (1.0 - c * &v2)).mapv(|z| z.max(EPS).sqrt());
+    let arg = (&numerator / &denominator).mapv(|z| z.max(1.0 + EPS));
+    arg.mapv(|r| safe_acosh(r) / sqrtc)
 }
 
 pub fn klein_add(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32) -> Array2<f32> {

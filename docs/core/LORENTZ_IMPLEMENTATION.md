@@ -5,10 +5,10 @@
 Lorentz 모델은 쌍곡 공간을 Minkowski 공간의 hyperboloid로 표현합니다.
 
 **수학적 정의**:
-- 공간: `H^n_c = {x ∈ ℝ^{n+1} : ⟨x,x⟩_L = -1/c, x_0 > 0}`
-- Minkowski 내적: `⟨x,y⟩_L = x_0y_0 - x_1y_1 - ... - x_ny_n`
-- 곡률: `c > 0`
-- 제약 조건: `x_0² - ||x_space||² = 1/c`
+- 공간: $H^n_c = {x ∈ ℝ^{n+1} : ⟨x,x⟩_L = -1/c, x_0 > 0}$
+- Minkowski 내적: $⟨x,y⟩_L = x_0y_0 - x_1y_1 - ... - x_ny_n$
+- 곡률: $c > 0$
+- 제약 조건: $x_0² - ||x_space||² = 1/c$
 
 ---
 
@@ -16,9 +16,9 @@ Lorentz 모델은 쌍곡 공간을 Minkowski 공간의 hyperboloid로 표현합�
 
 ### 1.1 수식
 
-```
+$$
 ⟨x,y⟩_L = x_0y_0 - Σ_{i=1}^n x_i y_i
-```
+$$
 
 ### 1.2 구현
 
@@ -27,7 +27,6 @@ Lorentz 모델은 쌍곡 공간을 Minkowski 공간의 hyperboloid로 표현합�
 pub fn lorentz_inner(u: &ArrayView2<f32>, v: &ArrayView2<f32>) -> Array1<f32> {
     let batch_size = u.nrows();
     let mut result = Array1::zeros(batch_size);
-
     result
         .as_slice_mut()
         .unwrap()
@@ -36,14 +35,12 @@ pub fn lorentz_inner(u: &ArrayView2<f32>, v: &ArrayView2<f32>) -> Array1<f32> {
         .for_each(|(i, inner)| {
             let u_row = u.row(i);
             let v_row = v.row(i);
-
             // Minkowski inner product: u0*v0 - u1*v1 - u2*v2 - ...
             *inner = u_row[0] * v_row[0];
             for j in 1..u_row.len() {
                 *inner -= u_row[j] * v_row[j];
             }
         });
-
     result
 }
 ```
@@ -64,10 +61,9 @@ __device__ inline float lorentz_inner_product(const float* u, const float* v, in
 ## 2. Lorentz Distance
 
 ### 2.1 수식
-
-```
+$$
 d(u, v) = (1/√c) · acosh(c · ⟨u,v⟩_L)
-```
+$$
 
 **제약**: `⟨u,v⟩_L ≥ 1` (같은 sheet에 있을 때)
 
@@ -114,9 +110,9 @@ __global__ void lorentz_distance_kernel(
 ### 3.1 Geodesic Interpolation
 
 **수식**:
-```
+$$
 γ(t) = sinh((1-t)α)/sinh(α) · u + sinh(tα)/sinh(α) · v
-```
+$$
 
 where `α = acosh(c · ⟨u,v⟩_L)`
 
@@ -226,16 +222,16 @@ __global__ void lorentz_layer_forward_kernel(
 **Gradient 계산**:
 
 가중치의 미분:
-```
+$$
 ∂w₁/∂α = [(1-t)cosh((1-t)α)sinh(α) - sinh((1-t)α)cosh(α)] / sinh²(α)
 ∂w₂/∂α = [t·cosh(tα)sinh(α) - sinh(tα)cosh(α)] / sinh²(α)
-```
+$$
 
 α의 미분 (Minkowski metric 고려):
-```
+$$
 ∂α/∂u = (-c/sinh(α)) · G·v
 ∂α/∂v = (-c/sinh(α)) · G·u
-```
+$$
 
 where `G = diag(1, -1, -1, ..., -1)` (Minkowski metric)
 
@@ -400,15 +396,15 @@ __global__ void lorentz_layer_backward_kernel(
 ### 4.1 Poincaré ↔ Lorentz
 
 **Poincaré → Lorentz**:
-```
+$$
 x₀ = (1 + c||x||²) / [(1 - c||x||²)√c]
 xᵢ = 2xᵢ / [(1 - c||x||²)√c]  (i=1,...,n)
-```
+$$
 
 **Lorentz → Poincaré**:
-```
+$$
 xᵢ = (√c · x_{i+1}) / (√c · x₀ + 1)  (i=1,...,n)
-```
+$$
 
 **구현** (`src/layers/lorentz.rs`):
 ```rust

@@ -1,25 +1,28 @@
-import torch
 import pytest
+import torch
 
-from python.reality_stone.models import RCELexicalDecoder
+from reality_stone.models.hierarchical_sentence_topic_llm import RCELexicalDecoder
 
 
-def test_rce_decoder_shapes_and_mask_preservation():
+@pytest.fixture
+def sample_decoder():
+    """기본 테스트용 RCELexicalDecoder 생성"""
+    return RCELexicalDecoder(
+        vocab_size=100,
+        d_model=32,
+        n_layer=2,
+        n_head=4,
+    )
+
+
+def test_rce_decoder_shapes_and_mask_preservation(sample_decoder):
     """
     RCELexicalDecoder가 기본적인 shape을 유지하고,
     replacement_mask=0 위치의 토큰은 항상 원본을 그대로 반환하는지 확인.
     """
-    vocab_size = 100
-    d_model = 32
-    n_layer = 2
-    n_head = 4
-
-    model = RCELexicalDecoder(
-        vocab_size=vocab_size,
-        d_model=d_model,
-        n_layer=n_layer,
-        n_head=n_head,
-    )
+    vocab_size = sample_decoder.vocab_size
+    d_model = sample_decoder.d_model
+    n_head = sample_decoder.n_head
 
     B, T = 2, 5
     input_ids = torch.randint(1, vocab_size, (B, T))
@@ -45,7 +48,7 @@ def test_rce_decoder_shapes_and_mask_preservation():
         for tid in torch.unique(input_ids).tolist()
     }
 
-    output_ids, logits = model(
+    output_ids, logits = sample_decoder(
         input_ids=input_ids,
         metric_ctx=metric_ctx,
         replacement_mask=replacement_mask,
@@ -62,31 +65,21 @@ def test_rce_decoder_shapes_and_mask_preservation():
     assert torch.equal(output_ids[unchanged], input_ids[unchanged])
 
 
-def test_rce_decoder_respects_lexical_candidates():
+def test_rce_decoder_respects_lexical_candidates(sample_decoder):
     """
     후보 집합 내에서만 토큰이 선택되는지 확인.
     - replacement_mask=1 위치: output_ids는 해당 후보 집합에 포함되어야 한다.
     - replacement_mask=0 위치: 항상 원본 토큰을 유지해야 한다.
     """
-    vocab_size = 50
-    model = RCELexicalDecoder(vocab_size=vocab_size, d_model=32, n_layer=1, n_head=2)
-
     B, T = 1, 4
-    # 토큰 10, 20, 30, 40
     input_ids = torch.tensor([[10, 20, 30, 40]])
 
-    d_h = 16  # d_model//n_head 와 동일하게 맞춘다 (32//2)
+    d_h = sample_decoder.d_model // sample_decoder.n_head
     metric_ctx = torch.randn(B, T, d_h, d_h)
     topo_idx = torch.randint(0, T, (B, T, 2))
 
-    # 두 위치는 교체, 두 위치는 고정
     replacement_mask = torch.tensor([[1, 0, 1, 0]])
 
-    # 후보:
-    #  10 -> [10, 11]
-    #  20 -> [20, 21]
-    #  30 -> [30] (자기 자신만)
-    #  40 -> [40, 41, 42]
     candidates = {
         10: [10, 11],
         20: [20, 21],
@@ -94,7 +87,7 @@ def test_rce_decoder_respects_lexical_candidates():
         40: [40, 41, 42],
     }
 
-    output_ids, _ = model(
+    output_ids, _ = sample_decoder(
         input_ids=input_ids,
         metric_ctx=metric_ctx,
         replacement_mask=replacement_mask,
@@ -106,8 +99,53 @@ def test_rce_decoder_respects_lexical_candidates():
     assert int(output_ids[0, 1]) == 20
     assert int(output_ids[0, 3]) == 40
 
-    # mask=1 위치는 후보 집합 내에 있어야 한다
     assert int(output_ids[0, 0]) in candidates[10]
     assert int(output_ids[0, 2]) in candidates[30]
 
+
+def test_rce_decoder_no_candidates_fallback(sample_decoder):
+    """
+    후보 집합이 없는 경우 원본 토큰을 유지하는지 검증.
+    """
+    B, T = 1, 3
+    input_ids = torch.tensor([[5, 10, 15]])
+    
+    d_h = sample_decoder.d_model // sample_decoder.n_head
+    metric_ctx = torch.randn(B, T, d_h, d_h)
+    topo_idx = torch.randint(0, T, (B, T, 2))
+    replacement_mask = torch.ones_like(input_ids)
+    
+    output_ids, logits = sample_decoder(
+        input_ids=input_ids,
+        metric_ctx=metric_ctx,
+        replacement_mask=replacement_mask,
+        topo_idx=topo_idx,
+        candidates=None,
+    )
+    
+    assert logits.shape == (B, T, sample_decoder.vocab_size)
+    assert torch.equal(output_ids, input_ids), "후보 없을 시 원본 유지"
+
+
+def test_rce_decoder_all_masked(sample_decoder):
+    """
+    모든 위치가 mask=0인 경우 원본을 그대로 반환하는지 검증.
+    """
+    B, T = 2, 4
+    input_ids = torch.randint(1, sample_decoder.vocab_size, (B, T))
+    
+    d_h = sample_decoder.d_model // sample_decoder.n_head
+    metric_ctx = torch.randn(B, T, d_h, d_h)
+    topo_idx = torch.randint(0, T, (B, T, 2))
+    replacement_mask = torch.zeros_like(input_ids)
+    
+    output_ids, _ = sample_decoder(
+        input_ids=input_ids,
+        metric_ctx=metric_ctx,
+        replacement_mask=replacement_mask,
+        topo_idx=topo_idx,
+        candidates={},
+    )
+    
+    assert torch.equal(output_ids, input_ids), "모든 위치 mask=0이면 원본 유지"
 

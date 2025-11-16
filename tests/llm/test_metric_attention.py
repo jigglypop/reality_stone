@@ -1,6 +1,5 @@
 import torch
-
-from python.reality_stone.layers.metric_attention import MetricAttention
+from reality_stone.layers.metric_attention import MetricAttention
 
 
 def test_metric_attention_dot_product_basic():
@@ -9,11 +8,9 @@ def test_metric_attention_dot_product_basic():
     NaN 없이 동작하는지 확인한다.
     """
     B, H, T, S, d_h, d_v = 2, 4, 5, 7, 16, 32
-
     q = torch.randn(B, H, T, d_h)
     k = torch.randn(B, H, S, d_h)
     v = torch.randn(B, H, S, d_v)
-
     attn = MetricAttention(
         hidden_size=d_h,
         normalizer="softmax",
@@ -22,9 +19,7 @@ def test_metric_attention_dot_product_basic():
         manifold="poincare",
         c=1e-3,
     )
-
     y = attn(q, k, v)
-
     # 출력 shape: (B, H, T, d_v)
     assert y.shape == (B, H, T, d_v)
     # NaN 또는 Inf 가 없어야 한다

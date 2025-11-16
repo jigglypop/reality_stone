@@ -74,9 +74,9 @@ __global__ void klein_distance_kernel(
 ### 2.1 Klein Addition
 
 **수식**:
-```
+$$
 u ⊕_K v = [u/√(1-c||u||²) + v/√(1-c||v||²)] / [1 + √(1 + c||temp||²)]
-```
+$$
 
 **구현** (`src/layers/klein.rs`):
 ```rust
@@ -103,9 +103,9 @@ pub fn klein_add(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32) -> Array2<f32
 ### 2.2 Klein Scalar Multiplication
 
 **수식**:
-```
+$$
 r ⊗_K x = r · x / ||x|| · min(r||x||, 1/√c - ε)
-```
+$$
 
 **특징**: 경계 근처에서 클램핑 필요
 
@@ -131,9 +131,9 @@ pub fn klein_scalar(u: &ArrayView2<f32>, c: f32, r: f32) -> Array2<f32> {
 ### 3.1 Forward Pass
 
 **수식**:
-```
-y = [(1-t) ⊗_K u] ⊕_K [t ⊗_K v]
-```
+$$
+y = [(1-t) ⊗ K_u] ⊕ K [t ⊗ K_v]
+$$
 
 **구현** (`src/layers/klein.rs`):
 ```rust
@@ -220,9 +220,7 @@ pub fn klein_scalar_vjp(
     let scaled_norm = (&norm_clamped * r)
         .mapv(|v| v.min(1.0 / c.sqrt() - BOUNDARY_EPS));
     let scale = scaled_norm / &norm_clamped;
-
     let boundary = 1.0 / c.sqrt() - BOUNDARY_EPS;
-    
     // d(scale)/d(norm): piecewise due to clamp
     let d_scale_d_norm = (&norm_clamped).mapv(|n| {
         let rn = r * n;
@@ -326,14 +324,14 @@ pub fn klein_layer_backward(
 ### 4.1 Klein ↔ Poincaré
 
 **Klein → Poincaré**:
-```
+$$
 p = x / (1 + √(1 - c||x||²))
-```
+$$
 
 **Poincaré → Klein**:
-```
+$$
 x = 2p / (1 + c||p||²)
-```
+$$
 
 **구현** (`src/layers/klein.rs`):
 ```rust
@@ -355,10 +353,10 @@ pub fn from_poincare(x: &ArrayView2<f32>, c: f32) -> Array2<f32> {
 ### 4.2 Klein ↔ Lorentz
 
 **Klein → Lorentz**:
-```
+$$
 x₀ = 1 / √(1 - c||x||²)
 xᵢ = xᵢ / √(1 - c||x||²)
-```
+$$
 
 **구현** (`src/layers/klein.rs`):
 ```rust

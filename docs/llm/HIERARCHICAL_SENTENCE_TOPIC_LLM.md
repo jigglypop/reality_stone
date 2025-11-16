@@ -23,21 +23,21 @@
 
 - 문서를 유한 루트 트리 \(T = (V, E)\) 로 본다.
   - 각 노드 \(v \in V\) 는 텍스트 span 과 타입을 가진다.
-    \[
+    $$
     \mathrm{type}(v) \in \{\mathrm{document}, \mathrm{section}, \mathrm{subsection}, \mathrm{paragraph}, \mathrm{sentence}, \mathrm{phrase}, \mathrm{token}, \mathrm{subword}, \dots\}
-    \]
+    $$
   - 자식 집합:
-    \[
+    $$
     \mathrm{children}(v) = \{u \mid (v, u) \in E\}
-    \]
+    $$
 - **핵심**: “문단/문장/단어 3단계”에 고정되지 않고, `type(v)` 만 정의되면 **레벨을 마음대로 추가/삭제**할 수 있다.
 
 #### 2.2 계층적 세그멘테이션 함수
 
 - 전체 세그멘테이션:
-  \[
+  $$
   \mathrm{Seg} : \text{Text} \rightarrow T
-  \]
+  $$
 - 레벨별 플러그인 형태:
   - `Seg_level(document)`, `Seg_level(section)`, `Seg_level(sentence)` …
   - 현재 구현된 `PreSegmenter` 는 “문단 → 문장 → 토큰” 까지만 처리하지만,
@@ -60,38 +60,38 @@
     - **SPD manifold / Euclidean**: SPD 메트릭이나 일반 LLM 임베딩 공간.
 
 - 노드 \(v\)의 manifold:
-  \[
+  $$
   \mathcal{M}_v \in \{\mathbb{D}^{d}_{c_p},\ \mathbb{H}^{d+1}_{c_l},\ \mathrm{SPD}(d_h),\ \mathbb{R}^d, \dots\}
-  \]
+  $$
 
 #### 3.2 노드 임베딩과 리만 메트릭
 
 - 각 노드 \(v\)마다 표현 \(h_v \in \mathcal{M}_v\) 를 갖는다.
 - 리만 메트릭 \(g_v\) 는 SPD 행렬 \(G_v \succ 0\) 로 표현한다.
-  \[
+  $$
   g_v(u, w) = u^\top G_v w,\quad G_v \in \mathrm{SPD}(d_v)
-  \]
+  $$
 - `reality_stone` 에서 이미 사용 중인 SPD 파라미터화:
-  \[
+  $$
   G_v = \mathrm{diag}(\mathrm{softplus}(d_v)) + U_v U_v^\top
-  \]
+  $$
   를 **attention head 차원 \(d_h\)** 기준으로 재사용한다.
 
 #### 3.3 Product manifold (다중 레벨 동시 사용)
 
 - 여러 레벨의 표현을 동시에 고려할 때 **product manifold** 를 정의한다.
-  \[
+  $$
   \mathcal{M}_{\text{total}} = \prod_{\ell = 0}^{L} \mathcal{M}^{(\ell)}
-  \]
+  $$
 - 예:
   - \(\mathcal{M}^{(0)}\): paragraph Poincaré
   - \(\mathcal{M}^{(1)}\): sentence Poincaré
   - \(\mathcal{M}^{(2)}\): token Euclidean
 - product manifold 거리:
-  \[
+  $$
   d^2_{\text{total}}(x, y)
   = \sum_{\ell} \lambda_\ell\, d^2_{\mathcal{M}^{(\ell)}}\big(x^{(\ell)}, y^{(\ell)}\big)
-  \]
+  $$
   로 정의해, 상위 구조/하위 lexical 정보가 동시에 들어가도록 한다.
 
 ---
@@ -101,14 +101,14 @@
 #### 4.1 노드별 metric-key 집합
 
 - 1세대 설계에서는 문장별 키:
-  \[
+  $$
   \text{key}^{\text{sent}}_i = \text{"topic:diagnosis|priority:high"}
-  \]
+  $$
   을 사용했다.
 - v2에서는 모든 노드에 대해 metric-key 집합을 정의한다.
-  \[
+  $$
   \mathcal{K}_v = \{k_{v,1}, \dots, k_{v,m}\}
-  \]
+  $$
   - 문단 노드 예: `"section:intro|domain:cardiology"`
   - 문장 노드 예: `"topic:treatment|priority:high"`
   - 토큰 노드 예: `"lexical:medical_term|sensitivity:high"`
@@ -116,19 +116,19 @@
 #### 4.2 키 → SPD 메트릭 매핑
 
 - 각 노드 \(v\)에서:
-  \[
+  $$
   G_v = \sum_{k \in \mathcal{K}_v} \alpha_{v,k}\, \mathrm{MetriKey}(k)
-  \]
+  $$
   - \(\mathrm{MetriKey}(k) \in \mathrm{SPD}(d_h)\) 는 `reality_stone.metrikey.metric_from_keys` 에 대응.
   - \(\alpha_{v,k} = \mathrm{softmax}(\beta s_{v,k})\) 는 SentenceTopicHead 류에서 나온 score/우선순위를 사용.
 
 - **상·하위 레벨 메트릭 혼합**:
-  \[
+  $$
   G_v^{\mathrm{eff}}
   = \gamma_\uparrow G_{\mathrm{parent}(v)}
   + \gamma_0 G_v
   + \gamma_\downarrow \,\overline{G_{\mathrm{children}(v)}}
-  \]
+  $$
   - \(\overline{G_{\mathrm{children}(v)}}\): 자식 메트릭의 평균.
   - \(\gamma_\uparrow, \gamma_0, \gamma_\downarrow \in [0,1],\ \gamma_\uparrow + \gamma_0 + \gamma_\downarrow = 1\).
   - → 문단 geometry 와 문장/토큰 geometry 를 자연스럽게 섞는 **cross-level 메트릭**.
@@ -136,11 +136,11 @@
 #### 4.3 컨텍스트 스위칭과 보안
 
 - 컨텍스트 변경이란, 키 집합(혹은 그 조합 가중치)을 바꾸는 것:
-  \[
+  $$
   \mathcal{K}_v \mapsto \mathcal{K}_v'
   \quad\Rightarrow\quad
   G_v^{\mathrm{eff}} \mapsto (G_v^{\mathrm{eff}})'
-  \]
+  $$
 - 같은 입력 트리 \(T\) 에 대해서도:
   - `"mode:clinical|topic:diagnosis"` vs `"mode:summary|topic:general"`  
     → 서로 다른 geometry → 다른 attention 패턴/편집 정책.
@@ -158,11 +158,11 @@
 #### 5.1 동일 레벨에서의 geodesic score
 
 - 같은 레벨 \(\ell\) 의 노드 \(u, v\) 에 대해:
-  \[
+  $$
   s^{(\ell)}_{uv}
   = -\frac{1}{\tau_\ell}\,
     d^2_{\mathcal{M}^{(\ell)}}\!\big(f_\ell(h_u), f_\ell(h_v)\big)
-  \]
+  $$
   - \(f_\ell\): 필요 시 manifold 간 좌표 변환 (예: Poincaré ↔ Lorentz ↔ Klein).
   - \(\tau_\ell\): 레벨별 temperature.
 
@@ -172,17 +172,17 @@
     - 부모/조상 노드,
     - 시간/순서 이웃.
   - 후보 중 geodesic 거리 상위 \(K\) 값만 사용:
-    \[
+    $$
     \alpha_{u,v} = 0 \quad \text{if } v \notin \mathrm{Top}\text{-}K(u)
-    \]
+    $$
 
 #### 5.2 레벨 간 (up/down) 어텐션
 
 - **자식 → 부모 업데이트**:
-  \[
+  $$
   h_{\mathrm{parent}}'
   = \mathrm{RiemannAgg}\Big(\{h_{\mathrm{parent}}\} \cup \{h_c : c \in \mathrm{children(parent)}\}\Big)
-  \]
+  $$
   - RiemannAgg 는 geodesic attention 또는 Riemannian 평균으로 구현.
 
 - **부모 → 자식 컨텍스트 주입**:
@@ -190,12 +190,12 @@
   - 자식 레벨 attention 의 query/key context 로 사용.
 
 - **product manifold 기반 score**:
-  \[
+  $$
   s_{uv}
   = -\sum_{\ell}
     \frac{\lambda_\ell}{\tau_\ell}\,
     d^2_{\mathcal{M}^{(\ell)}}\big(h_u^{(\ell)}, h_v^{(\ell)}\big)
-  \]
+  $$
   - 상위 구조와 하위 lexical 정보가 동시에 점수에 반영된다.
 
 ---
@@ -205,14 +205,14 @@
 #### 6.1 편집 연산 집합 \(\mathcal{E}_v\)
 
 - 노드 \(v\) 에 대해 정의되는 편집 연산:
-  \[
+  $$
   \mathcal{E}_v \in
   \{\text{keep},\ \text{replace},\ \text{insert\_before},\ \text{insert\_after},\ \text{delete},\ \text{reorder\_siblings}\}
-  \]
+  $$
 - LLM 은 각 노드에 대해:
-  \[
+  $$
   p_\theta(e \mid T, v, G^{\mathrm{eff}}, \text{context}),\quad e \in \mathcal{E}_v
-  \]
+  $$
   의 분포를 내놓는다.
 
 - **기본 안전 모드**:
@@ -230,36 +230,36 @@
   - **delete**: \(t\) 제거
 
 - geodesic 기반 score:
-  \[
+  $$
   \tilde{s}_{t,c}
   = -\frac{1}{\tau_{\text{lex}}}\,
     d^2_{\mathcal{M}^{\text{token}}}\big(q'_t, k'_c\big)
-  \]
+  $$
   - 기존 RCE-LexicalDecoder 의 “토큰 후보 위 geodesic score + softmax” 설계를 그대로 확장.
 
 #### 6.3 편집 제약 로스 (업그레이드)
 
 - 편집 비용:
-  \[
+  $$
   \mathcal{L}_{\mathrm{edit}}
   =
     \lambda_{\mathrm{rep}}\cdot \#\mathrm{replace}
   + \lambda_{\mathrm{ins}}\cdot \#\mathrm{insert}
   + \lambda_{\mathrm{del}}\cdot \#\mathrm{delete}
   + \lambda_{\mathrm{ord}}\cdot \#\mathrm{reorder}
-  \]
+  $$
 
 - 의미 보존:
-  \[
+  $$
   \mathcal{L}_{\mathrm{semantic}}
   =
   \sum_{v}
     d^2_{\mathcal{M}^{\text{sentence}}}\big(h_v^{\mathrm{orig}}, h_v^{\mathrm{edited}}\big)
-  \]
+  $$
   - 원문/편집 문장의 sentence-level representation 이 크게 변하지 않도록 제한.
 
 - 전체 손실 (기존 항 + 편집 항):
-  \[
+  $$
   \mathcal{L}
   =
   \mathcal{L}_{\mathrm{LM}}
@@ -268,7 +268,7 @@
   + \lambda_{c}\mathcal{L}_{c}
   + \lambda_{\mathrm{edit}}\mathcal{L}_{\mathrm{edit}}
   + \lambda_{\mathrm{sem}}\mathcal{L}_{\mathrm{semantic}}
-  \]
+  $$
 
 ---
 
@@ -360,48 +360,48 @@
 #### 9.1 문서 트리 상의 확률 모형 스케치
 
 - 입력 문서 \(x\) 에 대해, 세그멘테이션과 트리 구성까지 포함한 **관측 변수**를
-  \[
+  $$
   T = (V, E),\quad \{x_v\}_{v\in V}
-  \]
+  $$
   로 둔다. (각 노드 \(v\) 의 텍스트 span/메타데이터 포함)
 - LLM 이 학습/추론하는 **잠재 변수**들은 대략 다음과 같이 볼 수 있다.
-  \[
+  $$
   \{h_v\}_{v\in V},\ \{G_v\}_{v\in V},\ \{\mathcal{E}_v\}_{v\in V},\ \{\mathcal{K}_v\}_{v\in V}
-  \]
+  $$
   - \(h_v\): manifold \(\mathcal{M}_v\) 상의 표현.
   - \(G_v\): SPD 메트릭 (또는 \(G_v^{\mathrm{eff}}\)).
   - \(\mathcal{E}_v\): 편집 연산 \(e_v \in \mathcal{E}_v\) (keep/replace/insert/delete/reorder).
   - \(\mathcal{K}_v\): metric-key 집합 및 mixing 계수.
 - 단순화된 조건부 생성 모형(“원문 \(x\) 를 조건으로 편집된 문서 \(y\) 생성”):
-  \[
+  $$
   p_\theta(y \mid x)
   =
   \sum_{T, h, G, \mathcal{E}, \mathcal{K}}
   p_\theta(T, h, G, \mathcal{E}, \mathcal{K} \mid x)\,
   \delta\big(y = \mathrm{ApplyEdits}(x, T, \mathcal{E})\big).
-  \]
+  $$
   - 실제 구현에서는 \(T\) 는 deterministic 세그멘테이션이고,
   - \(h, G, \mathcal{E}, \mathcal{K}\) 에 대해 **최대우도 혹은 1-step MAP 근사**를 사용:
-    \[
+    $$
     \hat{y} \approx \mathrm{ApplyEdits}\Big(x, T, \arg\max_{\mathcal{E}} p_\theta(\mathcal{E} \mid x, T)\Big).
-    \]
+    $$
 
 #### 9.2 상향식 인코딩 = 트리 메시지 전달 (Riemannian message passing)
 
 - 트리 방향성을 명시하면, 하향식/상향식 연산을 **message passing** 으로 해석할 수 있다.
 - **상향식 인코딩**(학습 시):
   - 자식 → 부모로 올라가는 리만 평균 / geodesic attention:
-    \[
+    $$
     h_v
     =
     \mathrm{RiemannAgg}\Big(\{h_c : c\in\mathrm{children}(v)\};\ \mathcal{M}_v, G_v\Big)
-    \]
-    \[
+    $$
+    $$
     \approx
     \mathrm{Exp}_{\mu}\Big(
       \sum_c \alpha_{v,c}\, \log_{\mu}(h_c)
     \Big),
-    \]
+    $$
     - \(\mu\): 초기 기준점(예: 부모의 이전 표현).
     - \(\log_\mu, \mathrm{Exp}_\mu\): 해당 manifold 의 로그/지수 맵.
     - \(\alpha_{v,c}\): geodesic score 기반 attention 가중치.
@@ -411,43 +411,43 @@
 #### 9.3 하향식 디코딩 = 조건부 편집 정책
 
 - **하향식 추론**은 “부모 상태 + 메트릭 + 로컬 컨텍스트”를 조건으로 한 **편집 정책**:
-  \[
+  $$
   \pi_\theta(e_v \mid h_{\mathrm{parent}(v)}, h_v, G_v^{\mathrm{eff}}, \text{local context}).
-  \]
+  $$
   - 여기서 \(\pi_\theta\) 는 discrete policy (edit 연산 선택) + continuous policy (lexical 후보 선택)로 구성.
 - 토큰/서브워드 레벨에서,
-  \[
+  $$
   p_\theta(c \mid t, h_v, G_v^{\mathrm{eff}})
   \propto
   \exp\Big(
     -\tfrac{1}{\tau_{\text{lex}}}\, d^2_{\mathcal{M}^{\text{token}}}(q_t', k_c')
   \Big)
-  \]
+  $$
   와 같이 **geodesic softmax 정책**으로 볼 수 있으며,
   - 이는 정보 기하 관점에서 “메트릭에 의해 정의된 자연 거리”를 활용한 Gibbs 분포에 해당.
 
 #### 9.4 SPD 메트릭 슬롯 = 정보 기하 메모리
 
 - MetriKey 로부터 생성되는 SPD 메트릭 \(G_k\) 들은, SPD 다양체 \(\mathrm{SPD}(d_h)\) 상의 점:
-  \[
+  $$
   G_k \in \mathrm{SPD}(d_h),\quad
   d_{\mathrm{SPD}}(G_1, G_2)
   =
   \big\|\log(G_1^{-1/2} G_2 G_1^{-1/2})\big\|_F
-  \]
+  $$
   (Affine-invariant Riemannian metric 예시)
 
 - **키 혼합을 SPD 바리센터로 해석**  
   - 노드 \(v\)에 대해 metric-key 슬롯 \(G_k\) 와 가중치 \(\alpha_{v,k}\) 가 있을 때,
     단순 선형 결합 대신 **SPD barycenter** 를 표준으로 삼는다:
-    \[
+    $$
     G_v
     =
     \mathop{\arg\min}_{G\succ 0}
       \sum_{k\in\mathcal{K}_v} \alpha_{v,k}\, d_{\mathrm{SPD}}(G, G_k)^2.
-    \]
+    $$
   - 상·하위 메트릭 혼합도 같은 방식으로,
-    \[
+    $$
     G_v^{\mathrm{eff}}
     =
     \mathop{\arg\min}_{G\succ 0}
@@ -456,20 +456,20 @@
         + \gamma_0 d_{\mathrm{SPD}}(G, G_v)^2
         + \gamma_\downarrow d_{\mathrm{SPD}}(G, \overline{G_{\mathrm{children}(v)}})^2
       \Big),
-    \]
+    $$
     로 해석할 수 있다.
   - 실제 구현에서는 log-Euclidean 근사(행렬 로그/지수 후 유클리드 평균)를 사용해 효율적으로 계산할 수 있다.
 
 - “최소한의 학습”을 정보 기하 관점에서 보면,
   - 백본 파라미터는 거의 고정하고,
   - 각 도메인/모드/환자 키에 대해 **slot 메트릭 \(\{G_k\}\)** 만 업데이트:
-    \[
+    $$
     G_k^{(t+1)}
     =
     \mathrm{Exp}_{G_k^{(t)}}\big(
       -\eta \, \mathrm{grad}_{G_k}\, \mathcal{L}
     \big),
-    \]
+    $$
   - 여기서 \(\mathrm{grad}_{G_k}\) 는 SPD 다양체 상의 Riemannian gradient,  
     \(\mathrm{Exp}_{G_k}\) 는 SPD manifold 상의 지수 맵.
 - 실제 구현에서는 `diag(softplus(d)) + UU^\top` 로 파라미터화된 **유클리드 좌표**에서 최적화를 하지만,  
@@ -480,30 +480,30 @@
 - 여러 레벨 \(\ell\) 의 manifold \((\mathcal{M}^{(\ell)}, g^{(\ell)})\) 를 동시에 사용할 때,
   product manifold \(\mathcal{M}_{\text{total}} = \prod_{\ell=0}^{L} \mathcal{M}^{(\ell)}\) 를
   block-diagonal 메트릭으로 정의할 수 있다:
-  \[
+  $$
   g_{(x^{(0)},\dots,x^{(L)})}
   =
   \bigoplus_{\ell=0}^{L} \lambda_\ell\, g^{(\ell)}_{x^{(\ell)}}.
-  \]
+  $$
 - 이때 geodesic 길이를 제곱 거리의 가중합으로 근사하면,
-  \[
+  $$
   d^2_{\text{total}}(x, y)
   \approx
   \sum_{\ell} \lambda_\ell\, d^2_{\mathcal{M}^{(\ell)}}\big(x^{(\ell)}, y^{(\ell)}\big),
-  \]
+  $$
   가 되고, 앞서 정의한 multi-level score
-  \[
+  $$
   s_{uv}
   = -\sum_{\ell}
     \frac{\lambda_\ell}{\tau_\ell}\,
     d^2_{\mathcal{M}^{(\ell)}}\big(h_u^{(\ell)}, h_v^{(\ell)}\big)
-  \]
+  $$
   은 \(\mathcal{M}_{\text{total}}\) 상 하나의 geodesic 기반 Gibbs score 로 해석된다.
 
 #### 9.6 조건부 구조의 factorization 스케치
 
 - 트리 \(T=(V,E)\) 가 주어졌다고 할 때, 잠재 변수들의 조건부 구조를 한 번에 정리하면:
-  \[
+  $$
   p_\theta(h, G, \mathcal{E}, \mathcal{K} \mid x, T)
   =
   \prod_{v\in V}
@@ -511,7 +511,7 @@
   p_\theta\big(G_v \mid \mathcal{K}_v\big)\,
   p_\theta\big(\mathcal{K}_v \mid x_v\big)\,
   p_\theta\big(e_v \mid \mathrm{pa}(v), h, G\big).
-  \]
+  $$
   - \(p(h_v\mid\mathrm{children}, G_v)\): 9.2의 RiemannAgg 업데이트.
   - \(p(G_v\mid\mathcal{K}_v)\): 9.4의 SPD 바리센터.
   - \(p(\mathcal{K}_v\mid x_v)\): SentenceTopicHead / MetricRouter 가 담당.
@@ -525,9 +525,9 @@
 #### 9.7 Lipschitz / 안정성 관점의 정리 후보
 
 - RCE-Transformer 블록 하나를,
-  \[
+  $$
   h^{\ell+1} = \mathcal{F}_\ell(h^\ell; G_\ell, c_\ell)
-  \]
+  $$
   로 보면,
   - 지오데식 attention + SPD scaling 이 만드는 Lipschitz 상한을
     \(\mathrm{Lip}(\mathcal{F}_\ell)\) 로 근사/추정할 수 있다.
@@ -535,10 +535,10 @@
   - **곡률 \(c_\ell\)**, SPD eigenvalue 범위 \([\lambda_{\min}, \lambda_{\max}]\),  
     geodesic dropout/top‑k sparsity 정도를 바탕으로,
   - 각 블록에 대해
-    \[
+    $$
     \mathrm{Lip}(\mathcal{F}_\ell)
     \leq L_\ell(c_\ell, \lambda_{\max}, K, \tau_\ell)
-    \]
+    $$
     형태의 상계를 주고, 전체 네트워크의 안정성(gradient 폭발/소실, 제어가능성)을 분석하는 것이다.
 - 현재 리포지토리에서는 안정성 상계를 **실험적·휴리스틱 제약(regularizer)** 로 대체하고 있으나,  
   위와 같은 수학적 정리를 향해 설계를 정렬해 두면 이후 이론/논문 단계로 확장하기 용이하다.
@@ -557,17 +557,17 @@
   - 예: \(\mathcal{T} = \{\text{document}, \text{section}, \dots, \text{token}, \text{subword}, \dots\}\).
   - 새 타입을 추가하는 것은 단지 \(\mathcal{T}\) 에 원소를 추가하고, 아래 정의되는 로컬 규칙 몇 개를 더하는 것에 해당한다.
 - 문서/상태는 여전히 유한 트리 \(T=(V,E)\) 로 표현하되, 각 노드에 타입이 붙는다:
-  \[
+  $$
   \mathrm{type}: V \to \mathcal{T}.
-  \]
+  $$
 - **깊이(depth)** 는 더 이상 고정 레벨 인덱스가 아니고, 단순히
-  \[
+  $$
   \mathrm{depth}(v) = 
   \begin{cases}
     0 & v \text{ is root} \\
     \mathrm{depth}(\mathrm{parent}(v)) + 1 & \text{otherwise}
   \end{cases}
-  \]
+  $$
   로 정의된다.  
   - 트리가 유한인 한, \(\max_{v\in V} \mathrm{depth}(v)\) 는 있지만, 설계상 어떤 상한을 두지 않는다.
 
@@ -576,35 +576,35 @@
 각 타입 \(\tau \in \mathcal{T}\) 에 대해 다음을 정의한다.
 
 - **Manifold 사상**:
-  \[
+  $$
   \mathcal{M}_\tau: \tau \mapsto (\mathcal{M}_\tau, g_\tau, \Theta_\tau),
-  \]
+  $$
   - \(\mathcal{M}_\tau\): Poincaré/Lorentz/Klein/SPD/Euclidean 등 중 하나 (또는 product).
   - \(g_\tau\): 해당 manifold 의 Riemannian metric.
   - \(\Theta_\tau\): 이 manifold 위에서 사용할 연산/파라미터 집합 (예: 곡률 범위, 슬롯 인덱스 등).
 - **메트릭 슬롯 규칙**:
   - 타입별로 slot 키 공간 \(\mathcal{K}_\tau\) 와 MetriKey 매핑을 둔다:
-    \[
+    $$
     \mathrm{MetriKey}_\tau: \mathcal{K}_\tau \to \mathrm{SPD}(d_\tau).
-    \]
+    $$
   - 실제 노드 \(v\) 의 메트릭은 이전과 같이 SPD barycenter 로 구성:
-    \[
+    $$
     G_v = \operatorname*{argmin}_{G\succ 0} \sum_{k\in\mathcal{K}_v} \alpha_{v,k}\, d_{\mathrm{SPD}}(G, G_{k})^2,
-    \]
+    $$
     단 \(\mathcal{K}_v \subseteq \mathcal{K}_{\mathrm{type}(v)}\).
 - **로컬 업데이트 연산자**:
   - 타입별 상향식 연산자:
-    \[
+    $$
     \mathrm{UP}_\tau: 
       \big(\{h_c\}_{c\in\mathrm{children}(v)}, \{G_c\}, G_v, \text{topology/local features}\big)
       \mapsto h_v^{\uparrow}.
-    \]
+    $$
   - 타입별 하향식 연산자:
-    \[
+    $$
     \mathrm{DOWN}_\tau:
       \big(h_v^{\uparrow}, \{h_p^{\uparrow}\}_{p\in\mathrm{anc}(v)}, G_v, \text{topology/local features}\big)
       \mapsto h_v^{\downarrow}.
-    \]
+    $$
 - 이 사전만 정의되면, **트리 깊이와 상관없이** 노드 타입에 따라 지역 규칙이 적용된다.
 
 #### 10.3 레벨-불변 Riemannian message passing
@@ -614,23 +614,23 @@
 - **상향식 패스**:
   1. 리프 노드 집합 \(L = \{v \mid \mathrm{children}(v) = \emptyset\}\) 부터 시작.
   2. 위로 올라가며, 각 노드 \(v\) 에 대해:
-     \[
+     $$
      h_v^{\uparrow} = \mathrm{UP}_{\mathrm{type}(v)}(\cdot),
-     \]
+     $$
      이때 자식 상태들이 모두 업데이트 되었을 때만 \(\mathrm{UP}\) 적용.
   3. 이는 단순히 **트리의 topological order** 를 따라가며 타입별 연산자를 적용하는 것이고, 깊이가 얼마든 상관 없다.
 
 - **하향식 패스**:
   1. 루트에서 시작하여, 각 노드 \(v\) 에 대해:
-     \[
+     $$
      h_v^{\downarrow} = \mathrm{DOWN}_{\mathrm{type}(v)}(\cdot).
-     \]
+     $$
   2. 부모/조상들의 \(h^{\uparrow}\) (또는 이전 iteration 의 \(h^{\downarrow}\)) 을 입력으로 사용.
 
 - 전체 코어 연산자는
-  \[
+  $$
   \Phi_\theta(T, h, G) = (T, h', G'),
-  \]
+  $$
   로 정의되며,  
   여기서 \(\theta\) 는 모든 타입별 연산자/슬롯 파라미터 \(\{\Theta_\tau\}_{\tau\in\mathcal{T}}\) 를 포함한다.
 

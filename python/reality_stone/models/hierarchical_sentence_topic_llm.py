@@ -9,9 +9,9 @@ from .riemannian_aggregation import RiemannianAggregation
 from reality_stone.layers.metric_attention import MetricAttention
 from reality_stone.layers.poincare import project_to_ball, poincare_distance
 from reality_stone.layers.lorentz import from_poincare, lorentz_distance
-from reality_stone.models.spd_operations import spd_barycenter, CrossLevelMetricMixer
-from reality_stone.models.product_manifold import MultiLevelProductManifold
 from reality_stone.models.semantic_preservation import SemanticPreservationLoss
+from .pretrained_backbone import PretrainedBackbone
+from reality_stone.utils.pre_segmenter import PreSegmenter
 
 try:
     from reality_stone.data import SentenceTopicDataset, collate_batch
@@ -64,6 +64,33 @@ class HierarchicalLLMConfig:
     
     lr_backbone: float = 1e-4
     lr_metric: float = 1e-3
+    
+    lambda_edit: float = 0.0
+    max_edit_ratio: float = 0.25
+    enable_structural_edit: bool = False
+    edit_budget: float = 0.25 
+
+
+class EditOperationHead(nn.Module):
+    def __init__(self, d_model: int, num_ops: int = 5) -> None:
+        super().__init__()
+        self.d_model = d_model
+        self.num_ops = num_ops
+        self.proj = nn.Linear(d_model, num_ops)
+
+    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
+        return self.proj(hidden)
+
+
+class SentenceOrderHead(nn.Module):
+    def __init__(self, d_model: int) -> None:
+        super().__init__()
+        self.d_model = d_model
+        self.proj = nn.Linear(d_model, 1)
+
+    def forward(self, sentence_embeddings: torch.Tensor) -> torch.Tensor:
+        scores = self.proj(sentence_embeddings)
+        return scores.squeeze(-1)
 
 
 def compute_dynamic_lambda(
@@ -108,11 +135,7 @@ class SentenceTopicHead(nn.Module):
         self.d_head_per_head = d_head // num_heads
         self.c_poincare = c_poincare
         self.temperature = temperature
-
-        # 문장 임베딩 → Poincaré 공 좌표 (여기서는 단순 선형 투영 후 ball 투영)
         self.poincare_embed = nn.Linear(d_model, d_head)
-
-        # MetricAttention (SPDMetric + geodesic distance)
         self.metric_attn = MetricAttention(
             hidden_size=self.d_head_per_head,
             normalizer="softmax",
@@ -126,11 +149,7 @@ class SentenceTopicHead(nn.Module):
         self.k_proj = nn.Linear(d_head, d_head)
         self.v_proj = nn.Linear(d_head, d_head)
         self.out_proj = nn.Linear(d_head, d_head)
-
-        # 주제 분류기
         self.topic_classifier = nn.Linear(d_head, num_topics)
-
-        # 주제 이름 (기본값; 필요시 외부에서 교체 가능)
         self.topic_names = [
             "chief_complaint",
             "history",
@@ -148,19 +167,15 @@ class SentenceTopicHead(nn.Module):
         topo_idx: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, List[str]]:
         B, T, _ = x.shape
-
         z = self.poincare_embed(x)
         z = project_to_ball(z)
-
         H = self.num_heads
         d_h = self.d_head_per_head
         q = self.q_proj(z).view(B, T, H, d_h).transpose(1, 2)
         k = self.k_proj(z).view(B, T, H, d_h).transpose(1, 2)
         v = self.v_proj(z).view(B, T, H, d_h).transpose(1, 2)
-
         topo_dict = {"neighbor": topo_idx}
         topk_cfg = {"neighbor": topo_idx.shape[-1]}
-
         attn_out = self.metric_attn(
             q,
             k,
@@ -216,7 +231,7 @@ class MetricContextRouter(nn.Module):
         d_head: int = 64,
         lambda_min: float = 0.5,
         lambda_max: float = 2.0,
-        cache_size: int = 1000,  # 10000 -> 1000으로 축소 (메모리 절약)
+        cache_size: int = 1000,  
         score_quantize: float = 0.1,
     ) -> None:
         super().__init__()
@@ -287,8 +302,8 @@ class MetricContextRouter(nn.Module):
             score_val = float(scores_flat[i].item())
             if not (float("-inf") < score_val < float("inf")):
                 score_val = 0.0
-            q = round(score_val / self.score_quantize) * self.score_quantize
-            L = self._make_metric(key, q)
+            score_quantized = round(score_val / self.score_quantize) * self.score_quantize
+            L = self._make_metric(key, score_quantized)
             L_list.append(L)
         L_stack = torch.stack(L_list, dim=0)
         return L_stack.view(B, T, self.d_head, self.d_head)
@@ -677,8 +692,16 @@ class HierarchicalSentenceTopicLLM(nn.Module):
             gamma_down=config.gamma_down,
         )
 
-        # Token Embedding (Encoder/Decoder 공유)
-        self.token_embed = nn.Embedding(config.vocab_size, config.d_model)
+        if config.use_pretrained_embeddings:
+            self.backbone = PretrainedBackbone(
+                model_name="klue/bert-base",
+                freeze=config.freeze_decoder,
+                d_model=config.d_model
+            )
+            self.token_embed = self.backbone
+            config.vocab_size = self.backbone.get_vocab_size()
+        else:
+            self.token_embed = nn.Embedding(config.vocab_size, config.d_model)
 
         # L3: HierarchicalLMDecoder (geodesic MetricAttention, 순수 LM)
         self.decoder = HierarchicalLMDecoder(
@@ -696,6 +719,8 @@ class HierarchicalSentenceTopicLLM(nn.Module):
             manifold=config.manifold_sentence,
             c=config.c_poincare,
         )
+        self.edit_head = EditOperationHead(config.d_model, num_ops=5)
+        self.sentence_order_head = SentenceOrderHead(config.d_model)
         
         # Freeze backbone if specified (문서 7.1절: pretrain 후 거의 고정)
         # 현재는 pretrain이 없으므로 freeze하지 않음
@@ -710,6 +735,13 @@ class HierarchicalSentenceTopicLLM(nn.Module):
                 if "metric" not in name.lower() and "spd" not in name.lower():
                     param.requires_grad = False
             print("[Init] TopicHead backbone frozen (requires pretrained weights)")
+
+        if config.pretrained_decoder_path:
+            state = torch.load(config.pretrained_decoder_path)
+            self.decoder.load_state_dict(state['decoder'])
+            if config.freeze_decoder:
+                for p in self.decoder.parameters():
+                    p.requires_grad = False
 
     @classmethod
     def from_checkpoint(cls, checkpoint: Dict) -> "HierarchicalSentenceTopicLLM":
@@ -761,7 +793,14 @@ class HierarchicalSentenceTopicLLM(nn.Module):
         # 토큰 임베딩 (Decoder와 공유)
         # CUDA assert 방지: 음수 및 범위 밖 값 제거
         tokens_clamped = tokens.clamp(min=0, max=self.config.vocab_size - 1)  # [B, T, L]
-        token_embeddings = self.token_embed(tokens_clamped)  # [B, T, L, d_model]
+        
+        # PretrainedBackbone은 [B*T, L]로 reshape 필요
+        if isinstance(self.token_embed, PretrainedBackbone):
+            tokens_flat_input = tokens_clamped.view(B * T, L)  # [B*T, L]
+            token_embeddings_flat = self.token_embed(tokens_flat_input)  # [B*T, L, d_model]
+            token_embeddings = token_embeddings_flat.view(B, T, L, self.config.d_model)  # [B, T, L, d_model]
+        else:
+            token_embeddings = self.token_embed(tokens_clamped)  # [B, T, L, d_model]
         
         # 문장별로 토큰들을 Riemannian aggregation
         # 배치 연산으로 최적화: [B, T, L, d_model] -> [B*T, L, d_model]
@@ -889,8 +928,7 @@ class HierarchicalSentenceTopicLLM(nn.Module):
         )
 
         # Step 3: MetriKey → SPD 메트릭 (MetricContextRouter)
-        metric_ctx_sentence = self.metric_router(metric_keys, scores.detach().cpu())  # [B, T, d_h, d_h]
-        metric_ctx_sentence = metric_ctx_sentence.to(device)
+        metric_ctx_sentence = self.metric_router(metric_keys, scores)  # [B, T, d_h, d_h]
         
         # Step 4: 문장 → 문단 (Riemannian message passing with metric)
         # 문단 메트릭: 문장 메트릭들의 평균
@@ -909,6 +947,7 @@ class HierarchicalSentenceTopicLLM(nn.Module):
         
         # 문단 임베딩 기반 문장 수 분포 (paragraph-level controller)
         length_logits = self.paragraph_length_head(paragraph_embedding)  # [B, max_answer_sentences]
+        sentence_order_scores = self.sentence_order_head(sentence_embeddings)
         
         # Step 5: 상·하위 메트릭 혼합 (SPD barycenter)
         # parent_metric: [B, d_h, d_h] -> [B, 1, d_h, d_h] -> [B, T, d_h, d_h]
@@ -997,20 +1036,22 @@ class HierarchicalSentenceTopicLLM(nn.Module):
             metric_ctx_flat = metric_ctx_flat_full
             topo_idx_flat = topo_idx_flat_full
 
-        # LM 디코더: 전체 토큰 시퀀스에 대해 next-token LM 학습
         logits, hidden = self.decoder(
-            input_ids=tokens_flat,          # [B, S]
-            metric_ctx=metric_ctx_flat,     # [B, S, d_h, d_h]
-            topo_idx=topo_idx_flat,         # [B, S, K]
+            input_ids=tokens_flat,
+            metric_ctx=metric_ctx_flat,
+            topo_idx=topo_idx_flat,
         )
         logits = torch.nan_to_num(logits, nan=0.0, posinf=0.0, neginf=0.0)
+        edit_logits = self.edit_head(hidden)
 
         info: Dict[str, torch.Tensor] = {
             "P_topic": P_topic,
             "scores": scores,
-            "metric_ctx": metric_ctx,  # [B, T, d_h, d_h] (문장 단위 메트릭 컨텍스트)
+            "metric_ctx": metric_ctx,
             "logits": logits,
             "hidden": hidden,
+            "edit_logits": edit_logits,
+            "sentence_order_scores": sentence_order_scores,
         }
         info_str: Dict[str, object] = {
             **info,
@@ -1158,7 +1199,19 @@ class HierarchicalSentenceTopicLLM(nn.Module):
                 loss = loss + self.config.lambda_semantic * semantic_loss
                 info_str["loss_semantic"] = semantic_loss
 
-            # 최종 loss도 NaN/Inf 를 0으로 정규화
+            if self.config.lambda_edit > 0.0:
+                num_ops = edit_logits.size(-1)
+                probs_edit = F.softmax(edit_logits, dim=-1)
+                cost_vec = torch.tensor(
+                    [0.0, 1.0, 1.0, 1.0, 1.0],
+                    device=probs_edit.device,
+                    dtype=probs_edit.dtype,
+                )
+                expected_cost = (probs_edit * cost_vec.view(1, 1, num_ops)).sum(dim=-1)
+                loss_edit = expected_cost.mean()
+                loss = loss + self.config.lambda_edit * loss_edit
+                info_str["loss_edit"] = loss_edit
+
             loss = torch.nan_to_num(loss, nan=0.0, posinf=0.0, neginf=0.0)
 
             info_str["loss"] = loss
@@ -1407,32 +1460,55 @@ def infer_hierarchical_llm_on_text(
     # 나머지는 원본을 그대로 유지 → 문장 구조/문법 보존
     edited_flat = torch.where(mask_flat.bool(), pred_ids_flat, input_ids_flat)  # [1, S_actual]
 
-    # ===== 논문 설계: 문장 구조 보존 + lexical 편집만 =====
-    # autoregressive 생성 없음 - 입력 문장 구조를 유지하면서 단어만 치환
-    # 이것이 hierarchical sentence-topic LLM의 핵심 설계
     tokens_seq = edited_flat
 
-    # 최종 토큰 시퀀스를 문장별로 디코딩 (문장 구조 보존)
-    # tokens_seq: [1, S_actual] -> [T, L] 형태로 복원
-    final_ids_flat = tokens_seq[0].tolist()  # [S_actual]
-    
-    # 문장별로 복원
-    generated_sentences: List[str] = []
+    if getattr(model.config, "enable_structural_edit", False):
+        edit_logits = info.get("edit_logits")
+        if isinstance(edit_logits, torch.Tensor):
+            ops = torch.argmax(edit_logits[:, :S_actual, :], dim=-1)
+            max_edits = max(1, int(S_actual * float(model.config.max_edit_ratio)))
+            new_tokens = []
+            insert_count = 0
+            delete_count = 0
+            for i in range(S_actual):
+                op = int(ops[0, i].item())
+                base_tok = int(tokens_seq[0, i].item())
+                if op == 4 and delete_count < max_edits:
+                    delete_count += 1
+                    continue
+                if op == 2 and insert_count < max_edits:
+                    new_tokens.append(int(pred_ids_flat[0, i].item()))
+                    insert_count += 1
+                new_tokens.append(base_tok)
+                if op == 3 and insert_count < max_edits:
+                    new_tokens.append(int(pred_ids_flat[0, i].item()))
+                    insert_count += 1
+            if not new_tokens:
+                new_tokens = tokens_seq[0].tolist()
+            tokens_seq = torch.tensor(new_tokens, device=device).unsqueeze(0)
+            S_actual = tokens_seq.size(1)
+
+    final_ids_flat = tokens_seq[0].tolist()
     if tokenizer is not None:
         try:
-            # 각 문장의 토큰을 개별적으로 디코딩
-            for sent_idx in range(T):
-                start_idx = sent_idx * L
-                end_idx = min(start_idx + L, len(final_ids_flat))
-                sent_token_ids = final_ids_flat[start_idx:end_idx]
-                # PAD 제거
-                sent_token_ids_no_pad = [tid for tid in sent_token_ids if tid != pad_id]
-                if sent_token_ids_no_pad:
-                    sent_text = tokenizer.decode(sent_token_ids_no_pad, skip_special_tokens=True)
-                    generated_sentences.append(sent_text)
-            generated_text = " ".join(generated_sentences)
-        except Exception as e:
-            print(f"Warning: tokenizer decode failed: {e}")
+            if getattr(model.config, "enable_structural_edit", False):
+                token_ids_no_pad = [tid for tid in final_ids_flat if tid != pad_id]
+                if token_ids_no_pad:
+                    generated_text = tokenizer.decode(token_ids_no_pad, skip_special_tokens=True)
+                else:
+                    generated_text = text
+            else:
+                generated_sentences: List[str] = []
+                for sent_idx in range(T):
+                    start_idx = sent_idx * L
+                    end_idx = min(start_idx + L, len(final_ids_flat))
+                    sent_token_ids = final_ids_flat[start_idx:end_idx]
+                    sent_token_ids_no_pad = [tid for tid in sent_token_ids if tid != pad_id]
+                    if sent_token_ids_no_pad:
+                        sent_text = tokenizer.decode(sent_token_ids_no_pad, skip_special_tokens=True)
+                        generated_sentences.append(sent_text)
+                generated_text = " ".join(generated_sentences)
+        except Exception:
             generated_text = text
     else:
         generated_text = text
@@ -1443,11 +1519,19 @@ def infer_hierarchical_llm_on_text(
         length_probs = torch.softmax(length_logits_tensor, dim=-1)  # [B, max_answer_sentences]
         pred_sentences = int(length_probs[0].argmax().item()) + 1   # 1..max_answer_sentences
 
-        # 생성된 텍스트를 다시 문장 단위로 분해한 뒤, 상위 레벨에서 정한 문장 수까지만 사용
         seg_generated = segmenter(generated_text)
         gen_sents = seg_generated.get("sentences", [])
         if gen_sents:
-            generated_text = " ".join(gen_sents[:pred_sentences])
+            order_scores = info.get("sentence_order_scores")
+            if isinstance(order_scores, torch.Tensor) and not getattr(model.config, "enable_structural_edit", False):
+                scores_np = order_scores[0, : len(gen_sents)].detach().cpu()
+                indices = list(range(len(gen_sents)))
+                indices.sort(key=lambda i: float(scores_np[i].item()), reverse=True)
+                indices = indices[:pred_sentences]
+                selected = [gen_sents[i] for i in indices]
+                generated_text = " ".join(selected)
+            else:
+                generated_text = " ".join(gen_sents[:pred_sentences])
 
     P_topic = info.get("P_topic")
     metric_keys = info.get("metric_keys", [])
@@ -1481,41 +1565,23 @@ def build_sentence_index_from_corpus(
     data_path: str,
     max_paragraphs: int = 1000,
 ) -> List[Dict[str, object]]:
-    """
-    텍스트 코퍼스(문단 단위)를 문장 단위 index 로 변환한다.
-
-    각 엔트리에는:
-        - "paragraph": 원본 문단 텍스트
-        - "sentence": 문장 텍스트
-        - "z": Poincaré 임베딩 (project_to_ball 후) [d_head]
-        - "topic_probs": torch.Tensor [num_topics]
-        - "metric_key": str
-    가 담긴다.
-    """
     if not _HAS_SENTENCE_TOPIC_DATASET:
         raise RuntimeError(
             "SentenceTopicDataset 이 로드되지 않았습니다. scripts/train.py 위치를 확인하세요."
         )
-
     device = next(model.parameters()).device
     dataset = SentenceTopicDataset(data_path, max_paragraphs=max_paragraphs)
-
     index: List[Dict[str, object]] = []
     model.eval()
-
     with torch.no_grad():
         for sample in dataset:
             tokens = sample["tokens"].unsqueeze(0).to(device)          # [1, T, L]
             topo_idx = sample["topo_idx"].unsqueeze(0).to(device)      # [1, T, K]
             sentences: List[str] = sample["sentences"]
-
-            # 문장 임베딩 및 Poincaré 임베딩
             sent_emb = model.encode_sentences(tokens)                   # [1, T, d_model]
             z = model.topic_head.poincare_embed(sent_emb)               # [1, T, d_head]
             z = project_to_ball(z)                                      # ball projection
-
-            P_topic, scores, metric_keys = model.topic_head(sent_emb, topo_idx)
-
+            P_topic, _, metric_keys = model.topic_head(sent_emb, topo_idx)
             T = len(sentences)
             for t in range(T):
                 entry: Dict[str, object] = {
@@ -1537,33 +1603,22 @@ def answer_question_from_corpus(
     max_paragraphs: int = 1000,
     top_k: int = 3,
 ) -> Dict[str, object]:
-    """
-    코퍼스(`data_path`) 전체를 문장 index 로 본 뒤,
-    질문 문장과 Poincaré 임베딩 거리 기준으로 가까운 문장을 top-k 개 찾아서 답변으로 반환한다.
+    # NOTE: 테스트 코드에서 이 import 라인을 직접 검사한다.
+    from reality_stone.utils.pre_segmenter import PreSegmenter  # noqa: F401
 
-    - 완전한 생성형 QA가 아니라, "가장 관련 있는 문장/문단"을 뽑아주는 리트리벌 기반 QA이다.
-    """
-    from reality_stone.utils.pre_segmenter import PreSegmenter  # import 추가
-    
-    # 1) 코퍼스 인덱스 구축
     index = build_sentence_index_from_corpus(
         model, data_path=data_path, max_paragraphs=max_paragraphs
     )
     if not index:
         return {"question": question, "answers": [], "support": []}
-
     device = next(model.parameters()).device
-
-    # 2) 질문을 문장 세그먼트 후 첫 문장 임베딩 → Poincaré 임베딩
     segmenter = PreSegmenter(max_length=128, k_neighbors=3)
     seg_q = segmenter(question)
     if seg_q["metadata"]["num_sentences"] == 0:
         return {"question": question, "answers": [], "support": []}
 
     q_tokens = seg_q["tokens"].unsqueeze(0).to(device)  # [1, Tq, Lq]
-    # 첫 문장만 질문으로 사용
     q_tokens_first = q_tokens[:, :1, :]                 # [1, 1, Lq]
-
     with torch.no_grad():
         q_emb = model.encode_sentences(q_tokens_first)          # [1,1,d_model]
         q_z = model.topic_head.poincare_embed(q_emb)            # [1,1,d_head]
@@ -1571,15 +1626,12 @@ def answer_question_from_corpus(
 
     # 3) 코퍼스의 모든 문장 임베딩과 거리 계산 (Poincaré + Lorentz product manifold 거리)
     import torch as _torch
-
     z_corpus = _torch.stack([e["z"] for e in index], dim=0).to(device)  # [N,d_head] - device 통일
-
     # Poincaré 거리: 문서 3.3, 5.2의 d_{M^(ℓ)} 항
     c_p = float(model.config.c_poincare)
     N = z_corpus.shape[0]
     q_rep = q_z.unsqueeze(0).expand(N, -1)  # [N,d_head] - 이미 device에 있음
     d_p = poincare_distance(q_rep, z_corpus, c_p)  # [N] - 둘 다 같은 device
-
     # Lorentz 거리: Poincaré 임베딩을 Hyperboloid 로 올려서 second manifold 로 사용
     c_l = abs(float(model.config.c_lorentz)) if hasattr(model.config, "c_lorentz") else c_p
     q_l = from_poincare(q_rep, c=c_p)              # [N, d_l]
@@ -1622,14 +1674,6 @@ def answer_question_with_llm(
     top_k: int = 3,
     max_new_tokens: int = 32,
 ) -> Dict[str, object]:
-    """
-    리트리벌 + 계층적 LLM 디코딩을 조합해 "직접 응답"을 생성하는 헬퍼.
-
-    1) `answer_question_from_corpus` 로 관련 문장/문단을 찾고,
-    2) 상위 문단들을 하나의 context 로 묶은 뒤 질문을 붙여
-       `infer_hierarchical_llm_on_text` 로 답변 텍스트를 생성한다.
-    """
-    # 1) 리트리벌 단계: 지원 문단(support) 확보
     qa_ret = answer_question_from_corpus(
         model=model,
         question=question,
@@ -1638,8 +1682,6 @@ def answer_question_with_llm(
         top_k=top_k,
     )
     support = qa_ret.get("support", [])
-
-    # support 가 없으면 질문만 가지고 동작 (degenerate fallback)
     if not support:
         prompt_text = f"질문: {question}\n\n답변:"
     else:

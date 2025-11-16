@@ -28,6 +28,34 @@ class DocumentTree:
         return [n.id for n in self.nodes if n.parent == node_id]
 
 
+class LevelSegmenter:
+    def __init__(self, level: str, parent: "PreSegmenter"):
+        self.level = level
+        self._segment_sentences = parent._segment_sentences
+        self._tokenize_sentences = parent._tokenize_sentences
+    
+    def segment(self, text: str) -> List[str]:
+        if self.level == "document":
+            return [text]
+        if self.level == "section":
+            return [text]
+        if self.level == "subsection":
+            blocks = re.split(r"\n\n+", text)
+            # Heuristic: drop leading section title block if it has no newline or sentence punctuation
+            if blocks and ("\n" not in blocks[0] and "." not in blocks[0] and "!" not in blocks[0] and "?" not in blocks[0]):
+                blocks = blocks[1:]
+            return blocks
+        if self.level == "paragraph":
+            return re.split(r"\n\n+", text)
+        if self.level == "sentence":
+            return self._segment_sentences(text)
+        if self.level == "phrase":
+            return re.split(r"[.,;]+", text)
+        if self.level == "token":
+            return self._tokenize_sentences([text])[1][0]
+        return [text]
+
+
 class PreSegmenter:
     def __init__(
         self,
@@ -48,22 +76,60 @@ class PreSegmenter:
                 print(f"Warning: failed to load tokenizer '{tokenizer_name}': {e}")
                 self.tokenizer = None
     
+    def recursive_segment(self, text: str, levels: List[str] = ['document', 'paragraph', 'sentence', 'token']) -> DocumentTree:
+        nodes = []
+        node_id = 0
+        parent_map = {}  # id -> children list
+        
+        def add_node(level: str, text: str, parent: Optional[int]) -> int:
+            nonlocal node_id
+            nid = node_id
+            nodes.append(TreeNode(id=nid, type=level, parent=parent, text=text))
+            if parent is not None:
+                if parent not in parent_map:
+                    parent_map[parent] = []
+                parent_map[parent].append(nid)
+            node_id += 1
+            return nid
+        
+        # Start with root
+        root_id = add_node('document', text, None)
+        
+        # Recursive build
+        def build_level(current_id: int, current_text: str, level_idx: int):
+            if level_idx >= len(levels) - 1:
+                return
+            next_level = levels[level_idx + 1]
+            segmenter = LevelSegmenter(next_level, self)
+            children_texts = segmenter.segment(current_text)
+            for child_text in children_texts:
+                if not child_text.strip():
+                    continue
+                child_id = add_node(next_level, child_text, current_id)
+                build_level(child_id, child_text, level_idx + 1)
+        
+        build_level(root_id, text, 0)
+        
+        # Handle token level separately for all leaf nodes (sentences/phrases)
+        for node in nodes:
+            if node.type in ['sentence', 'phrase']:  # Assuming leaves before tokens
+                tokens = self._tokenize_sentences([node.text])[1][0]
+                for tok in tokens:
+                    add_node('token', tok, node.id)
+        
+        tree = DocumentTree(nodes=nodes, root_id=root_id)
+        return tree
+
     def __call__(self, paragraph: str) -> Dict:
-        sentences = self._segment_sentences(paragraph)
+        # Update to use recursive_segment
+        tree = self.recursive_segment(paragraph)
         
-        if len(sentences) == 0:
-            return {
-                "sentences": [],
-                "tokens": torch.zeros((0, 0), dtype=torch.long),
-                "replacement_mask": torch.zeros((0, 0), dtype=torch.long),
-                "topo_idx": torch.zeros((0, self.k_neighbors), dtype=torch.long),
-                "metadata": {"num_sentences": 0, "sentence_lengths": [], "total_tokens": 0}
-            }
-        
+        # Extract existing fields from tree
+        sentences = [n.text for n in tree.nodes if n.type == 'sentence']
         tokens, token_strings = self._tokenize_sentences(sentences)
         replacement_mask = self._generate_replacement_mask(token_strings, sentences)
         topo_idx = self._build_topology(len(sentences), k=self.k_neighbors)
-        tree = self._build_document_tree(paragraph, sentences, token_strings)
+        # tree = self._build_document_tree(paragraph, sentences, token_strings) # This line is no longer needed
         
         metadata = {
             "num_sentences": len(sentences),

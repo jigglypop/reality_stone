@@ -58,10 +58,6 @@ Reality Stone은 3개의 쌍곡 기하 모델을 Rust/CUDA로 구현하고 PyTor
 - Möbius scalar: `r ⊗_c x`
 - Distance: `d(x,y) = (2/√c)·atanh(√(c||x-y||²/[(1-c||x||²)(1-c||y||²)]))`
 
-**특징**:
-- ✅ Dynamic curvature 지원
-- ✅ 직관적 공간 표현
-- ✅ MNIST: 97.30%
 
 **상세 문서**: [POINCARE_IMPLEMENTATION.md](./POINCARE_IMPLEMENTATION.md)
 
@@ -81,11 +77,6 @@ Reality Stone은 3개의 쌍곡 기하 모델을 Rust/CUDA로 구현하고 PyTor
 - Geodesic: `γ(t) = sinh((1-t)α)/sinh(α)·u + sinh(tα)/sinh(α)·v`
 - Distance: `d(u,v) = (1/√c)·acosh(c⟨u,v⟩_L)`
 
-**특징**:
-- ✅ 수학적 우아함
-- ✅ 안정적 수렴
-- ✅ **최고 안정성**
-- ✅ MNIST: 98.09%
 
 **상세 문서**: [LORENTZ_IMPLEMENTATION.md](./LORENTZ_IMPLEMENTATION.md)
 
@@ -98,18 +89,15 @@ Reality Stone은 3개의 쌍곡 기하 모델을 Rust/CUDA로 구현하고 PyTor
 - CUDA: `src/layers/cuda/klein.cu`
 - Python: `python/reality_stone/layers/klein.py`
 
-**수식**: `D^n_c = {x ∈ ℝ^n : c||x||² < 1}`
+**수식**: 
+$$
+D^n_c = {x ∈ ℝ^n : c||x||² < 1}
+$$
 
 **핵심 연산**:
-- Addition: `u ⊕_K v`
-- Scalar: `r ⊗_K x`
-- Distance: `d(u,v) = (1/√c)·acosh((1-c⟨u,v⟩)/√[(1-c||u||²)(1-c||v||²)])`
-
-**특징**:
-- ✅ **최고 정확도**: 98.28%
-- ✅ **가장 빠름**: ~2.5초/epoch
-- ✅ 메모리 효율
-- ✅ 측지선이 직선
+- Addition: $u ⊕_K v$
+- Scalar: $r ⊗_K x$
+- Distance: $d(u,v) = (1/√c)·acosh((1-c⟨u,v⟩)/√[(1-c||u||²)(1-c||v||²)])$
 
 **상세 문서**: [KLEIN_IMPLEMENTATION.md](./KLEIN_IMPLEMENTATION.md)
 
@@ -119,11 +107,11 @@ Reality Stone은 3개의 쌍곡 기하 모델을 Rust/CUDA로 구현하고 PyTor
 
 ### MNIST 분류 (10 epochs)
 
-| 모델 | 정확도 | 학습 속도 | 메모리 | 수렴 속도 |
-|------|--------|----------|--------|----------|
-| Poincaré | 97.30% | 1.4s/epoch | Base | 보통 |
-| Lorentz | 98.09% | 8.0s/epoch | +10% | **빠름** |
-| **Klein** | **98.28%** ⭐ | **2.5s/epoch** | Base | 보통 |
+| 모델      | 정확도     | 학습 속도      | 메모리 | 수렴 속도 |
+| --------- | ---------- | -------------- | ------ | --------- |
+| Poincaré  | 97.30%     | 1.4s/epoch     | Base   | 보통      |
+| Lorentz   | 98.09%     | 8.0s/epoch     | +10%   | **빠름**  |
+| **Klein** | **98.28%** | **2.5s/epoch** | Base   | 보통      |
 
 ### 상세 학습 곡선
 
@@ -158,9 +146,9 @@ rayon = "1.8.0"  # 병렬화
 ```
 
 **특징**:
-- ✅ 제로 코스트 추상화
-- ✅ Rayon 병렬 처리
-- ✅ ndarray 효율적 연산
+- 제로 코스트 추상화
+- Rayon 병렬 처리
+- ndarray 효율적 연산
 
 ### CUDA Kernels
 

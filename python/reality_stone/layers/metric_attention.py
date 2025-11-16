@@ -35,7 +35,7 @@ class SPDMetric(nn.Module):
 
     def scale_k(self, k: Tensor) -> Tensor:
         d = F.softplus(self.log_diag).view(1, 1, 1, -1)
-        return q * d
+        return k * d
 
     def lowrank_proj(self, x: Tensor) -> Optional[Tensor]:
         if self.U is None:

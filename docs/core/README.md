@@ -13,7 +13,6 @@
 - **Poincaré 모델 레이어/거리**: `../POINCARE_IMPLEMENTATION.md`
 - **Lorentz 하이퍼볼로이드 모델**: `../LORENTZ_IMPLEMENTATION.md`
 - **Klein 모델 레이어/거리**: `../KLEIN_IMPLEMENTATION.md`
-- **리만 메트릭 / MetriKey / SPD 합성**: `../RIEMANNIAN_METRIC_LEARNING.md`
 
 위 문서들은 Rust 레이어, CUDA 커널, Python Autograd 레이어 간의 연계를 상세히 설명하며,  
 새로운 LLM 설계(`docs/llm/` 하위 문서)에서 “하위 커널로 재사용되는 계층”에 해당한다.

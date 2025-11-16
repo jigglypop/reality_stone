@@ -5,9 +5,9 @@
 Poincaré Ball은 음의 곡률을 가진 쌍곡 공간의 모델로, 단위 공(unit ball) 내부에서 정의됩니다.
 
 **수학적 정의**:
-- 공간: `B^n_c = {x ∈ ℝ^n : c||x||² < 1}`
-- 곡률: `c > 0` (양수)
-- 메트릭 텐서: `g_x = λ²_x I`, where `λ_x = 2/(1 - c||x||²)`
+- 공간: $B^n_c = {x ∈ ℝ^n : c||x||² < 1}$
+- 곡률: $c > 0$ (양수)
+- 메트릭 텐서: $g_x = λ²_x I, where λ_x = 2/(1 - c||x||²)$
 
 ---
 
@@ -16,9 +16,9 @@ Poincaré Ball은 음의 곡률을 가진 쌍곡 공간의 모델로, 단위 공
 ### 1.1 Möbius Addition
 
 **수식**:
-```
+$$
 x ⊕_c y = [(1 + 2c⟨x,y⟩ + c||y||²)x + (1 - c||x||²)y] / [1 + 2c⟨x,y⟩ + c²||x||²||y||²]
-```
+$$
 
 **구현 위치**:
 - CPU: `src/ops/mobius.rs::mobius_add()`
@@ -46,9 +46,9 @@ pub fn mobius_add(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32) -> Array2<f3
 ### 1.2 Möbius Scalar Multiplication
 
 **수식**:
-```
+$$
 r ⊗_c x = tanh(r · atanh(√c||x||)) · x / (√c||x||)
-```
+$$
 
 **양수 곡률 (c > 0)**:
 ```rust
@@ -75,9 +75,9 @@ let scale = beta / (sqrt_abs_c * norm);
 ### 2.1 수식
 
 **정확한 수식** (수정됨):
-```
+$$
 d(x, y) = (2/√c) · atanh(√(c||x-y||² / [(1-c||x||²)(1-c||y||²)]))
-```
+$$
 
 ### 2.2 구현
 
@@ -132,31 +132,14 @@ __device__ float poincare_distance_impl(const float* x, const float* y, int dim,
 }
 ```
 
-### 2.3 수정 내역
-
-**이전 (잘못된 구현)**:
-```cpp
-// ❌ 완전히 틀린 수식
-float num = 2 * c * xy;
-return acoshf(1.0f + num / den) / sqrtf(c);
-```
-
-**수정 후**:
-```cpp
-// ✅ 정확한 Poincaré distance
-return (2.0f / sqrtc) * atanhf(sqrt(frac));
-```
-
----
-
 ## 3. Poincaré Ball Layer
 
 ### 3.1 Forward Pass
 
 **수식**:
-```
+$$
 y = (1-t) ⊗_c u  ⊕_c  t ⊗_c v
-```
+$$
 
 **의미**: 
 - 쌍곡 공간에서 u와 v 사이의 측지선(geodesic) 보간
@@ -272,9 +255,9 @@ __global__ void poincare_ball_layer_backward_kernel(
 ### 4.1 개념
 
 곡률 `c`를 학습 가능한 파라미터로 만듦:
-```
+$$
 c = exp(-2κ) · (c_max - c_min) + c_min
-```
+$$
 
 **장점**:
 - 데이터에 최적화된 곡률 자동 학습
@@ -461,10 +444,10 @@ fn test_poincare_ball_layer_interpolation() {
 
 **결과**:
 
-| 모드 | 최종 정확도 | Epoch 5 | Epoch 10 |
-|------|------------|---------|----------|
-| Static | **97.30%** | 96.42% | 97.30% |
-| Dynamic | **97.26%** | 96.42% | 97.26% |
+| 모드    | 최종 정확도 | Epoch 5 | Epoch 10 |
+| ------- | ----------- | ------- | -------- |
+| Static  | **97.30%**  | 96.42%  | 97.30%   |
+| Dynamic | **97.26%**  | 96.42%  | 97.26%   |
 
 **Dynamic Curvature 학습**:
 ```

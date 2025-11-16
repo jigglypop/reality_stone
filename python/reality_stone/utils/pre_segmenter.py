@@ -202,8 +202,12 @@ class PreSegmenter:
         all_token_strings: List[List[str]] = []
 
         if self.tokenizer is not None:
-            # HF 토크나이저 기반 서브워드 토큰화
             vocab_pad_id = self.tokenizer.pad_token_id or 0
+            vocab_unk_id = getattr(self.tokenizer, "unk_token_id", None)
+            if vocab_unk_id is not None and vocab_unk_id != vocab_pad_id:
+                fallback_id = vocab_unk_id
+            else:
+                fallback_id = 1 if vocab_pad_id == 0 else 0
             for sent in sentences:
                 encoded = self.tokenizer.encode(
                     sent,
@@ -211,7 +215,10 @@ class PreSegmenter:
                     max_length=self.max_length,
                     truncation=True,
                 )
-                token_ids = encoded
+                if len(encoded) == 0:
+                    token_ids = [fallback_id]
+                else:
+                    token_ids = encoded
                 token_strs = self.tokenizer.convert_ids_to_tokens(token_ids)
                 all_tokens.append(token_ids)
                 all_token_strings.append(token_strs)
@@ -224,8 +231,7 @@ class PreSegmenter:
                 all_token_strings.append(chars)
             vocab_pad_id = 0
 
-        # 패딩
-        max_len = min(max((len(t) for t in all_tokens), default=0), self.max_length)
+        max_len = max(1, min(max((len(t) for t in all_tokens), default=0), self.max_length))
 
         padded_tokens: List[List[int]] = []
         for token_ids in all_tokens:

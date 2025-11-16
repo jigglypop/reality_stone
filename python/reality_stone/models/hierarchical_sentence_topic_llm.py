@@ -260,16 +260,24 @@ class LevelInvariantTreeProcessor(nn.Module):
         node_embeddings: Dict[int, torch.Tensor],
         direction: str = "up",
     ) -> Dict[int, torch.Tensor]:
-        result_embeddings = {}
+        result_embeddings: Dict[int, torch.Tensor] = {}
         
         if direction == "up":
             sorted_nodes = sorted(tree.nodes, key=lambda n: -self._depth(tree, n.id))
             for node in sorted_nodes:
                 children_ids = tree.children(node.id)
                 if not children_ids:
-                    result_embeddings[node.id] = node_embeddings[node.id]
+                    if node.id in node_embeddings:
+                        result_embeddings[node.id] = node_embeddings[node.id]
+                    else:
+                        continue
                 else:
-                    children_embs = torch.stack([result_embeddings[cid] for cid in children_ids])
+                    available_children = [cid for cid in children_ids if cid in result_embeddings]
+                    if not available_children:
+                        if node.id in node_embeddings:
+                            result_embeddings[node.id] = node_embeddings[node.id]
+                        continue
+                    children_embs = torch.stack([result_embeddings[cid] for cid in available_children])
                     if children_embs.dim() == 2:
                         children_embs = children_embs.unsqueeze(0)
                     
@@ -412,7 +420,9 @@ class SentenceTopicHead(nn.Module):
 
         logits = self.topic_classifier(attn_out)
         logits = torch.clamp(logits, min=-10.0, max=10.0)
+        C = logits.size(-1)
         P_topic = F.softmax(logits, dim=-1)
+        P_topic = torch.where(torch.isfinite(P_topic), P_topic, torch.full_like(P_topic, 1.0 / max(C, 1)))
         P_topic = P_topic + 1e-8
         P_topic = P_topic / P_topic.sum(dim=-1, keepdim=True)
 
@@ -1322,6 +1332,7 @@ class HierarchicalSentenceTopicLLM(nn.Module):
         
         # 문단 임베딩 기반 문장 수 분포 (paragraph-level controller)
         length_logits = self.paragraph_length_head(paragraph_embedding)  # [B, max_answer_sentences]
+        length_logits = torch.where(torch.isfinite(length_logits), length_logits, torch.zeros_like(length_logits))
         sentence_order_scores = self.sentence_order_head(sentence_embeddings)
         
         # Step 5: 상·하위 메트릭 혼합 (SPD barycenter)
@@ -1416,6 +1427,7 @@ class HierarchicalSentenceTopicLLM(nn.Module):
             metric_ctx=metric_ctx_flat,
             topo_idx=topo_idx_flat,
         )
+        logits = torch.where(torch.isfinite(logits), logits, torch.zeros_like(logits))
         logits = torch.clamp(logits, min=-self.config.logit_clip_value, max=self.config.logit_clip_value)
         edit_logits = self.edit_head(hidden)
 
@@ -1433,6 +1445,8 @@ class HierarchicalSentenceTopicLLM(nn.Module):
             "metric_keys": metric_keys,
         }
         info_str["length_logits"] = length_logits
+
+        has_lm_target = True
 
         if compute_loss:
             # 문장 non-empty 마스크 (여러 loss에서 재사용)
@@ -1476,38 +1490,57 @@ class HierarchicalSentenceTopicLLM(nn.Module):
             S = tokens_flat.size(1)
             S_max = min(S, logits.size(1))
             
-            # Autoregressive: 다음 토큰 예측
             if S_max > 1:
-                logits_pred = logits[:, :S_max-1, :]  # [B, S-1, V]
-                targets = tokens_flat[:, 1:S_max].clamp(0, self.config.vocab_size - 1)  # [B, S-1]
+                logits_pred = logits[:, :S_max-1, :]
+                targets = tokens_flat[:, 1:S_max].clamp(0, self.config.vocab_size - 1)
             else:
-                logits_pred = logits[:, :1, :]
-                targets = tokens_flat[:, :1].clamp(0, self.config.vocab_size - 1)
+                logits_pred = logits[:, :0, :]
+                targets = tokens_flat[:, :0].clamp(0, self.config.vocab_size - 1)
             
-            V = logits_pred.size(-1)
-            lm_loss = F.cross_entropy(
-                logits_pred.reshape(-1, V),
-                targets.reshape(-1),
-                ignore_index=0,
-            )
+            V = logits.size(-1)
+            targets_flat = targets.reshape(-1)
+            valid_mask = targets_flat.ne(0)
+            if valid_mask.any():
+                logits_flat = logits_pred.reshape(-1, V)
+                logits_flat_valid = logits_flat[valid_mask]
+                targets_flat_valid = targets_flat[valid_mask]
+                lm_loss = F.cross_entropy(
+                    logits_flat_valid,
+                    targets_flat_valid,
+                )
+                has_lm_target = True
+            else:
+                if logits_pred.numel() == 0 or targets.numel() == 0:
+                    raise RuntimeError("No LM targets available; check tokenization and sequence lengths.")
+                logits_flat = logits_pred.reshape(-1, V)
+                targets_all = targets.reshape(-1)
+                lm_loss = F.cross_entropy(
+                    logits_flat,
+                    targets_all,
+                )
+                has_lm_target = True
 
-            # Loss 안정화 및 NaN 체크
             loss_clip = self.config.loss_clip_max
             
-            lm_loss = torch.where(torch.isnan(lm_loss) | torch.isinf(lm_loss), torch.zeros_like(lm_loss), lm_loss)
+            if torch.isnan(lm_loss) or torch.isinf(lm_loss):
+                raise RuntimeError("lm_loss is NaN or Inf; check dataset/tokenization and model configuration.")
             lm_loss = torch.clamp(lm_loss, min=0.0, max=loss_clip)
             
-            loss_consistency = torch.where(torch.isnan(loss_consistency) | torch.isinf(loss_consistency), torch.zeros_like(loss_consistency), loss_consistency)
+            if torch.isnan(loss_consistency) or torch.isinf(loss_consistency):
+                raise RuntimeError("loss_consistency is NaN or Inf; check topic distributions.")
             loss_consistency = torch.clamp(loss_consistency, min=0.0, max=loss_clip * 0.1)
             
-            loss_diversity = torch.where(torch.isnan(loss_diversity) | torch.isinf(loss_diversity), torch.zeros_like(loss_diversity), loss_diversity)
+            if torch.isnan(loss_diversity) or torch.isinf(loss_diversity):
+                raise RuntimeError("loss_diversity is NaN or Inf; check topic distributions.")
             loss_diversity = torch.clamp(loss_diversity, min=0.0, max=loss_clip * 0.1)
             
-            length_loss = torch.where(torch.isnan(length_loss) | torch.isinf(length_loss), torch.zeros_like(length_loss), length_loss)
+            if torch.isnan(length_loss) or torch.isinf(length_loss):
+                raise RuntimeError("length_loss is NaN or Inf; check sentence_nonempty / length_logits.")
             length_loss = torch.clamp(length_loss, min=0.0, max=loss_clip * 0.1)
             
             if topic_loss is not None:
-                topic_loss = torch.where(torch.isnan(topic_loss) | torch.isinf(topic_loss), torch.zeros_like(topic_loss), topic_loss)
+                if torch.isnan(topic_loss) or torch.isinf(topic_loss):
+                    raise RuntimeError("topic_loss is NaN or Inf; check topic_labels and P_topic.")
                 topic_loss = torch.clamp(topic_loss, min=0.0, max=loss_clip * 0.1)
 
             # Metric regularization: ||G - I||_F^2, G = L L^T
@@ -1553,14 +1586,12 @@ class HierarchicalSentenceTopicLLM(nn.Module):
                 loss_edit = expected_cost.mean()
                 loss = loss + self.config.lambda_edit * loss_edit
                 info_str["loss_edit"] = loss_edit
-
-            if torch.isnan(loss) or torch.isinf(loss):
-                loss = lm_loss + loss_consistency + loss_diversity + length_loss
             
             loss = torch.clamp(loss, min=0.0, max=self.config.loss_clip_max * 2.0)
 
             info_str["loss"] = loss
             info_str["loss_lm"] = lm_loss
+            info_str["has_lm_target"] = has_lm_target
             info_str["loss_consistency"] = loss_consistency
             info_str["loss_diversity"] = loss_diversity
             info_str["loss_length"] = length_loss

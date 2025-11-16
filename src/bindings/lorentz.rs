@@ -1,5 +1,5 @@
 use crate::layers::lorentz;
-use crate::ops::{mobius, DynamicCurvature, LayerWiseDynamicCurvature};
+use crate::ops::{DynamicCurvature, LayerWiseDynamicCurvature};
 use ndarray::Array2;
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray2};
 use pyo3::prelude::*;

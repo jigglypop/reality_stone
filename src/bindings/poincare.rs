@@ -179,7 +179,78 @@ pub fn project_to_ball_cpu<'py>(
     project::project_to_ball(&x.as_array(), epsilon).into_pyarray(py)
 }
 
-// ... (Dynamic/Layerwise/CUDA 함수들은 생략 - 필요시 동일한 패턴으로 추가) ...
+// --- CUDA bindings ---
+
+#[cfg(feature = "cuda")]
+#[pyfunction]
+pub fn poincare_distance_cuda(
+    out: usize,
+    u: usize,
+    v: usize,
+    c: f32,
+    batch_size: i64,
+    dim: i64,
+) -> PyResult<()> {
+    poincare::cuda::poincare_distance_cuda(
+        out as *mut f32,
+        u as *const f32,
+        v as *const f32,
+        c,
+        batch_size,
+        dim,
+    );
+    Ok(())
+}
+
+#[cfg(feature = "cuda")]
+#[pyfunction]
+pub fn poincare_ball_layer_cuda(
+    out: usize,
+    u: usize,
+    v: usize,
+    c: f32,
+    t: f32,
+    batch_size: i64,
+    dim: i64,
+) -> PyResult<()> {
+    poincare::cuda::poincare_ball_layer_cuda(
+        out as *mut f32,
+        u as *const f32,
+        v as *const f32,
+        c,
+        t,
+        batch_size,
+        dim,
+    );
+    Ok(())
+}
+
+#[cfg(feature = "cuda")]
+#[pyfunction]
+pub fn poincare_ball_layer_backward_cuda(
+    grad_output: usize,
+    u: usize,
+    v: usize,
+    grad_u: usize,
+    grad_v: usize,
+    c: f32,
+    t: f32,
+    batch_size: i64,
+    dim: i64,
+) -> PyResult<()> {
+    poincare::cuda::poincare_ball_layer_backward_cuda(
+        grad_output as *const f32,
+        u as *const f32,
+        v as *const f32,
+        grad_u as *mut f32,
+        grad_v as *mut f32,
+        c,
+        t,
+        batch_size,
+        dim,
+    );
+    Ok(())
+}
 
 // --- 모듈 등록 ---
 
@@ -200,12 +271,15 @@ pub fn register(m: &PyModule) -> PyResult<()> {
         m
     )?)?;
     m.add_function(wrap_pyfunction!(poincare_ball_layer_layerwise_cpu, m)?)?;
-    m.add_function(wrap_pyfunction!(
-        poincare_ball_layer_layerwise_backward_cpu,
-        m
-    )?)?;
+    m.add_function(wrap_pyfunction!(poincare_ball_layer_layerwise_backward_cpu, m)?)?;
 
-    // ... (Dynamic/Layerwise/CUDA 함수 등록) ...
+    // CUDA bindings
+    #[cfg(feature = "cuda")]
+    {
+        m.add_function(wrap_pyfunction!(poincare_distance_cuda, m)?)?;
+        m.add_function(wrap_pyfunction!(poincare_ball_layer_cuda, m)?)?;
+        m.add_function(wrap_pyfunction!(poincare_ball_layer_backward_cuda, m)?)?;
+    }
 
     Ok(())
 }

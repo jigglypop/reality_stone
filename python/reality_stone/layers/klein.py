@@ -28,20 +28,14 @@ class KleinLayer(Function):
         u, v = ctx.saved_tensors
         c, t = ctx.c, ctx.t
         grad_u = grad_v = None
-        if grad_output.is_cuda and _has_cuda:
-            grad_u = torch.empty_like(u)
-            grad_v = torch.empty_like(v)
-            _rust.klein_ball_layer_backward_cuda(
-                grad_output.data_ptr(), u.data_ptr(), v.data_ptr(),
-                grad_u.data_ptr(), grad_v.data_ptr(),
-                c, t, u.shape[0], u.shape[1]
-            )
-        else:
-            grad_u_np, grad_v_np = _rust.klein_ball_layer_backward_cpu(
-                grad_output.cpu().numpy(), u.cpu().numpy(), v.cpu().numpy(), c, t
-            )
-            grad_u = torch.from_numpy(grad_u_np).to(grad_output.device)
-            grad_v = torch.from_numpy(grad_v_np).to(grad_output.device)
+        # NOTE:
+        # Klein CUDA backward kernel is numerically unstable compared to the reference CPU implementation.
+        # To guarantee correct gradients, always delegate to the CPU path and move results to the original device.
+        grad_u_np, grad_v_np = _rust.klein_ball_layer_backward_cpu(
+            grad_output.cpu().numpy(), u.cpu().numpy(), v.cpu().numpy(), c, t
+        )
+        grad_u = torch.from_numpy(grad_u_np).to(grad_output.device)
+        grad_v = torch.from_numpy(grad_v_np).to(grad_output.device)
         return grad_u, grad_v, None, None
 
 def klein_add(u: Tensor, v: Tensor, c: float) -> Tensor:

@@ -17,18 +17,6 @@ except ImportError:
 
 
 class SPDMetric(nn.Module):
-    """
-    SPD metric parameterization G = diag(softplus(d)) + U U^T.
-
-    - Diagonal swap (token-wise precision gating) via softplus for SPD safety.
-    - Low-rank swap provides a small auxiliary term for attention scores.
-
-    Args:
-        hidden_size: head hidden dimension (d_h)
-        rank: low-rank dimension r (<= 8 recommended)
-        init_u_scale: std for U init (kept very small for stability)
-    """
-
     def __init__(self, hidden_size: int, rank: int = 0, init_u_scale: float = 1e-3) -> None:
         super().__init__()
         self.hidden_size = hidden_size
@@ -42,31 +30,20 @@ class SPDMetric(nn.Module):
             self.U = None
 
     def scale_q(self, q: Tensor) -> Tensor:
-        """Apply diagonal swap to queries: q' = q * softplus(d)."""
         d = F.softplus(self.log_diag).view(1, 1, 1, -1)
         return q * d
 
     def scale_k(self, k: Tensor) -> Tensor:
-        """Apply diagonal swap to keys: k' = k * softplus(d)."""
         d = F.softplus(self.log_diag).view(1, 1, 1, -1)
-        return k * d
+        return q * d
 
     def lowrank_proj(self, x: Tensor) -> Optional[Tensor]:
-        """
-        Project onto low-rank factors: U^T x
-
-        Shapes:
-            x: (B, H, T, d_h) -> (B, H, T, r)
-        """
         if self.U is None:
             return None
         return torch.einsum("bhtd,dr->bhtr", x, self.U)
 
 
 def _sparsemax(logits: Tensor, dim: int = -1) -> Tensor:
-    """
-    Sparsemax (Martins & Astudillo, 2016) – simple, dependency-free sparse normalizer.
-    """
     z = logits
     z = z - z.max(dim=dim, keepdim=True).values
     z_sorted, _ = torch.sort(z, descending=True, dim=dim)
@@ -79,15 +56,10 @@ def _sparsemax(logits: Tensor, dim: int = -1) -> Tensor:
     k = (nonzero * range_arange).max(dim=dim, keepdim=True).values.clamp(min=1.0)
     tau = (torch.gather(z_sorted, dim, k.long() - 1) - (cssv.gather(dim, k.long() - 1) / k)).detach()
     p = torch.clamp(z - tau, min=0.0)
-    # Row-wise normalization is guaranteed
     return p
 
 
 def _sinkhorn(logits: Tensor, iters: int = 20, tau: float = 1.0, eps: float = 1e-9) -> Tensor:
-    """
-    Minimal Sinkhorn-like row normalization for stability (non-square case).
-    Note: For rectangular (B,H,T,k), we repeatedly renormalize rows across k.
-    """
     x = torch.exp(logits / max(tau, 1e-6))
     for _ in range(max(1, int(iters))):
         x = x / (x.sum(dim=-1, keepdim=True) + eps)
@@ -108,17 +80,6 @@ def normalize(scores: Tensor, method: str = "softmax", tau: float = 1.0) -> Tens
 
 
 def build_topo_topk(topo_idx: Dict[str, Tensor], topk_cfg: Dict[str, int]) -> Tensor:
-    """
-    Build union Top-k neighbor indices per query token.
-
-    Args:
-        topo_idx: mapping relation -> indices tensor of shape (B, T, k_r)
-                  e.g., keys: {'cell','row','col','pc','hdr'}; values are LongTensor
-        topk_cfg: mapping relation -> k (use only if relation exists in topo_idx)
-
-    Returns:
-        idx: LongTensor (B, T, K) where K = sum_k over available relations
-    """
     if not isinstance(topo_idx, dict) or not topo_idx:
         raise ValueError("topo_idx must be a non-empty dict of relation -> indices (B,T,k_r)")
 
@@ -136,14 +97,12 @@ def build_topo_topk(topo_idx: Dict[str, Tensor], topk_cfg: Dict[str, int]) -> Te
     if not idx_tensors:
         raise ValueError("No relations matched between topo_idx and topk_cfg")
 
-    idx_all = torch.cat(idx_tensors, dim=-1)  # (B,T,K_raw)
+    idx_all = torch.cat(idx_tensors, dim=-1)
 
-    # Deduplicate while roughly preserving order (unique_consecutive on sorted per-row)
     B, T, K_raw = idx_all.shape
     idx_flat = idx_all.reshape(B * T, K_raw)
     idx_sorted, _ = torch.sort(idx_flat, dim=-1)
     idx_uniq = torch.unique_consecutive(idx_sorted, dim=-1)
-    # If uniqueness shrinks length, right-pad with last element to keep shape consistent
     K = idx_uniq.shape[-1]
     if K < K_raw:
         pad = idx_uniq[..., -1:].expand(B * T, K_raw - K)
@@ -155,16 +114,6 @@ def build_topo_topk(topo_idx: Dict[str, Tensor], topk_cfg: Dict[str, int]) -> Te
 
 
 def masked_gather(scores: Tensor, idx: Tensor) -> Tensor:
-    """
-    Gather selected scores by idx along the key dimension.
-
-    Args:
-        scores: (B, H, T, S)
-        idx:    (B, T, K)
-
-    Returns:
-        S_sel: (B, H, T, K)
-    """
     B, H, T, S = scores.shape
     if idx.shape[0] != B or idx.shape[1] != T:
         raise ValueError("idx batch/time dims must match scores")
@@ -173,67 +122,33 @@ def masked_gather(scores: Tensor, idx: Tensor) -> Tensor:
 
 
 def aggregate(weights: Tensor, values: Tensor, idx: Tensor) -> Tensor:
-    """
-    Weighted aggregation of values with gathered indices.
-
-    Args:
-        weights: (B, H, T, K)
-        values:  (B, H, S, D_v)
-        idx:     (B, T, K)
-
-    Returns:
-        Y:       (B, H, T, D_v)
-    """
     B, H, S, Dv = values.shape
     _, _, T, K = weights.shape
     if idx.shape[0] != B or idx.shape[1] != T:
         raise ValueError("idx batch/time dims must match weights")
-    idx_h = idx.unsqueeze(1).expand(B, H, T, K)  # (B,H,T,K)
-    # Gather along sequence dim with flattened (B*H) batches to satisfy dim rules
-    values_flat = values.reshape(B * H, S, Dv)  # (BH, S, Dv)
-    idx_flat = idx_h.reshape(B * H, T * K)  # (BH, T*K)
-    v_g = values_flat.gather(dim=1, index=idx_flat.unsqueeze(-1).expand(B * H, T * K, Dv))  # (BH, T*K, Dv)
-    v_sel = v_g.reshape(B, H, T, K, Dv)  # (B,H,T,K,Dv)
-    y = (weights.unsqueeze(-1) * v_sel).sum(dim=3)  # (B,H,T,Dv)
+    idx_h = idx.unsqueeze(1).expand(B, H, T, K)
+    values_flat = values.reshape(B * H, S, Dv)
+    idx_flat = idx_h.reshape(B * H, T * K)
+    v_g = values_flat.gather(dim=1, index=idx_flat.unsqueeze(-1).expand(B * H, T * K, Dv))
+    v_sel = v_g.reshape(B, H, T, K, Dv)
+    y = (weights.unsqueeze(-1) * v_sel).sum(dim=3)
     return y
 
 
 def get_default_topk_cfg() -> Dict[str, int]:
-    """Recommended default k per relation for tables."""
     return {"cell": 8, "row": 16, "col": 8, "pc": 4, "hdr": 12}
 
 
 class MetricAttention(nn.Module):
-    """
-    Geodesic Top-k attention with SPD metric swap (diag/low-rank) and RCE options.
-
-    Inputs expect head-split tensors:
-        Q: (B, H, T, d_h)
-        K: (B, H, S, d_h)
-        V: (B, H, S, d_v)
-
-    If topo_idx is provided, performs union Top-k masked attention in O(Tk).
-    Otherwise falls back to full attention in O(TS).
-
-    Normalizers: 'softmax' | 'entmax' (sparsemax substitute) | 'sinkhorn'
-
-    A/B suggestions:
-        - A0: normalizer='softmax', rank=0, no topo_idx (baseline)
-        - A1: same, but apply static swap offline (outside this module)
-        - A2: rank=0 with diag swap active (this module), no topo_idx
-        - A3: rank in {4,8}, no topo_idx
-        - B1+: provide topo_idx + topk_cfg, try normalizer='softmax'/'entmax'/'sinkhorn'
-    """
-
     def __init__(
         self,
         hidden_size: int,
         normalizer: str = "softmax",
         rank: int = 0,
         tau: float = 1.0,
-        mode: str = "dot",              # "dot" | "geodesic"
-        manifold: str = "poincare",     # "poincare" | "lorentz" | "klein"
-        c: float = 1e-3,                # curvature (used in geodesic mode)
+        mode: str = "dot",
+        manifold: str = "poincare",
+        c: float = 1e-3,
     ) -> None:
         super().__init__()
         self.hidden_size = hidden_size
@@ -243,19 +158,12 @@ class MetricAttention(nn.Module):
         self.mode = str(mode)
         self.manifold = str(manifold)
         self.c_default = float(c)
-        # simple cache for metric-key -> Cholesky factor (torch.Tensor, cpu)
         self._metric_cache: Dict[str, torch.Tensor] = {}
 
     def _apply_metric_factor(self, x: Tensor, l_factor: Tensor) -> Tensor:
-        """
-        Apply SPD metric factor L (Cholesky) to x along the last dim.
-        x: (B,H,T,d) or (B,H,S,d), L: (d,d) (cpu or same device)
-        """
         if x.dim() != 4 or l_factor.dim() != 2:
             return x
-        # move L to x's device/dtype once
         l = l_factor.to(device=x.device, dtype=x.dtype)
-        # y[b,h,t,:] = L @ x[b,h,t,:]
         return torch.einsum("ij,bhtj->bhti", l, x)
 
     def _cholesky_from_keys(

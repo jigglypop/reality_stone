@@ -1,11 +1,4 @@
-use crate::ops::metrikey::{
-    apply_causal_mask_inplace_f32, gelu_new_f32, layer_norm_forward_exact_f32, softmax_lastdim_f32,
-};
-use crate::ops::metrikey::{
-    apply_causal_mask_inplace_f64, gelu_new_f64, layer_norm_forward_exact_f64, softmax_lastdim_f64,
-};
 use ndarray::Array2;
-use numpy::IntoPyArray;
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
 use pyo3::types::PyModule;

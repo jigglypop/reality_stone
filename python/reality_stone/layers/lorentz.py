@@ -55,7 +55,7 @@ def lorentz_distance(x: Tensor, y: Tensor, c: float) -> Tensor:
         output = torch.empty(x.shape[0], dtype=x.dtype, device=x.device)
         _rust.lorentz_distance_cuda(output.data_ptr(), x.data_ptr(), y.data_ptr(), c, x.shape[0], x.shape[1])
         return output
-    result_np = _rust.lorentz_distance(x.cpu().numpy(), y.cpu().numpy(), c)
+    result_np = _rust.lorentz_distance(x.detach().cpu().numpy(), y.detach().cpu().numpy(), c)
     return torch.from_numpy(result_np).to(x.device)
 
 def lorentz_inner(u: Tensor, v: Tensor) -> Tensor:

@@ -47,7 +47,12 @@ class PoincareBallLayer(Function):
             ctx.use_dynamic = False
             ctx.c = c if c is not None else 1.0
             ctx.save_for_backward(u, v)
-            if u.is_cuda and _has_cuda:
+            # CUDA 경로는 실제 바인딩이 존재할 때만 사용 (안전 가드)
+            if (
+                u.is_cuda
+                and _has_cuda
+                and hasattr(_rust, "poincare_ball_layer_cuda")
+            ):
                 output = torch.empty_like(u)
                 _rust.poincare_ball_layer_cuda(
                     output.data_ptr(), u.data_ptr(), v.data_ptr(),
@@ -97,7 +102,12 @@ class PoincareBallLayer(Function):
             u, v = ctx.saved_tensors
             c = ctx.c
             grad_u = grad_v = None
-            if grad_output.is_cuda and _has_cuda:
+            # CUDA 경로는 실제 바인딩이 존재할 때만 사용
+            if (
+                grad_output.is_cuda
+                and _has_cuda
+                and hasattr(_rust, "poincare_ball_layer_backward_cuda")
+            ):
                 grad_u = torch.empty_like(u)
                 grad_v = torch.empty_like(v)
                 _rust.poincare_ball_layer_backward_cuda(
@@ -120,43 +130,19 @@ def poincare_scalar_mul(x: Tensor, r: float, c: float) -> Tensor:
     return MobiusScalarMul.apply(x, r, c)
 
 def poincare_distance(x: Tensor, y: Tensor, c: float) -> Tensor:
-    """
-    Poincaré ball distance with safe Rust/CUDA path when 가능, 없으면 순수 PyTorch fallback.
-    """
-    # Prefer Rust/CUDA when extension is available
-    if "_rust" in globals() and _rust is not None:
-        try:
-            if x.is_cuda and _has_cuda:
-                output = torch.empty(x.shape[0], device=x.device)
-                _rust.poincare_distance_cuda(
-                    x.data_ptr(), y.data_ptr(), output.data_ptr(),
-                    x.shape[0], x.shape[1], c
-                )
-                return output
-            else:
-                output_np = _rust.poincare_distance_cpu(x.cpu().numpy(), y.cpu().numpy(), c)
-                return torch.from_numpy(output_np).to(x.device)
-        except Exception:
-            # 실패 시 아래 PyTorch 경로로 폴백
-            pass
-
-    # Pure PyTorch fallback (음수 곡률 Poincaré ball 공식 근사)
     eps = 1e-6
     if abs(c) < eps:
-        # Eu클리드 한계
         return torch.norm(x - y, dim=1)
-
-    # 공식: d(x,y) = (2/sqrt(c)) * atanh( sqrt(c) * ||(-x) ⊕_c y|| )
-    # 여기서는 보다 간단한 널리 쓰이는 근사식 사용:
-    #   d(x,y) = (2/sqrt(c)) * asinh( sqrt(c) * ||x-y|| / ( (1 - c||x||^2)^(1/2) (1 - c||y||^2)^(1/2) ) )
-    sqrtc = torch.tensor(c, dtype=x.dtype, device=x.device).sqrt()
     x2 = (x * x).sum(dim=1)
     y2 = (y * y).sum(dim=1)
-    diff2 = ((x - y) * (x - y)).sum(dim=1).clamp_min(eps)
-    den = (1.0 - c * x2).clamp_min(eps).sqrt() * (1.0 - c * y2).clamp_min(eps).sqrt()
-    num = (c * diff2).clamp_min(eps).sqrt()
-    arg = num / den.clamp_min(eps)
-    return (2.0 / sqrtc) * torch.asinh(arg)
+    diff2 = ((x - y) * (x - y)).sum(dim=1).clamp_min(0.0)
+    den = (1.0 - c * x2) * (1.0 - c * y2)
+    den = den.clamp_min(eps)
+    frac = (c * diff2) / den
+    frac = frac.clamp_min(0.0)
+    sqrtc = torch.tensor(c, dtype=x.dtype, device=x.device).sqrt()
+    arg = frac.sqrt().clamp_max(1.0 - eps)
+    return (2.0 / sqrtc) * torch.atanh(arg)
 
 def poincare_to_lorentz(x: Tensor, c: float) -> Tensor:
     output_np = _rust.poincare_to_lorentz_cpu(x.cpu().numpy(), c)
@@ -169,8 +155,12 @@ def poincare_to_klein(x: Tensor, c: float) -> Tensor:
 # --- HyperbolicLinear 및 관련 함수 ---
 
 def exp_map_zero(v: Tensor, c: float, eps: float = 1e-5) -> Tensor:
-    """원점에서의 지수 맵 (접선 공간 -> 푸앵카레 공)"""
-    sqrt_c = torch.sqrt(torch.tensor(c))
+    """원점에서의 지수 맵 (접선 공간 -> 푸앵카레 공)
+
+    NOTE: c 텐서를 항상 v 와 같은 device/dtype 으로 올려서
+    CPU/GPU 혼합으로 인한 clamp/device 오류를 방지한다.
+    """
+    sqrt_c = torch.sqrt(torch.as_tensor(c, device=v.device, dtype=v.dtype))
     v_norm = torch.norm(v, p=2, dim=-1, keepdim=True).clamp(min=eps)
     # 수치 안정성을 위해 norm을 제한
     v_norm_clipped = v_norm.clamp(max=1.0 / (sqrt_c * 1.1))  # 공의 경계에 너무 가까이 가지 않도록
@@ -185,23 +175,27 @@ def exp_map_zero(v: Tensor, c: float, eps: float = 1e-5) -> Tensor:
 
 
 def log_map_zero(y: Tensor, c: float, eps: float = 1e-5) -> Tensor:
-    """원점에서의 로그 맵 (푸앵카레 공 -> 접선 공간)"""
-    sqrt_c = torch.sqrt(torch.tensor(c))
+    """원점에서의 로그 맵 (푸앵카레 공 -> 접선 공간)
+
+    NOTE: c 텐서를 항상 y 와 같은 device/dtype 으로 올려서
+    CPU/GPU 혼합 연산을 피한다.
+    """
+    sqrt_c = torch.sqrt(torch.as_tensor(c, device=y.device, dtype=y.dtype))
     y_norm = torch.norm(y, p=2, dim=-1, keepdim=True).clamp(min=eps)
-    
+
     # 수치 안정성을 위해 norm을 제한 (공의 경계에서 멀리)
     y_norm_clipped = y_norm.clamp(max=1.0 - eps)
-    
+
     # artanh 계산을 위한 안전한 범위 확인
     sqrt_c_y_norm = sqrt_c * y_norm_clipped
     sqrt_c_y_norm = sqrt_c_y_norm.clamp(max=1.0 - eps)  # artanh의 정의역 내로 제한
-    
+
     # artanh 계산
     artanh_term = torch.atanh(sqrt_c_y_norm)
-    
+
     # 결과 계산
     result = artanh_term / (sqrt_c * y_norm_clipped) * y
-    
+
     # NaN 체크 및 처리
     result = torch.where(y_norm < eps, y, result)
     return result

@@ -1,46 +1,57 @@
-"""문단 분해 및 전처리 모듈 - Phase 1"""
-import torch
-from typing import List, Dict, Tuple
 import re
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
+
+import torch
+
+try:
+    # Sentence-Topic LLM 전역에서 사용하는 토크나이저 (klue/bert-base)
+    from transformers import AutoTokenizer
+except Exception:  # pragma: no cover - transformers 미설치 환경 대비
+    AutoTokenizer = None  # type: ignore
+
+
+@dataclass
+class TreeNode:
+    id: int
+    type: str
+    parent: Optional[int]
+    text: str
+
+
+@dataclass
+class DocumentTree:
+    nodes: List[TreeNode]
+    root_id: int
+
+    def children(self, node_id: int) -> List[int]:
+        return [n.id for n in self.nodes if n.parent == node_id]
+
 
 class PreSegmenter:
-    """
-    문단을 문장 단위로 분해하고 토큰화, topology index, replacement mask 생성
-    
-    docs/sentence_topic_architecture.md의 3장 L0: Pre-Segmenter 명세 준수
-    """
     def __init__(
         self,
         max_length: int = 128,
-        k_neighbors: int = 3
+        k_neighbors: int = 3,
+        tokenizer_name: str = "klue/bert-base",
     ):
         self.max_length = max_length
         self.k_neighbors = k_neighbors
-        
-        # 한국어 문장 종결 패턴
-        self.sentence_endings = re.compile(r'([.!?])\s+')
+
+        self.sentence_endings = re.compile(r"([.!?])\s+")
+
+        self.tokenizer = None
+        if AutoTokenizer is not None:
+            try:
+                self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+            except Exception as e:
+                print(f"Warning: failed to load tokenizer '{tokenizer_name}': {e}")
+                self.tokenizer = None
     
     def __call__(self, paragraph: str) -> Dict:
-        """
-        문단을 문장 단위로 분해하고 전처리
-        
-        Args:
-            paragraph: 입력 문단
-        
-        Returns:
-            {
-                "sentences": List[str],
-                "tokens": torch.Tensor [num_sents, seq_len],
-                "replacement_mask": torch.Tensor [num_sents, seq_len],
-                "topo_idx": torch.Tensor [num_sents, k],
-                "metadata": Dict
-            }
-        """
-        # 1. 문장 분해
         sentences = self._segment_sentences(paragraph)
         
         if len(sentences) == 0:
-            # 빈 입력 처리
             return {
                 "sentences": [],
                 "tokens": torch.zeros((0, 0), dtype=torch.long),
@@ -49,16 +60,11 @@ class PreSegmenter:
                 "metadata": {"num_sentences": 0, "sentence_lengths": [], "total_tokens": 0}
             }
         
-        # 2. 토큰화 (간단한 문자 단위 토큰화)
         tokens, token_strings = self._tokenize_sentences(sentences)
-        
-        # 3. Replacement mask 생성
         replacement_mask = self._generate_replacement_mask(token_strings, sentences)
-        
-        # 4. Topology index 생성
         topo_idx = self._build_topology(len(sentences), k=self.k_neighbors)
+        tree = self._build_document_tree(paragraph, sentences, token_strings)
         
-        # 5. 메타데이터
         metadata = {
             "num_sentences": len(sentences),
             "sentence_lengths": [len(s.split()) for s in sentences],
@@ -70,7 +76,8 @@ class PreSegmenter:
             "tokens": tokens,
             "replacement_mask": replacement_mask,
             "topo_idx": topo_idx,
-            "metadata": metadata
+            "tree": tree,
+            "metadata": metadata,
         }
     
     def _segment_sentences(self, paragraph: str) -> List[str]:
@@ -116,31 +123,52 @@ class PreSegmenter:
     
     def _tokenize_sentences(self, sentences: List[str]) -> Tuple[torch.Tensor, List[List[str]]]:
         """
-        문장 토큰화 (간단한 문자 단위)
-        
+        문장 토큰화
+
+        우선적으로 HF 토크나이저(예: klue/bert-base)를 사용하고,
+        transformers가 없거나 로딩에 실패한 환경에서는 기존 문자 단위 토큰화로 fallback 한다.
+
         Returns:
             tokens: [num_sents, max_seq_len] 토큰 ID 텐서
             token_strings: [num_sents][seq_len] 토큰 문자열 리스트
         """
-        all_tokens = []
-        all_token_strings = []
-        
-        for sent in sentences:
-            # 문자 단위 토큰화
-            chars = list(sent)
-            # 간단한 ID 매핑 (ord 사용)
-            token_ids = [min(ord(c), 50000) for c in chars]  # 범위 제한
-            all_tokens.append(token_ids)
-            all_token_strings.append(chars)
-        
+        all_tokens: List[List[int]] = []
+        all_token_strings: List[List[str]] = []
+
+        if self.tokenizer is not None:
+            # HF 토크나이저 기반 서브워드 토큰화
+            vocab_pad_id = self.tokenizer.pad_token_id or 0
+            for sent in sentences:
+                encoded = self.tokenizer.encode(
+                    sent,
+                    add_special_tokens=False,
+                    max_length=self.max_length,
+                    truncation=True,
+                )
+                token_ids = encoded
+                token_strs = self.tokenizer.convert_ids_to_tokens(token_ids)
+                all_tokens.append(token_ids)
+                all_token_strings.append(token_strs)
+        else:
+            # 문자 단위 토큰화 (이전 구현과 동일한 fallback 경로)
+            for sent in sentences:
+                chars = list(sent)
+                token_ids = [ord(c) for c in chars]
+                all_tokens.append(token_ids)
+                all_token_strings.append(chars)
+            vocab_pad_id = 0
+
         # 패딩
-        max_len = min(max(len(t) for t in all_tokens) if all_tokens else 0, self.max_length)
-        
-        padded_tokens = []
-        for tokens in all_tokens:
-            padded = tokens[:max_len] + [0] * (max_len - len(tokens))
+        max_len = min(max((len(t) for t in all_tokens), default=0), self.max_length)
+
+        padded_tokens: List[List[int]] = []
+        for token_ids in all_tokens:
+            padded = token_ids[:max_len] + [vocab_pad_id] * (max_len - len(token_ids))
             padded_tokens.append(padded)
-        
+
+        if len(padded_tokens) == 0:
+            return torch.zeros((0, 0), dtype=torch.long), []
+
         return torch.tensor(padded_tokens, dtype=torch.long), all_token_strings
     
     def _generate_replacement_mask(
@@ -170,8 +198,8 @@ class PreSegmenter:
                     mask.append(0)
             masks.append(mask)
         
-        # 패딩
-        max_len = max(len(m) for m in masks) if masks else 0
+        # 패딩 길이는 토큰화 길이와 동일하게 self.max_length로 클램프
+        max_len = min(max(len(m) for m in masks) if masks else 0, self.max_length)
         padded_masks = []
         for mask in masks:
             padded = mask[:max_len] + [0] * (max_len - len(mask))
@@ -241,4 +269,71 @@ class PreSegmenter:
             topo.append(neighbors[:k])
         
         return torch.tensor(topo, dtype=torch.long)
+
+    def _build_document_tree(
+        self,
+        paragraph: str,
+        sentences: List[str],
+        token_strings: List[List[str]],
+    ) -> DocumentTree:
+        """
+        문단을 일반 트리(document → sentence → token)로 표현.
+        
+        - docs 2장, 10장에서 정의한 트리 T=(V,E) 의 최소 구현:
+          * type(v) ∈ {document, sentence, token}
+        - 현재는 3레벨 구조이지만, 타입/노드 정의만 추가하면
+          section/subsection/phrase 등으로 확장 가능.
+        """
+        nodes: List[TreeNode] = []
+        node_id = 0
+
+        # 루트 노드 (document)
+        root_id = node_id
+        nodes.append(
+            TreeNode(
+                id=root_id,
+                type="document",
+                parent=None,
+                text=paragraph,
+            )
+        )
+        node_id += 1
+
+        # 문장 노드들
+        sentence_node_ids: List[int] = []
+        for sent in sentences:
+            sid = node_id
+            nodes.append(
+                TreeNode(
+                    id=sid,
+                    type="sentence",
+                    parent=root_id,
+                    text=sent,
+                )
+            )
+            sentence_node_ids.append(sid)
+            node_id += 1
+
+        # 토큰 노드들 (패딩 제외)
+        for s_idx, sent_tokens in enumerate(token_strings):
+            parent_sid = sentence_node_ids[s_idx]
+            for tok in sent_tokens:
+                # HF 토크나이저가 없는 경우 문자 단위 토큰도 그대로 사용
+                if tok is None:
+                    continue
+                # 패딩 토큰(예: [PAD])은 텍스트 의미가 없으므로 노드로 만들지 않음
+                if isinstance(tok, str) and tok.strip() == "":
+                    continue
+                tid = node_id
+                nodes.append(
+                    TreeNode(
+                        id=tid,
+                        type="token",
+                        parent=parent_sid,
+                        text=str(tok),
+                    )
+                )
+                node_id += 1
+
+        return DocumentTree(nodes=nodes, root_id=root_id)
 

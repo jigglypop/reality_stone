@@ -44,7 +44,7 @@ class SPDMetric(nn.Module):
 **Poincaré Manifold 기반**
 
 ```python
-# sentence_topic_head.py
+# hierarchical_sentence_topic_llm.py 내부 SentenceTopicHead
 self.metric_attn = MetricAttention(
     hidden_size=16,        # per-head dimension
     normalizer="softmax",
@@ -82,7 +82,7 @@ attn_weights = softmax(scores)     # 정규화
 
 ## 3. Metric Key Context Switching
 
-**`python/reality_stone/models/metric_router.py`**
+**`python/reality_stone/models/hierarchical_sentence_topic_llm.py`의 `MetricContextRouter`**
 
 ```python
 class MetricContextRouter:
@@ -139,8 +139,8 @@ class MetricContextRouter:
     ├─ Eigenvalue clamp [0.8, 1.2]
     └─ Cholesky: L = chol(G)
     ↓
-[L3] RCE-LexicalDecoder
-    └─ Lexical constraint decoding
+[L3] Lexical / LM Decoder
+    └─ RCELexicalDecoder / HierarchicalLMDecoder
 ```
 
 ## 5. 학습 목표

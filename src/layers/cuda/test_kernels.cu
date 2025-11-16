@@ -1,8 +1,12 @@
 /**
- * CUDA 커널 단위 테스트
- * 컴파일: nvcc -std=c++11 -arch=sm_70 -I.. test_kernels.cu poincare.cu lorentz.cu klein.cu mobius.cu -o test_kernels
- * 실행: ./test_kernels
+ * CUDA kernel unit tests
+ * Compile: nvcc -std=c++11 -arch=sm_70 -I.. test_kernels.cu poincare.cu lorentz.cu klein.cu mobius.cu -o test_kernels
+ * Run:     ./test_kernels
  */
+
+#ifdef _MSC_VER
+#pragma warning(disable : 4819)
+#endif
 
 #include <cmath>
 #include <cstdio>
@@ -12,13 +16,13 @@
 #define EPSILON 1e-5f
 #define TEST_ASSERT(cond, msg) \
     if (!(cond)) { \
-        printf("❌ FAIL: %s\n   at %s:%d\n", msg, __FILE__, __LINE__); \
+        printf("FAIL: %s\n   at %s:%d\n", msg, __FILE__, __LINE__); \
         return false; \
     }
 
 #define TEST_ASSERT_NEAR(a, b, eps, msg) \
     if (fabsf((a) - (b)) > (eps)) { \
-        printf("❌ FAIL: %s\n   Expected: %.6f, Got: %.6f, Diff: %.6e\n   at %s:%d\n", \
+        printf("FAIL: %s\n   Expected: %.6f, Got: %.6f, Diff: %.6e\n   at %s:%d\n", \
                msg, (b), (a), fabsf((a)-(b)), __FILE__, __LINE__); \
         return false; \
     }
@@ -53,11 +57,11 @@ void from_gpu(float* host, float* dev, int size) {
 }
 
 // ============================================================================
-// Poincaré Tests
+// Poincare Tests
 // ============================================================================
 
 bool test_poincare_distance_same_point() {
-    printf("🧪 Test: Poincaré distance (same point) ... ");
+    printf("Test: Poincare distance (same point) ... ");
     
     float x[] = {0.1f, 0.2f};
     float c = 1.0f;
@@ -78,7 +82,7 @@ bool test_poincare_distance_same_point() {
 }
 
 bool test_poincare_distance_origin() {
-    printf("🧪 Test: Poincaré distance (origin) ... ");
+    printf("Test: Poincare distance (origin) ... ");
     
     float x[] = {0.0f, 0.0f};
     float y[] = {0.0f, 0.0f};
@@ -102,7 +106,7 @@ bool test_poincare_distance_origin() {
 }
 
 bool test_poincare_ball_layer_interpolation() {
-    printf("🧪 Test: Poincaré layer (t=0, t=1) ... ");
+    printf("Test: Poincare layer (t=0, t=1) ... ");
     
     float u[] = {0.3f, 0.4f};
     float v[] = {-0.2f, 0.1f};
@@ -142,7 +146,7 @@ bool test_poincare_ball_layer_interpolation() {
 // ============================================================================
 
 bool test_lorentz_distance_same_point() {
-    printf("🧪 Test: Lorentz distance (same point) ... ");
+    printf("Test: Lorentz distance (same point) ... ");
     
     // Point on hyperboloid: x0 = sqrt(1/c + ||x||²)
     float c = 1.0f;
@@ -166,7 +170,7 @@ bool test_lorentz_distance_same_point() {
 }
 
 bool test_lorentz_layer_interpolation() {
-    printf("🧪 Test: Lorentz layer (t=0, t=1) ... ");
+    printf("Test: Lorentz layer (t=0, t=1) ... ");
     
     float c = 1.0f;
     float u[] = {1.5f, 0.3f, 0.4f};
@@ -199,7 +203,7 @@ bool test_lorentz_layer_interpolation() {
 // ============================================================================
 
 bool test_klein_distance_same_point() {
-    printf("🧪 Test: Klein distance (same point) ... ");
+    printf("Test: Klein distance (same point) ... ");
     
     float x[] = {0.1f, 0.2f};
     float c = 1.0f;
@@ -224,7 +228,7 @@ bool test_klein_distance_same_point() {
 // ============================================================================
 
 bool test_mobius_add_identity() {
-    printf("🧪 Test: Möbius add (identity) ... ");
+    printf("Test: Mobius add (identity) ... ");
     
     float u[] = {0.1f, 0.2f};
     float zero[] = {0.0f, 0.0f};
@@ -252,7 +256,7 @@ bool test_mobius_add_identity() {
 }
 
 bool test_mobius_scalar_zero() {
-    printf("🧪 Test: Möbius scalar (r=0) ... ");
+    printf("Test: Mobius scalar (r=0) ... ");
     
     float u[] = {0.3f, 0.4f};
     float c = 1.0f;
@@ -278,7 +282,7 @@ bool test_mobius_scalar_zero() {
 }
 
 bool test_mobius_scalar_identity() {
-    printf("🧪 Test: Möbius scalar (r=1) ... ");
+    printf("Test: Mobius scalar (r=1) ... ");
     
     float u[] = {0.1f, 0.2f};
     float c = 1.0f;
@@ -310,39 +314,39 @@ bool test_mobius_scalar_identity() {
 
 int main() {
     printf("\n");
-    printf("═══════════════════════════════════════════════════════\n");
-    printf("        CUDA 커널 단위 테스트\n");
-    printf("═══════════════════════════════════════════════════════\n\n");
+    printf("=======================================================\n");
+    printf("        CUDA kernel unit tests\n");
+    printf("=======================================================\n\n");
     
     int passed = 0;
     int total = 0;
     
-    // Poincaré tests
-    printf("📐 Poincaré Tests:\n");
+    // Poincare tests
+    printf("Poincare Tests:\n");
     total++; if (test_poincare_distance_same_point()) passed++;
     total++; if (test_poincare_distance_origin()) passed++;
     total++; if (test_poincare_ball_layer_interpolation()) passed++;
     
-    printf("\n🌐 Lorentz Tests:\n");
+    printf("\nLorentz Tests:\n");
     total++; if (test_lorentz_distance_same_point()) passed++;
     total++; if (test_lorentz_layer_interpolation()) passed++;
     
-    printf("\n🔷 Klein Tests:\n");
+    printf("\nKlein Tests:\n");
     total++; if (test_klein_distance_same_point()) passed++;
     
-    printf("\n➕ Möbius Tests:\n");
+    printf("\nMobius Tests:\n");
     total++; if (test_mobius_add_identity()) passed++;
     total++; if (test_mobius_scalar_zero()) passed++;
     total++; if (test_mobius_scalar_identity()) passed++;
     
-    printf("\n═══════════════════════════════════════════════════════\n");
-    printf("결과: %d/%d 테스트 통과", passed, total);
+    printf("\n=======================================================\n");
+    printf("Result: %d/%d tests passed", passed, total);
     if (passed == total) {
-        printf(" ✅\n");
+        printf(" [OK]\n");
     } else {
-        printf(" ❌\n");
+        printf(" [FAIL]\n");
     }
-    printf("═══════════════════════════════════════════════════════\n\n");
+    printf("=======================================================\n\n");
     
     return (passed == total) ? 0 : 1;
 }

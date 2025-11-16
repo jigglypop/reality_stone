@@ -1,21 +1,19 @@
-# Models module
-# Sentence-Topic LLM modules
-try:
-    from .sentence_topic_head import SentenceTopicHead
-    from .metric_router import MetricContextRouter
-    from .rce_lexical_decoder import RCELexicalDecoder
-    __all__ = ["SentenceTopicHead", "MetricContextRouter", "RCELexicalDecoder"]
-except ImportError:
-    __all__ = []
+from .hierarchical_sentence_topic_llm import (
+    HierarchicalLLMConfig,
+    HierarchicalSentenceTopicLLM,
+    SentenceTopicHead,
+    MetricContextRouter,
+    HierarchicalLMDecoder,
+    RCELexicalDecoder,
+    HAS_METRIKEY,
+)
 
-# Legacy modules (optional)
-try:
-    from .intent_clf import IntentClassifier, RiemannEncoderBlock, MeanMaxPooler, SinusoidalPositionalEncoding
-    from .rce_transformer import RCETransformerLM, TopDownRCETransformerLM, count_parameters
-    __all__.extend([
-        "IntentClassifier", "RiemannEncoderBlock", "MeanMaxPooler", 
-        "SinusoidalPositionalEncoding", "RCETransformerLM", 
-        "TopDownRCETransformerLM", "count_parameters"
-    ])
-except ImportError:
-    pass
+__all__ = [
+    "HierarchicalLLMConfig",
+    "HierarchicalSentenceTopicLLM",
+    "SentenceTopicHead",
+    "MetricContextRouter",
+    "HierarchicalLMDecoder",
+    "RCELexicalDecoder",
+    "HAS_METRIKEY",
+]

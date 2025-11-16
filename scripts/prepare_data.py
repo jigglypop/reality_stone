@@ -17,7 +17,7 @@ def prepare_dataset(
     input_file: str = "tests/data/text.txt",
     output_file: str = "data/processed_dataset.pt",
     max_paragraphs: int = 1000,
-    chunk_size: int = 1000  # 문자 단위
+    max_chars_per_paragraph: int = 4000,
 ):
     """
     데이터셋 전처리
@@ -31,38 +31,67 @@ def prepare_dataset(
     print(f"Loading data from {input_file}...")
     
     pre_segmenter = PreSegmenter(max_length=128, k_neighbors=3)
-    
+
     processed_data = []
-    
+
     try:
         with open(input_file, 'r', encoding='utf-8') as f:
-            buffer = ""
+            paragraph_lines = []
             paragraph_count = 0
-            
-            while paragraph_count < max_paragraphs:
-                # chunk_size만큼 읽기
-                chunk = f.read(chunk_size)
-                if not chunk:
-                    break
-                
-                buffer += chunk
-                
-                # 문단 분리 (빈 줄 기준)
-                paragraphs = buffer.split('\n\n')
-                
-                # 마지막 불완전한 문단은 버퍼에 유지
-                buffer = paragraphs[-1]
-                paragraphs = paragraphs[:-1]
-                
-                for para in paragraphs:
-                    para = para.strip()
-                    if len(para) < 20:  # 너무 짧은 문단 제외
+            current_chars = 0
+
+            for line in f:
+                # 빈 줄이면 문단 종료
+                if not line.strip():
+                    if paragraph_lines:
+                        para = " ".join(paragraph_lines).strip()
+                        paragraph_lines = []
+                        current_chars = 0
+
+                        if len(para) < 20:
+                            continue
+
+                        try:
+                            seg_output = pre_segmenter(para)
+
+                            if seg_output["metadata"]["num_sentences"] > 0:
+                                processed_data.append({
+                                    "paragraph": para,
+                                    "sentences": seg_output["sentences"],
+                                    "tokens": seg_output["tokens"],
+                                    "replacement_mask": seg_output["replacement_mask"],
+                                    "topo_idx": seg_output["topo_idx"],
+                                    "metadata": seg_output["metadata"]
+                                })
+
+                                paragraph_count += 1
+
+                                if paragraph_count % 100 == 0:
+                                    print(f"Processed {paragraph_count} paragraphs...")
+
+                                if paragraph_count >= max_paragraphs:
+                                    break
+                        except Exception as e:
+                            print(f"Error processing paragraph: {e}")
+                            continue
+                    continue
+
+                # 빈 줄이 아니면 문단에 추가
+                paragraph_lines.append(line.strip())
+                current_chars += len(line)
+
+                # 너무 길어지면 강제로 문단 종료 (빈 줄이 없어도)
+                if current_chars >= max_chars_per_paragraph:
+                    para = " ".join(paragraph_lines).strip()
+                    paragraph_lines = []
+                    current_chars = 0
+
+                    if len(para) < 20:
                         continue
-                    
+
                     try:
-                        # 전처리
                         seg_output = pre_segmenter(para)
-                        
+
                         if seg_output["metadata"]["num_sentences"] > 0:
                             processed_data.append({
                                 "paragraph": para,
@@ -72,18 +101,37 @@ def prepare_dataset(
                                 "topo_idx": seg_output["topo_idx"],
                                 "metadata": seg_output["metadata"]
                             })
-                            
+
                             paragraph_count += 1
-                            
+
                             if paragraph_count % 100 == 0:
                                 print(f"Processed {paragraph_count} paragraphs...")
-                            
+
                             if paragraph_count >= max_paragraphs:
                                 break
                     except Exception as e:
                         print(f"Error processing paragraph: {e}")
                         continue
-    
+
+            # 파일 끝까지 갔을 때 남은 문단 처리
+            if paragraph_count < max_paragraphs and paragraph_lines:
+                para = " ".join(paragraph_lines).strip()
+                if len(para) >= 20:
+                    try:
+                        seg_output = pre_segmenter(para)
+                        if seg_output["metadata"]["num_sentences"] > 0:
+                            processed_data.append({
+                                "paragraph": para,
+                                "sentences": seg_output["sentences"],
+                                "tokens": seg_output["tokens"],
+                                "replacement_mask": seg_output["replacement_mask"],
+                                "topo_idx": seg_output["topo_idx"],
+                                "metadata": seg_output["metadata"]
+                            })
+                    except Exception as e:
+                        print(f"Error processing last paragraph: {e}")
+                        # 계속 진행
+
     except FileNotFoundError:
         print(f"Error: {input_file} not found")
         return

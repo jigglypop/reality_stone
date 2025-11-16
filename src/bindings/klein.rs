@@ -1,5 +1,4 @@
 use crate::layers::klein;
-use crate::ops::mobius;
 use ndarray::Array2;
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray2};
 use pyo3::prelude::*;

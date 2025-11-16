@@ -1,6 +1,6 @@
 use pyo3::prelude::*;
-use numpy::{PyArray4, PyReadonlyArray2, PyReadonlyArray3, PyReadonlyArray4};
-use std::os::raw::c_void;
+use numpy::{IntoPyArray, PyArray4, PyReadonlyArray2, PyReadonlyArray3, PyReadonlyArray4};
+use ndarray::Array4;
 
 #[cfg(feature = "cuda")]
 extern "C" {
@@ -98,8 +98,7 @@ pub fn geodesic_topk_attention(
         let idx_ptr = idx.as_slice()?.as_ptr();
         let l_ptr = l_factor.as_slice()?.as_ptr();
 
-        // Allocate output
-        let out_shape = [b as usize, h as usize, t as usize, d_v as usize];
+        // Allocate output buffer (flattened)
         let out_size = (b * h * t * d_v) as usize;
         let mut out_vec = vec![0.0f32; out_size];
 
@@ -124,8 +123,14 @@ pub fn geodesic_topk_attention(
             );
         }
 
-        // Convert to numpy array
-        Ok(PyArray4::from_vec(py, out_vec, out_shape).to_owned())
+        // Convert to numpy Array4 and then to PyArray4
+        let out_shape = (b as usize, h as usize, t as usize, d_v as usize);
+        let out_array = Array4::from_shape_vec(out_shape, out_vec).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "Failed to reshape geodesic_topk_attention output: {e}"
+            ))
+        })?;
+        Ok(out_array.into_pyarray(py).to_owned())
     }
 }
 
@@ -138,8 +143,8 @@ pub fn geodesic_topk_attention(
 /// * Cholesky factors [B, T, d, d]
 #[pyfunction]
 pub fn batched_cholesky_cuda(
-    py: Python,
-    g: PyReadonlyArray4<f32>,
+    _py: Python,
+    _g: PyReadonlyArray4<f32>,
 ) -> PyResult<Py<PyArray4<f32>>> {
     #[cfg(not(feature = "cuda"))]
     {

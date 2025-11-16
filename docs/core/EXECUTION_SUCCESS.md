@@ -57,45 +57,26 @@ Sentence-Topic LLM - 실행 데모
 - **출력**: 문장 리스트, 토큰 텐서, replacement mask, topology index
 
 ### ✅ L1: SentenceTopicHead
-- **파일**: `python/reality_stone/models/sentence_topic_head.py`
+- **파일**: `python/reality_stone/models/hierarchical_sentence_topic_llm.py` (`SentenceTopicHead` 클래스)
 - **기능**: Poincaré embedding + Geodesic attention → 주제 분류
 - **출력**: 주제 확률 (8개 주제), 우선순위 점수, metric key seeds
 - **주제**: chief_complaint, history, physical_exam, diagnosis, treatment_plan, prognosis, follow_up, general
 
 ### ✅ L2: MetricContextRouter
-- **파일**: `python/reality_stone/models/metric_router.py`
+- **파일**: `python/reality_stone/models/hierarchical_sentence_topic_llm.py` (`MetricContextRouter` 클래스)
 - **기능**: Metric key → SPD 메트릭 합성 → Cholesky factorization
 - **출력**: `[B, T, d_head, d_head]` Cholesky factor (L)
 - **캐시**: 최대 1000개 메트릭 캐싱
 
-### ✅ L3: RCE-LexicalDecoder
-- **파일**: `python/reality_stone/models/rce_lexical_decoder.py`
-- **기능**: Geodesic attention + Lexical constraint → 토큰 생성
-- **제약**: 후보 집합 내에서만 토큰 선택, replacement_mask 준수
-- **출력**: 재작성된 토큰 ID, 제약된 logits
-
-### ✅ L4: API Server (구현 완료, 테스트 대기)
-- **파일**: `api/server.py`
-- **엔드포인트**: `POST /sentence_topic_rewrite`
-- **기능**: L0→L1→L2→L3 파이프라인 통합, JSON 응답
+### ✅ L3: Lexical / LM Decoder
+- **파일**: `python/reality_stone/models/hierarchical_sentence_topic_llm.py` (`RCELexicalDecoder`, `HierarchicalLMDecoder` 클래스)
+- **기능**: Lexical constraint 기반 토큰 재작성 또는 순수 LM 디코딩
 
 ## 실행 방법
 
 ### 데모 실행
 ```bash
 .venv/Scripts/python.exe demo.py
-```
-
-### API 서버 실행
-```bash
-.venv/Scripts/python.exe api/server.py
-```
-
-### API 테스트
-```bash
-curl -X POST http://localhost:8000/sentence_topic_rewrite \
-  -H "Content-Type: application/json" \
-  -d '{"paragraph": "양자역학은 모든 역학을 포함한다."}'
 ```
 
 ## 명세 준수 확인
@@ -123,10 +104,8 @@ curl -X POST http://localhost:8000/sentence_topic_rewrite \
 ## 다음 단계
 
 1. ✅ 데모 실행 완료
-2. ⏳ API 서버 실행 및 Postman 테스트
-3. ⏳ `tests/data/text.txt` 대용량 데이터셋 처리
-4. ⏳ 모델 학습 (`scripts/train.py`)
-5. ⏳ 평가 및 튜닝
+2. ⏳ `tests/data/text.txt` 대용량 데이터셋 처리
+3. ⏳ 모델 학습 및 튜닝 (`experiments/train_qa.py`, `python/reality_stone/models/hierarchical_sentence_topic_llm.py`)
 
 ---
 

@@ -1,3 +1,7 @@
+#ifdef _MSC_VER
+#pragma warning(disable : 4819)
+#endif
+
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
 #include <cmath>
@@ -10,7 +14,7 @@ __device__ void mobius_scalar_kernel_impl(const float* x, float* out, int dim, f
     float x_norm = fmaxf(sqrtf(x_norm_sq), eps);
     
     if (fabsf(c) < eps) {
-        // c = 0: 유클리드 경우
+        // c = 0: Euclidean case
         for (int i = 0; i < dim; ++i) {
             out[i] = r * x[i];
         }
@@ -19,14 +23,14 @@ __device__ void mobius_scalar_kernel_impl(const float* x, float* out, int dim, f
     
     float scale;
     if (c > 0.0f) {
-        // 양수 곡률
+        // Positive curvature
         float sqrt_c = sqrtf(c);
         float scn = fminf(sqrt_c * x_norm, 1.0f - eps);
         float alpha = atanhf(scn);
         float beta = tanhf(r * alpha);
         scale = beta / (sqrt_c * x_norm);
     } else {
-        // 음수 곡률
+        // Negative curvature
         float sqrt_abs_c = sqrtf(-c);
         float scn = sqrt_abs_c * x_norm;
         float alpha = atanf(scn);
@@ -83,7 +87,7 @@ __device__ void mobius_scalar_vjp(
     float x_norm = fmaxf(sqrtf(x_norm_sq), eps);
     
     if (fabsf(c) < eps) {
-        // c = 0: 유클리드 경우
+        // c = 0: Euclidean case
         for (int i = 0; i < dim; ++i) {
             grad_x[i] = r * grad_output_prime[i];
         }
@@ -94,7 +98,7 @@ __device__ void mobius_scalar_vjp(
     float grad_scale_factor;
     
     if (c > 0.0f) {
-        // 양수 곡률
+        // Positive curvature
         float sqrt_c = sqrtf(c);
         float scn = fminf(sqrt_c * x_norm, 1.0f - eps);
         float alpha = atanhf(scn);
@@ -105,7 +109,7 @@ __device__ void mobius_scalar_vjp(
         float inner_deriv_norm = (1.0f / fmaxf(1.0f - scn * scn, eps)) * (sqrt_c / x_norm);
         grad_scale_factor = inner_deriv_atanh * inner_deriv_norm / (sqrt_c * x_norm) - scale / x_norm;
     } else {
-        // 음수 곡률
+        // Negative curvature
         float sqrt_abs_c = sqrtf(-c);
         float scn = sqrt_abs_c * x_norm;
         float alpha = atanf(scn);
@@ -191,7 +195,7 @@ __device__ void mobius_add_vjp(
 }
 
 __device__ float poincare_distance_impl(const float* x, const float* y, int dim, float c, float eps) {
-    // Poincaré distance: d = (2/√c) * atanh(√(c * ||x-y||² / ((1-c||x||²)(1-c||y||²))))
+    // Poincare distance: d = (2/sqrt(c)) * atanh(sqrt(c * ||x-y||^2 / ((1-c||x||^2)(1-c||y||^2))))
     float norm_sq_diff = 0.0f;  // ||x-y||²
     float x2 = 0.0f;            // ||x||²
     float y2 = 0.0f;            // ||y||²
@@ -203,13 +207,13 @@ __device__ float poincare_distance_impl(const float* x, const float* y, int dim,
         y2 += y[i] * y[i];
     }
     
-    // frac = c * ||x-y||² / ((1-c||x||²)(1-c||y||²))
+    // frac = c * ||x-y||^2 / ((1-c||x||^2)(1-c||y||^2))
     float den = (1.0f - c * x2) * (1.0f - c * y2);
     den = fmaxf(den, eps);
     float frac = (c * norm_sq_diff) / den;
-    frac = fmaxf(frac, 0.0f);  // 음수 방지
+    frac = fmaxf(frac, 0.0f);  // clamp to non-negative
     
-    // d = (2/√c) * atanh(√frac)
+    // d = (2/sqrt(c)) * atanh(sqrt(frac))
     float sqrtc = sqrtf(c);
     float arg = sqrtf(frac);
     arg = fminf(arg, 1.0f - eps);  // atanh 정의역 제한

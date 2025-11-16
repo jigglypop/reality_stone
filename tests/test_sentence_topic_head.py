@@ -1,6 +1,6 @@
 import torch
 
-from python.reality_stone.models.sentence_topic_head import SentenceTopicHead
+from python.reality_stone.models import SentenceTopicHead
 
 
 def test_sentence_topic_head_output_shapes_and_probs():

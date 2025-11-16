@@ -1,7 +1,7 @@
 import torch
 import pytest
 
-from python.reality_stone.models.metric_router import MetricContextRouter, HAS_METRIKEY
+from python.reality_stone.models import MetricContextRouter, HAS_METRIKEY
 
 
 def test_metric_router_shape_and_spd():

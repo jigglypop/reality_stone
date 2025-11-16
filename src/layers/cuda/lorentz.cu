@@ -1,9 +1,14 @@
+#ifdef _MSC_VER
+#pragma warning(disable : 4819)
+#endif
+
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
 #include <cmath>
 
+#define LORENTZ_EPS 1e-7f
+
 namespace {
-    const float EPS = 1e-7f;
 
     __device__ inline float lorentz_inner_product(const float* u, const float* v, int dim) {
         float result = u[0] * v[0];
@@ -23,7 +28,7 @@ __global__ void lorentz_distance_kernel(float* out, const float* u, const float*
     const float* v_row = v + idx * dim;
     
     float inner = lorentz_inner_product(u_row, v_row, dim);
-    out[idx] = acoshf(fmaxf(-c * inner, 1.0f + EPS)) / sqrtf(c);
+    out[idx] = acoshf(fmaxf(-c * inner, 1.0f + LORENTZ_EPS)) / sqrtf(c);
 }
 
 // Lorentz Layer Forward CUDA Kernel (geodesic interpolation on hyperboloid)
@@ -40,9 +45,9 @@ __global__ void lorentz_layer_forward_kernel(float* out, const float* u, const f
         inner -= u_row[j] * v_row[j];
     }
     // alpha = acosh(max(c * <u,v>, 1+EPS))
-    float z = fmaxf(c * inner, 1.0f + EPS);
+    float z = fmaxf(c * inner, 1.0f + LORENTZ_EPS);
     float alpha = acoshf(z);
-    float sinh_alpha = fmaxf(sinhf(alpha), EPS);
+    float sinh_alpha = fmaxf(sinhf(alpha), LORENTZ_EPS);
     // weights
     float w1, w2;
     if (fabsf(alpha) < 1e-6f) {
@@ -76,9 +81,9 @@ __global__ void lorentz_layer_backward_kernel(
     // Minkowski inner and alpha
     float inner = p[0] * q[0];
     for (int j = 1; j < dim; ++j) inner -= p[j] * q[j];
-    float z = fmaxf(c * inner, 1.0f + EPS);
+    float z = fmaxf(c * inner, 1.0f + LORENTZ_EPS);
     float alpha = acoshf(z);
-    float sinh_alpha = fmaxf(sinhf(alpha), EPS);
+    float sinh_alpha = fmaxf(sinhf(alpha), LORENTZ_EPS);
     float cosh_alpha = coshf(alpha);
 
     // weights
@@ -94,7 +99,7 @@ __global__ void lorentz_layer_backward_kernel(
     // derivatives dw/dalpha
     float num1 = (1.0f - t) * coshf((1.0f - t) * alpha) * sinh_alpha - sinhf((1.0f - t) * alpha) * cosh_alpha;
     float num2 = t * coshf(t * alpha) * sinh_alpha - sinhf(t * alpha) * cosh_alpha;
-    float denom = fmaxf(sinh_alpha * sinh_alpha, EPS);
+    float denom = fmaxf(sinh_alpha * sinh_alpha, LORENTZ_EPS);
     float dw1_dalpha = (fabsf(alpha) < 1e-6f) ? 0.0f : (num1 / denom);
     float dw2_dalpha = (fabsf(alpha) < 1e-6f) ? 0.0f : (num2 / denom);
 

@@ -1,7 +1,7 @@
 import torch
 import pytest
 
-from python.reality_stone.models.rce_lexical_decoder import RCELexicalDecoder
+from python.reality_stone.models import RCELexicalDecoder
 
 
 def test_rce_decoder_shapes_and_mask_preservation():

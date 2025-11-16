@@ -1,9 +1,15 @@
+#ifdef _MSC_VER
+#pragma warning(disable : 4819)
+#endif
+
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
 #include <cmath>
+#include <cstdio>
+
+#define GEODESIC_EPS 1e-7f
 
 namespace {
-    const float EPS = 1e-7f;
     const int MAX_THREADS = 256;
 
     // Warp-level reduction
@@ -50,7 +56,7 @@ namespace {
         return val;
     }
 
-    // Poincaré geodesic distance
+    // Poincare geodesic distance
     __device__ inline float poincare_distance(
         const float* q, const float* k, int d_h, float c
     ) {
@@ -66,24 +72,24 @@ namespace {
         }
         
         // d = arccosh(1 + 2c||x-y||² / ((1-c||x||²)(1-c||y||²)))
-        float denom = fmaxf((1.0f - c*q_norm_sq) * (1.0f - c*k_norm_sq), EPS);
+        float denom = fmaxf((1.0f - c*q_norm_sq) * (1.0f - c*k_norm_sq), GEODESIC_EPS);
         float arg = 1.0f + 2.0f * c * dist_sq / denom;
-        return acoshf(fmaxf(arg, 1.0f + EPS));
+        return acoshf(fmaxf(arg, 1.0f + GEODESIC_EPS));
     }
 }
 
 /**
  * Fused Geodesic Top-k Attention Kernel
- * 
- * 한 커널에서 다음을 모두 수행:
- * 1. SPD metric 적용 (L @ Q, L @ K)
+ *
+ * This kernel performs the following in a single launch:
+ * 1. Apply SPD metric (L @ Q, L @ K)
  * 2. Top-k key gathering
- * 3. Geodesic distance 계산
+ * 3. Geodesic distance computation
  * 4. Softmax
  * 5. Weighted sum with values
- * 
- * 1 thread block = 1 query token
- * Shared memory를 활용하여 global memory I/O 최소화
+ *
+ * 1 thread block = 1 query token.
+ * Uses shared memory to minimize global memory traffic.
  */
 __global__ void geodesic_topk_attention_fused_kernel(
     // Inputs
@@ -95,8 +101,8 @@ __global__ void geodesic_topk_attention_fused_kernel(
     // Parameters
     const float c,                    // curvature
     const float tau,                  // temperature
-    const int B, const int H, 
-    const int T, const int K, 
+    const int B, const int H,
+    const int T, const int K_topk,
     const int d_h, const int d_v,
     // Output
     float* __restrict__ out           // [B, H, T, d_v]
@@ -111,9 +117,9 @@ __global__ void geodesic_topk_attention_fused_kernel(
     // Shared memory layout
     extern __shared__ float smem[];
     float* q_local = smem;                         // [d_h]
-    float* k_local = smem + d_h;                   // [K * d_h]
-    float* v_local = smem + d_h + K*d_h;           // [K * d_v]
-    float* scores = smem + d_h + K*(d_h + d_v);    // [K]
+    float* k_local = smem + d_h;                   // [K_topk * d_h]
+    float* v_local = smem + d_h + K_topk*d_h;      // [K_topk * d_v]
+    float* scores = smem + d_h + K_topk*(d_h + d_v); // [K_topk]
     
     // ============================================================
     // Step 1: Load Q and apply SPD metric L
@@ -134,8 +140,8 @@ __global__ void geodesic_topk_attention_fused_kernel(
     // ============================================================
     // Step 2: Load top-K keys and apply SPD metric
     // ============================================================
-    for (int k_idx = 0; k_idx < K; ++k_idx) {
-        const int64_t s = idx[(b*T + t)*K + k_idx];
+    for (int k_idx = 0; k_idx < K_topk; ++k_idx) {
+        const int64_t s = idx[(b*T + t)*K_topk + k_idx];
         
         for (int i = threadIdx.x; i < d_h; i += blockDim.x) {
             float k_transformed = 0.0f;
@@ -153,7 +159,7 @@ __global__ void geodesic_topk_attention_fused_kernel(
     // ============================================================
     // Step 3: Compute geodesic distances (parallel over K)
     // ============================================================
-    for (int k_idx = threadIdx.x; k_idx < K; k_idx += blockDim.x) {
+    for (int k_idx = threadIdx.x; k_idx < K_topk; k_idx += blockDim.x) {
         float dist = poincare_distance(
             q_local, 
             k_local + k_idx*d_h, 
@@ -171,41 +177,41 @@ __global__ void geodesic_topk_attention_fused_kernel(
     // ============================================================
     // 4a. Find max score
     float max_score = -1e9f;
-    for (int k_idx = threadIdx.x; k_idx < K; k_idx += blockDim.x) {
+    for (int k_idx = threadIdx.x; k_idx < K_topk; k_idx += blockDim.x) {
         max_score = fmaxf(max_score, scores[k_idx]);
     }
     max_score = blockReduceMax(max_score);
     if (threadIdx.x == 0) {
-        scores[K] = max_score;  // Store in extra slot
+        scores[K_topk] = max_score;  // Store in extra slot
     }
     __syncthreads();
-    max_score = scores[K];
+    max_score = scores[K_topk];
     
     // 4b. Compute exp and sum
     float sum_exp = 0.0f;
-    for (int k_idx = threadIdx.x; k_idx < K; k_idx += blockDim.x) {
+    for (int k_idx = threadIdx.x; k_idx < K_topk; k_idx += blockDim.x) {
         float exp_val = expf(scores[k_idx] - max_score);
         scores[k_idx] = exp_val;
         sum_exp += exp_val;
     }
     sum_exp = blockReduceSum(sum_exp);
     if (threadIdx.x == 0) {
-        scores[K] = sum_exp;  // Store in extra slot
+        scores[K_topk] = sum_exp;  // Store in extra slot
     }
     __syncthreads();
-    sum_exp = scores[K];
+    sum_exp = scores[K_topk];
     
     // 4c. Normalize
-    for (int k_idx = threadIdx.x; k_idx < K; k_idx += blockDim.x) {
-        scores[k_idx] /= fmaxf(sum_exp, EPS);
+    for (int k_idx = threadIdx.x; k_idx < K_topk; k_idx += blockDim.x) {
+        scores[k_idx] /= fmaxf(sum_exp, GEODESIC_EPS);
     }
     __syncthreads();
     
     // ============================================================
     // Step 5: Load values
     // ============================================================
-    for (int k_idx = 0; k_idx < K; ++k_idx) {
-        const int64_t s = idx[(b*T + t)*K + k_idx];
+    for (int k_idx = 0; k_idx < K_topk; ++k_idx) {
+        const int64_t s = idx[(b*T + t)*K_topk + k_idx];
         const int v_offset = ((b*H + h)*s)*d_v;
         
         for (int i = threadIdx.x; i < d_v; i += blockDim.x) {
@@ -220,7 +226,7 @@ __global__ void geodesic_topk_attention_fused_kernel(
     const int out_offset = ((b*H + h)*T + t)*d_v;
     for (int i = threadIdx.x; i < d_v; i += blockDim.x) {
         float sum = 0.0f;
-        for (int k_idx = 0; k_idx < K; ++k_idx) {
+        for (int k_idx = 0; k_idx < K_topk; ++k_idx) {
             sum += scores[k_idx] * v_local[k_idx*d_v + i];
         }
         out[out_offset + i] = sum;

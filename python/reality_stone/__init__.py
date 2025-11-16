@@ -15,13 +15,15 @@ if _so_file:
             sys.path.insert(0, str(_lib_path))
         from . import _rust
         _has_rust_ext = True
-        # CUDA 가용 여부는 PyTorch CUDA 가능 + Rust 확장에 CUDA 심볼 존재 여부 모두 확인
+        # CUDA 가용 여부는 PyTorch CUDA 가능 + Rust 확장에 필요한 CUDA 심볼 존재 여부를 함께 확인
         if torch.cuda.is_available():
+            # 현재 Python 레이어에서 직접 사용하는 CUDA 바인딩 검사
             required_cuda_symbols = [
                 # Möbius
                 'mobius_add_cuda',
                 'mobius_scalar_cuda',
                 # Poincaré
+                'poincare_ball_layer_cuda',
                 'poincare_ball_layer_backward_cuda',
                 'poincare_distance_cuda',
                 # Lorentz

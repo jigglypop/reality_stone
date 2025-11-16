@@ -26,12 +26,19 @@ fn main() {
             };
 
             // Use cc::Build for compiling CUDA files
-            cc::Build::new()
+            let mut build = cc::Build::new();
+            build
                 .cuda(true)
                 .flag("-arch=sm_70")
-                .include(format!("{}/include", cuda_path))
-                .file(file)
-                .compile(&lib_name);
+                .include(format!("{}/include", cuda_path));
+
+            // On Windows, force the *host* compiler to treat sources as UTF-8
+            // (use -Xcompiler so nvcc does not treat this as an extra input file).
+            if cfg!(target_os = "windows") {
+                build.flag("-Xcompiler=/utf-8");
+            }
+
+            build.file(file).compile(&lib_name);
 
             println!("cargo:rustc-link-lib=static={}", lib_name);
         }

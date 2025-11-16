@@ -1,12 +1,16 @@
 // src/layers/cuda/spline_kernel.cu
 
+#ifdef _MSC_VER
+#pragma warning(disable : 4819)
+#endif
+
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <device_launch_parameters.h>
 #include <cstdio>
 
-// 워프 내의 모든 스레드 값을 합산하는 헬퍼 함수
-// 이 함수는 호출되는 커널보다 먼저 정의되어야 합니다.
+// Warp-level helper to sum all thread values in a warp.
+// Must be defined before kernels that use it.
 __device__ inline float warpReduceSum(float val) {
     for (int offset = 16; offset > 0; offset /= 2) {
         val += __shfl_down_sync(0xFFFFFFFF, val, offset);
@@ -14,7 +18,7 @@ __device__ inline float warpReduceSum(float val) {
     return val;
 }
 
-// Catmull-Rom 스플라인 보간 커널
+// Catmull-Rom spline interpolation kernel
 __global__ void spline_interpolate_kernel(
     const float* __restrict__ control_points,  // (k+1) x in_features
     float* __restrict__ weights,               // out_features x in_features
@@ -30,23 +34,23 @@ __global__ void spline_interpolate_kernel(
     const int out_idx = tid / in_features;
     const int in_idx = tid % in_features;
     
-    // 출력 인덱스를 [0, 1] 범위로 정규화
+    // Normalize output index to [0, 1]
     const float t = (float)out_idx / (out_features - 1);
     const float t_scaled = t * k;
     
-    // 제어점 인덱스 계산 (클램핑 포함)
+    // Compute control point index (with clamping)
     int j = (int)floorf(t_scaled);
     j = max(1, min(j, k - 2));
     
     const float t_local = t_scaled - j;
     
-    // 4개의 제어점 로드
+    // Load 4 control points
     const float p0 = control_points[(j - 1) * in_features + in_idx];
     const float p1 = control_points[j * in_features + in_idx];
     const float p2 = control_points[(j + 1) * in_features + in_idx];
     const float p3 = control_points[(j + 2) * in_features + in_idx];
     
-    // Catmull-Rom 계수 계산
+    // Catmull-Rom coefficients
     const float t2 = t_local * t_local;
     const float t3 = t2 * t_local;
     
@@ -55,11 +59,11 @@ __global__ void spline_interpolate_kernel(
     const float c2 = -1.5f * t3 + 2.0f * t2 + 0.5f * t_local;
     const float c3 = 0.5f * t3 - 0.5f * t2;
     
-    // 보간된 값 계산
+    // Compute interpolated value
     weights[out_idx * in_features + in_idx] = c0 * p0 + c1 * p1 + c2 * p2 + c3 * p3;
 }
 
-// 스플라인 기반 GEMM 커널 (입력과 보간된 가중치의 행렬 곱셈)
+// Spline-based GEMM kernel (matrix multiply of input and interpolated weights)
 __global__ void spline_gemm_kernel(
     const float* __restrict__ input,           // batch_size x in_features
     const float* __restrict__ control_points,  // (k+1) x in_features
@@ -69,17 +73,17 @@ __global__ void spline_gemm_kernel(
     const int in_features,
     const int out_features
 ) {
-    // 블록당 하나의 출력 원소 계산
+    // Each block computes one output element
     const int batch_idx = blockIdx.y;
     const int out_idx = blockIdx.x;
     
     if (batch_idx >= batch_size || out_idx >= out_features) return;
     
-    // 공유 메모리에 입력 로드 (타일링)
+    // Load input into shared memory (tiling)
     extern __shared__ float shared_mem[];
     float* shared_input = shared_mem;
     
-    // 스플라인 파라미터 계산
+    // Compute spline parameters
     const float t = (float)out_idx / (out_features - 1);
     const float t_scaled = t * k;
     int j = (int)floorf(t_scaled);
@@ -95,13 +99,13 @@ __global__ void spline_gemm_kernel(
     const float c2 = -1.5f * t3 + 2.0f * t2 + 0.5f * t_local;
     const float c3 = 0.5f * t3 - 0.5f * t2;
     
-    // 입력을 공유 메모리에 로드
+    // Load input into shared memory
     for (int i = threadIdx.x; i < in_features; i += blockDim.x) {
         shared_input[i] = input[batch_idx * in_features + i];
     }
     __syncthreads();
     
-    // 내적 계산
+    // Compute inner product
     float sum = 0.0f;
     for (int i = threadIdx.x; i < in_features; i += blockDim.x) {
         // 4개의 제어점에서 보간
@@ -114,16 +118,16 @@ __global__ void spline_gemm_kernel(
         sum += shared_input[i] * weight;
     }
     
-    // 워프 리덕션
+    // Warp reduction
     sum = warpReduceSum(sum);
     
-    // 첫 번째 스레드가 결과 저장
+    // First thread stores the result
     if (threadIdx.x == 0) {
         output[batch_idx * out_features + out_idx] = sum;
     }
 }
 
-// FP16 버전 (Tensor Core 지원을 위한 준비)
+// FP16 version (placeholder for future Tensor Core optimization)
 __global__ void spline_gemm_fp16_kernel(
     const half* __restrict__ input,
     const half* __restrict__ control_points,
@@ -136,7 +140,7 @@ __global__ void spline_gemm_fp16_kernel(
     // TODO: FP16/Tensor Core 구현
 }
 
-// 역전파 커널: 제어점의 그래디언트를 계산
+// Backward kernel: compute gradients for control points
 __global__ void spline_backward_kernel(
     const float* __restrict__ grad_output,     // (batch_size, out_features)
     const float* __restrict__ input,           // (batch_size, in_features)
@@ -153,22 +157,22 @@ __global__ void spline_backward_kernel(
 
     float grad_sum = 0.0f;
 
-    // 모든 (batch, out_feature)에 대해 이 제어점의 기여도를 합산
+    // Accumulate this control point's contribution over all (batch, out_feature)
     for (int i = 0; i < batch_size; ++i) {
         for (int j = 0; j < out_features; ++j) {
             
-            // 1. 이 출력(j)을 계산할 때 이 제어점(cp_idx)이 사용되었는가?
+            // 1. Check whether this control point (cp_idx) is used for output j
             const float t = (float)j / (out_features - 1);
             const float t_scaled = t * k;
             const int p1_idx = max(1, min((int)floorf(t_scaled), k - 2));
 
-            // Catmull-Rom은 4개의 제어점을 사용 (p0, p1, p2, p3)
-            // p1의 인덱스가 j이므로, p0=j-1, p2=j+1, p3=j+2
+            // Catmull-Rom uses 4 control points (p0, p1, p2, p3)
+            // p1 index is j, so p0=j-1, p2=j+1, p3=j+2
             if (cp_idx < p1_idx - 1 || cp_idx > p1_idx + 2) {
-                continue; // 이 제어점은 사용되지 않음
+                continue; // this control point is not used
             }
 
-            // 2. 사용되었다면, 그래디언트 계수(Catmull-Rom 계수) 계산
+            // 2. If used, compute Catmull-Rom coefficient for this control point
             const float t_local = t_scaled - p1_idx;
             const float t2 = t_local * t_local;
             const float t3 = t2 * t_local;
@@ -184,18 +188,18 @@ __global__ void spline_backward_kernel(
                 c = 0.5f * t3 - 0.5f * t2;
             }
             
-            // 3. 체인룰 적용: dL/dCp = dL/dOut * dOut/dW * dW/dCp
+            // 3. Chain rule: dL/dCp = dL/dOut * dOut/dW * dW/dCp
             // dOut/dW = input,  dW/dCp = c
             grad_sum += grad_output[i * out_features + j] * input[i * in_features + in_f_idx] * c;
         }
     }
     
-    // 계산된 그래디언트를 원자적으로 더함
+    // Atomically accumulate the computed gradient
     atomicAdd(&grad_control_points[cp_idx * in_features + in_f_idx], grad_sum);
 }
 
 
-// C++ 인터페이스
+// C++ interface
 extern "C" {
 
 void spline_interpolate_cuda(
@@ -252,11 +256,11 @@ void spline_backward_cuda(
     int in_features,
     int out_features
 ) {
-    // 제어점 그래디언트 초기화
+    // Initialize control point gradients
     cudaMemset(grad_control_points, 0, (k + 1) * in_features * sizeof(float));
 
-    // 블록: 제어점 수 (k+1)
-    // 스레드: in_features
+    // Blocks: number of control points (k+1)
+    // Threads: in_features
     dim3 blocks(k + 1);
     dim3 threads(in_features);
     

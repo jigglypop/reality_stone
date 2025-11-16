@@ -1,3 +1,7 @@
+#ifdef _MSC_VER
+#pragma warning(disable : 4819)
+#endif
+
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
 #include <cstdint>
@@ -63,7 +67,7 @@ __global__ void mobius_scalar_kernel(float* out, const float* u, float c, float 
         }
         
         if (norm_sq < EPS * EPS) {
-            // 작은 벡터는 그대로 복사 (gradient flow 유지)
+            // For very small vectors, fall back to simple scaling to keep gradients stable
             for (int j = 0; j < dim; ++j) {
                 out_row[j] = r * u_row[j];
             }
@@ -73,7 +77,7 @@ __global__ void mobius_scalar_kernel(float* out, const float* u, float c, float 
         float norm = sqrtf(norm_sq);
         
         if (fabsf(c) < EPS) {
-            // c = 0: 유클리드 경우
+            // c = 0: Euclidean case
             for (int j = 0; j < dim; ++j) {
                 out_row[j] = r * u_row[j];
             }
@@ -82,14 +86,14 @@ __global__ void mobius_scalar_kernel(float* out, const float* u, float c, float 
         
         float scale;
         if (c > 0.0f) {
-            // 양수 곡률
+            // Positive curvature
             float sqrt_c = sqrtf(c);
             float scn = fminf(sqrt_c * norm, 1.0f - BOUNDARY_EPS);
             float alpha = atanhf(scn);
             float beta = tanhf(r * alpha);
             scale = beta / (sqrt_c * norm);
         } else {
-            // 음수 곡률: 복소수 수식을 실수로 계산
+            // Negative curvature (compute with real-valued formula)
             float sqrt_abs_c = sqrtf(-c);
             float scn = sqrt_abs_c * norm;
             float alpha = atanf(scn);

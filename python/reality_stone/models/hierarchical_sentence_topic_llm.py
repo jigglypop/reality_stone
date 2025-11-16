@@ -11,7 +11,7 @@ from reality_stone.layers.poincare import project_to_ball, poincare_distance
 from reality_stone.layers.lorentz import from_poincare, lorentz_distance
 from reality_stone.models.semantic_preservation import SemanticPreservationLoss
 from .pretrained_backbone import PretrainedBackbone
-from reality_stone.utils.pre_segmenter import PreSegmenter
+from reality_stone.utils.pre_segmenter import PreSegmenter, TreeNode, DocumentTree
 
 try:
     from reality_stone.data import SentenceTopicDataset, collate_batch
@@ -68,18 +68,101 @@ class HierarchicalLLMConfig:
     lambda_edit: float = 0.0
     max_edit_ratio: float = 0.25
     enable_structural_edit: bool = False
-    edit_budget: float = 0.25 
+    edit_budget: float = 0.25
+    use_fast_spd_mixing: bool = True
+    
+    logit_clip_value: float = 20.0
+    loss_clip_max: float = 100.0
+    spd_eps: float = 1e-5
+    spd_eigval_min: float = 1e-5
+    spd_eigval_max: float = 1e5
+    spd_log_eigval_clip: float = 10.0
+    metric_lambda_min: float = 0.1
+    metric_lambda_max: float = 5.0
+    grad_clip_norm: float = 1.0 
 
 
 class EditOperationHead(nn.Module):
-    def __init__(self, d_model: int, num_ops: int = 5) -> None:
+    def __init__(self, d_model: int, num_ops: int = 5, edit_budget: float = 0.25) -> None:
         super().__init__()
         self.d_model = d_model
         self.num_ops = num_ops
+        self.edit_budget = edit_budget
         self.proj = nn.Linear(d_model, num_ops)
+        self.value_proj = nn.Linear(d_model, d_model)
 
     def forward(self, hidden: torch.Tensor) -> torch.Tensor:
         return self.proj(hidden)
+    
+    def apply_edits(
+        self,
+        tokens: torch.Tensor,
+        edit_logits: torch.Tensor,
+        pred_tokens: torch.Tensor,
+        enable_structural: bool = False,
+        replacement_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        B, S = tokens.shape
+        device = tokens.device
+        
+        if not enable_structural:
+            if replacement_mask is not None:
+                return torch.where(replacement_mask.bool(), pred_tokens, tokens)
+            return tokens
+        
+        ops = torch.argmax(edit_logits, dim=-1)
+        max_edits = max(1, int(S * self.edit_budget))
+        
+        result_tokens = []
+        for b in range(B):
+            new_seq = []
+            insert_count = 0
+            delete_count = 0
+            replace_count = 0
+            
+            for i in range(S):
+                op = int(ops[b, i].item())
+                tok = int(tokens[b, i].item())
+                pred_tok = int(pred_tokens[b, i].item())
+                
+                if tok == 0:
+                    continue
+                
+                is_replaceable = True
+                if replacement_mask is not None:
+                    is_replaceable = bool(replacement_mask[b, i].item())
+                
+                if op == 0:
+                    new_seq.append(tok)
+                elif op == 1 and is_replaceable and replace_count < max_edits:
+                    new_seq.append(pred_tok)
+                    replace_count += 1
+                elif op == 2 and insert_count < max_edits:
+                    new_seq.append(pred_tok)
+                    new_seq.append(tok)
+                    insert_count += 1
+                elif op == 3 and insert_count < max_edits:
+                    new_seq.append(tok)
+                    new_seq.append(pred_tok)
+                    insert_count += 1
+                elif op == 4 and delete_count < max_edits:
+                    delete_count += 1
+                    continue
+                else:
+                    new_seq.append(tok)
+            
+            result_tokens.append(new_seq)
+        
+        if not result_tokens or all(len(seq) == 0 for seq in result_tokens):
+            return tokens
+        
+        max_len = max(len(seq) for seq in result_tokens)
+        padded = torch.zeros(B, max_len, dtype=torch.long, device=device)
+        for b, seq in enumerate(result_tokens):
+            if seq:
+                padded[b, :len(seq)] = torch.tensor(seq, dtype=torch.long, device=device)
+        
+        return padded
 
 
 class SentenceOrderHead(nn.Module):
@@ -91,6 +174,145 @@ class SentenceOrderHead(nn.Module):
     def forward(self, sentence_embeddings: torch.Tensor) -> torch.Tensor:
         scores = self.proj(sentence_embeddings)
         return scores.squeeze(-1)
+
+
+class TreeNodeOperator(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        manifold: str = "poincare",
+        c: float = 1e-3,
+        enable_dynamic_manifold: bool = False,
+    ) -> None:
+        super().__init__()
+        self.d_model = d_model
+        self.manifold = manifold
+        self.c = c
+        self.enable_dynamic_manifold = enable_dynamic_manifold
+        self.aggregator = RiemannianAggregation(d_model, manifold, c, temperature=1.0)
+        
+        if enable_dynamic_manifold:
+            self.manifold_selector = nn.Sequential(
+                nn.Linear(d_model, d_model // 2),
+                nn.ReLU(),
+                nn.Linear(d_model // 2, 3),
+            )
+            self.aggregator_poincare = RiemannianAggregation(d_model, "poincare", c, temperature=1.0)
+            self.aggregator_lorentz = RiemannianAggregation(d_model, "lorentz", c, temperature=1.0)
+            self.aggregator_klein = RiemannianAggregation(d_model, "klein", c, temperature=1.0)
+    
+    def up_operator(
+        self,
+        children_embeddings: torch.Tensor,
+        metric_ctx: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if not self.enable_dynamic_manifold:
+            return self.aggregator(children_embeddings, metric_ctx)
+        
+        B = children_embeddings.shape[0]
+        mean_emb = children_embeddings.mean(dim=1)
+        manifold_logits = self.manifold_selector(mean_emb)
+        manifold_probs = torch.softmax(manifold_logits, dim=-1)
+        
+        result_poincare = self.aggregator_poincare(children_embeddings, metric_ctx)
+        result_lorentz = self.aggregator_lorentz(children_embeddings, metric_ctx)
+        result_klein = self.aggregator_klein(children_embeddings, metric_ctx)
+        
+        results = torch.stack([result_poincare, result_lorentz, result_klein], dim=1)
+        weighted_result = (results * manifold_probs.unsqueeze(-1)).sum(dim=1)
+        
+        return weighted_result
+    
+    def down_operator(
+        self,
+        parent_embedding: torch.Tensor,
+        num_children: int,
+        metric_ctx: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        B = parent_embedding.shape[0]
+        parent_exp = parent_embedding.unsqueeze(1).expand(B, num_children, self.d_model)
+        
+        if self.enable_dynamic_manifold and hasattr(self, 'manifold_selector'):
+            manifold_logits = self.manifold_selector(parent_embedding)
+            manifold_probs = torch.softmax(manifold_logits, dim=-1)
+            
+            noise = torch.randn_like(parent_exp) * 0.01
+            parent_exp = parent_exp + noise
+        
+        return parent_exp
+
+
+class LevelInvariantTreeProcessor(nn.Module):
+    def __init__(self, d_model: int, enable_dynamic_manifold: bool = False) -> None:
+        super().__init__()
+        self.d_model = d_model
+        self.enable_dynamic_manifold = enable_dynamic_manifold
+        self.node_operators: Dict[str, TreeNodeOperator] = nn.ModuleDict({
+            "document": TreeNodeOperator(d_model, "poincare", 1e-3, enable_dynamic_manifold),
+            "paragraph": TreeNodeOperator(d_model, "poincare", 1e-3, enable_dynamic_manifold),
+            "sentence": TreeNodeOperator(d_model, "poincare", 1e-3, enable_dynamic_manifold),
+            "token": TreeNodeOperator(d_model, "poincare", 1e-3, enable_dynamic_manifold),
+        })
+    
+    def process_tree(
+        self,
+        tree: DocumentTree,
+        node_embeddings: Dict[int, torch.Tensor],
+        direction: str = "up",
+    ) -> Dict[int, torch.Tensor]:
+        result_embeddings = {}
+        
+        if direction == "up":
+            sorted_nodes = sorted(tree.nodes, key=lambda n: -self._depth(tree, n.id))
+            for node in sorted_nodes:
+                children_ids = tree.children(node.id)
+                if not children_ids:
+                    result_embeddings[node.id] = node_embeddings[node.id]
+                else:
+                    children_embs = torch.stack([result_embeddings[cid] for cid in children_ids])
+                    if children_embs.dim() == 2:
+                        children_embs = children_embs.unsqueeze(0)
+                    
+                    operator = self.node_operators[node.type] if node.type in self.node_operators else None
+                    if operator:
+                        result_embeddings[node.id] = operator.up_operator(children_embs).squeeze(0)
+                    else:
+                        result_embeddings[node.id] = children_embs.mean(dim=1).squeeze(0)
+        
+        elif direction == "down":
+            sorted_nodes = sorted(tree.nodes, key=lambda n: self._depth(tree, n.id))
+            for node in sorted_nodes:
+                children_ids = tree.children(node.id)
+                if node.id in result_embeddings:
+                    parent_emb = result_embeddings[node.id]
+                elif node.id in node_embeddings:
+                    parent_emb = node_embeddings[node.id]
+                else:
+                    continue
+                
+                if children_ids:
+                    operator = self.node_operators[node.type] if node.type in self.node_operators else None
+                    if operator:
+                        parent_emb_batched = parent_emb.unsqueeze(0) if parent_emb.dim() == 1 else parent_emb
+                        children_embs = operator.down_operator(parent_emb_batched, len(children_ids))
+                        for idx, cid in enumerate(children_ids):
+                            result_embeddings[cid] = children_embs[0, idx]
+        
+        return result_embeddings
+    
+    def _depth(self, tree: DocumentTree, node_id: int) -> int:
+        if not hasattr(self, '_depth_cache'):
+            self._depth_cache = {}
+        if node_id in self._depth_cache:
+            return self._depth_cache[node_id]
+        
+        node = next((n for n in tree.nodes if n.id == node_id), None)
+        if node is None or node.parent is None:
+            self._depth_cache[node_id] = 0
+            return 0
+        depth = 1 + self._depth(tree, node.parent)
+        self._depth_cache[node_id] = depth
+        return depth
 
 
 def compute_dynamic_lambda(
@@ -189,31 +411,28 @@ class SentenceTopicHead(nn.Module):
         attn_out = self.out_proj(attn_out)
 
         logits = self.topic_classifier(attn_out)
-        logits = torch.nan_to_num(logits, nan=0.0, posinf=0.0, neginf=0.0)
+        logits = torch.clamp(logits, min=-10.0, max=10.0)
         P_topic = F.softmax(logits, dim=-1)
-        P_topic = torch.nan_to_num(
-            P_topic,
-            nan=1.0 / max(1, self.num_topics),
-            posinf=1.0 / max(1, self.num_topics),
-            neginf=1.0 / max(1, self.num_topics),
-        )
+        P_topic = P_topic + 1e-8
+        P_topic = P_topic / P_topic.sum(dim=-1, keepdim=True)
 
         scores, _ = logits.max(dim=-1)
-        scores = torch.nan_to_num(scores, nan=0.0, posinf=0.0, neginf=0.0)
+        scores = torch.clamp(scores, min=-10.0, max=10.0)
 
         metric_keys: List[str] = []
-        for b in range(B):
-            for t in range(T):
-                top_topic = int(P_topic[b, t].argmax().item())
-                topic_name = self.topic_names[top_topic] if 0 <= top_topic < len(self.topic_names) else "general"
-                score_val = float(scores[b, t].item())
-                if score_val > 1.0:
-                    priority = "high"
-                elif score_val > 0.0:
-                    priority = "medium"
-                else:
-                    priority = "low"
-                metric_keys.append(f"topic:{topic_name}|priority:{priority}")
+        with torch.no_grad():
+            for b in range(B):
+                for t in range(T):
+                    top_topic = int(P_topic[b, t].argmax().item())
+                    topic_name = self.topic_names[top_topic] if 0 <= top_topic < len(self.topic_names) else "general"
+                    score_val = float(scores[b, t].item())
+                    if score_val > 1.0:
+                        priority = "high"
+                    elif score_val > 0.0:
+                        priority = "medium"
+                    else:
+                        priority = "low"
+                    metric_keys.append(f"topic:{topic_name}|priority:{priority}")
 
         return P_topic, scores, metric_keys
 
@@ -233,6 +452,7 @@ class MetricContextRouter(nn.Module):
         lambda_max: float = 2.0,
         cache_size: int = 1000,  
         score_quantize: float = 0.1,
+        spd_eps: float = 1e-5,
     ) -> None:
         super().__init__()
         self.d_head = d_head
@@ -240,8 +460,9 @@ class MetricContextRouter(nn.Module):
         self.lambda_max = lambda_max
         self.cache_size = cache_size
         self.score_quantize = score_quantize
+        self.spd_eps = spd_eps
         from collections import OrderedDict
-        self._cache: OrderedDict[Tuple[str, float], torch.Tensor] = OrderedDict()
+        self._cache: OrderedDict[Tuple[str, float, str], torch.Tensor] = OrderedDict()
 
         try:
             import reality_stone.metrikey as metrikey  # type: ignore
@@ -252,15 +473,18 @@ class MetricContextRouter(nn.Module):
             self._has_metrikey = False
 
     def _clamp_eigen(self, G: torch.Tensor) -> torch.Tensor:
-        try:
-            eigvals, eigvecs = torch.linalg.eigh(G)
-            eigvals = torch.clamp(eigvals, self.lambda_min, self.lambda_max)
-            return eigvecs @ torch.diag_embed(eigvals) @ eigvecs.transpose(-2, -1)
-        except Exception:
-            return G
+        G_sym = (G + G.transpose(-2, -1)) / 2.0
+        G_sym = G_sym + torch.eye(G.shape[-1], device=G.device, dtype=G.dtype) * self.spd_eps
+        
+        eigvals, eigvecs = torch.linalg.eigh(G_sym)
+        eigvals = torch.clamp(eigvals, self.lambda_min, self.lambda_max)
+        result = eigvecs @ torch.diag_embed(eigvals) @ eigvecs.transpose(-2, -1)
+        
+        result = (result + result.transpose(-2, -1)) / 2.0
+        return result
 
-    def _make_metric(self, key: str, score_q: float) -> torch.Tensor:
-        cache_key = (key, score_q)
+    def _make_metric(self, key: str, score_q: float, device: torch.device) -> torch.Tensor:
+        cache_key = (key, score_q, str(device))
         
         if cache_key in self._cache:
             self._cache.move_to_end(cache_key)
@@ -275,16 +499,17 @@ class MetricContextRouter(nn.Module):
                     max_lambda=self.lambda_max,
                     masses=[score_q],
                 )
+                G = G.to(device)
             except Exception:
-                G = torch.eye(self.d_head)
+                scale = 1.0 + score_q * 0.1
+                G = torch.eye(self.d_head, device=device) * scale
         else:
-            G = torch.eye(self.d_head)
+            scale = 1.0 + score_q * 0.1
+            G = torch.eye(self.d_head, device=device) * scale
 
         G = self._clamp_eigen(G)
-        try:
-            L = torch.linalg.cholesky(G)
-        except Exception:
-            L = torch.eye(self.d_head)
+        G_reg = G + torch.eye(self.d_head, device=device) * self.spd_eps
+        L = torch.linalg.cholesky(G_reg)
 
         if len(self._cache) >= self.cache_size:
             self._cache.popitem(last=False)
@@ -294,51 +519,64 @@ class MetricContextRouter(nn.Module):
 
     def forward(self, metric_keys: List[str], scores: torch.Tensor) -> torch.Tensor:
         B, T = scores.shape
-        scores_clean = torch.nan_to_num(scores, nan=0.0, posinf=0.0, neginf=0.0)
-        scores_flat = scores_clean.flatten()
+        device = scores.device
+        scores = torch.clamp(scores, min=-10.0, max=10.0)
+        scores_flat = scores.flatten()
 
         L_list: List[torch.Tensor] = []
-        for i, key in enumerate(metric_keys):
-            score_val = float(scores_flat[i].item())
-            if not (float("-inf") < score_val < float("inf")):
-                score_val = 0.0
-            score_quantized = round(score_val / self.score_quantize) * self.score_quantize
-            L = self._make_metric(key, score_quantized)
-            L_list.append(L)
+        with torch.no_grad():
+            for i, key in enumerate(metric_keys):
+                score_val = float(scores_flat[i].item())
+                if not (float("-inf") < score_val < float("inf")):
+                    score_val = 0.0
+                score_quantized = round(score_val / self.score_quantize) * self.score_quantize
+                L = self._make_metric(key, score_quantized, device)
+                L_list.append(L)
         L_stack = torch.stack(L_list, dim=0)
         return L_stack.view(B, T, self.d_head, self.d_head)
 
 
-def _spd_log_euclidean_mean(spd_matrices: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
+def _spd_log_euclidean_mean(
+    spd_matrices: torch.Tensor, 
+    weights: torch.Tensor,
+    eps: float = 1e-5,
+    eigval_min: float = 1e-5,
+    eigval_max: float = 1e5,
+    log_clip: float = 10.0,
+) -> torch.Tensor:
     B, N, d, _ = spd_matrices.shape
     device = spd_matrices.device
     dtype = spd_matrices.dtype
     
-    eps_eye = torch.eye(d, device=device, dtype=dtype) * 1e-6
+    eps_eye = torch.eye(d, device=device, dtype=dtype) * eps
     spd_matrices = spd_matrices + eps_eye.view(1, 1, d, d)
     
-    log_matrices = torch.zeros_like(spd_matrices)
-    for b in range(B):
-        for n in range(N):
-            try:
-                eigvals, eigvecs = torch.linalg.eigh(spd_matrices[b, n])
-                eigvals = eigvals.clamp(min=1e-6)
-                log_eigvals = torch.log(eigvals)
-                log_matrices[b, n] = eigvecs @ torch.diag(log_eigvals) @ eigvecs.T
-            except Exception:
-                log_matrices[b, n] = torch.eye(d, device=device, dtype=dtype)
+    spd_flat = spd_matrices.reshape(B * N, d, d)
+    eigvals, eigvecs = torch.linalg.eigh(spd_flat)
+    eigvals = eigvals.clamp(min=eigval_min, max=eigval_max)
+    log_eigvals = torch.log(eigvals)
+    
+    log_matrices_flat = torch.bmm(
+        torch.bmm(eigvecs, torch.diag_embed(log_eigvals)),
+        eigvecs.transpose(-2, -1)
+    )
+    log_matrices = log_matrices_flat.reshape(B, N, d, d)
     
     w = weights.view(B, N, 1, 1)
     log_mean = (w * log_matrices).sum(dim=1)
     
-    result = torch.zeros(B, d, d, device=device, dtype=dtype)
-    for b in range(B):
-        try:
-            eigvals, eigvecs = torch.linalg.eigh(log_mean[b])
-            exp_eigvals = torch.exp(eigvals)
-            result[b] = eigvecs @ torch.diag(exp_eigvals) @ eigvecs.T
-        except Exception:
-            result[b] = (w[b] * spd_matrices[b]).sum(dim=0)
+    eigvals_mean, eigvecs_mean = torch.linalg.eigh(log_mean)
+    eigvals_mean = eigvals_mean.clamp(min=-log_clip, max=log_clip)
+    exp_eigvals = torch.exp(eigvals_mean)
+    exp_eigvals = exp_eigvals.clamp(min=eigval_min, max=eigval_max)
+    
+    result = torch.bmm(
+        torch.bmm(eigvecs_mean, torch.diag_embed(exp_eigvals)),
+        eigvecs_mean.transpose(-2, -1)
+    )
+    
+    result = (result + result.transpose(-2, -1)) / 2.0
+    result = result + eps_eye
     
     return result
 
@@ -350,33 +588,61 @@ class SPDMetricMixer(nn.Module):
         gamma_up: float = 0.3,
         gamma_self: float = 0.5,
         gamma_down: float = 0.2,
+        use_fast_mixing: bool = True,
+        spd_eps: float = 1e-5,
+        spd_eigval_min: float = 1e-5,
+        spd_eigval_max: float = 1e5,
+        spd_log_eigval_clip: float = 10.0,
     ) -> None:
         super().__init__()
         self.d_head = d_head
-        self.gamma_up = gamma_up
-        self.gamma_self = gamma_self
-        self.gamma_down = gamma_down
+        self.use_fast_mixing = use_fast_mixing
+        self.spd_eps = spd_eps
+        self.spd_eigval_min = spd_eigval_min
+        self.spd_eigval_max = spd_eigval_max
+        self.spd_log_eigval_clip = spd_log_eigval_clip
+        self.gamma_up = nn.Parameter(torch.tensor(gamma_up))
+        self.gamma_self = nn.Parameter(torch.tensor(gamma_self))
+        self.gamma_down = nn.Parameter(torch.tensor(gamma_down))
 
     def mix_hierarchy(
         self,
-        parent_metric: torch.Tensor,   # [B*, d,d]
-        self_metric: torch.Tensor,     # [B*, d,d]
-        children_metrics: Optional[torch.Tensor] = None,  # [B*, N_child,d,d]
+        parent_metric: torch.Tensor,
+        self_metric: torch.Tensor,
+        children_metrics: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         B, d, _ = self_metric.shape
+        
+        gamma_up = torch.abs(self.gamma_up) + 1e-6
+        gamma_self = torch.abs(self.gamma_self) + 1e-6
+        gamma_down = torch.abs(self.gamma_down) + 1e-6
+        
         mats = [parent_metric, self_metric]
-        ws = [self.gamma_up, self.gamma_self]
+        ws_raw = [gamma_up, gamma_self]
 
-        if children_metrics is not None and children_metrics.size(1) > 0 and self.gamma_down > 0.0:
-            child_mean = children_metrics.mean(dim=1)  # [B,d,d]
+        if children_metrics is not None and children_metrics.size(1) > 0:
+            child_mean = children_metrics.mean(dim=1)
             mats.append(child_mean)
-            ws.append(self.gamma_down)
+            ws_raw.append(gamma_down)
 
-        w_sum = sum(ws)
-        ws_norm = [w / w_sum for w in ws]
-        mats_tensor = torch.stack(mats, dim=1)  # [B,N,d,d]
-        w_tensor = torch.tensor(ws_norm, device=self_metric.device, dtype=self_metric.dtype).view(1, -1).expand(B, -1)
-        return _spd_log_euclidean_mean(mats_tensor, w_tensor)
+        ws_tensor = torch.stack(ws_raw)
+        ws_norm = F.softmax(ws_tensor, dim=0)
+        
+        if self.use_fast_mixing:
+            mats_tensor = torch.stack(mats, dim=1)
+            result = (ws_norm.view(1, -1, 1, 1) * mats_tensor).sum(dim=1)
+            return result
+        else:
+            mats_tensor = torch.stack(mats, dim=1)
+            w_expanded = ws_norm.view(1, -1).expand(B, -1)
+            return _spd_log_euclidean_mean(
+                mats_tensor, 
+                w_expanded,
+                eps=self.spd_eps,
+                eigval_min=self.spd_eigval_min,
+                eigval_max=self.spd_eigval_max,
+                log_clip=self.spd_log_eigval_clip,
+            )
 
 
 class RCELexicalDecoder(nn.Module):
@@ -407,7 +673,6 @@ class RCELexicalDecoder(nn.Module):
         device = input_ids.device
         x = self.token_embed(input_ids.clamp(min=0, max=self.vocab_size - 1))
         logits = self.lm_head(x)
-        logits = torch.nan_to_num(logits, nan=0.0, posinf=0.0, neginf=0.0)
         if replacement_mask is None:
             replacement_mask = torch.ones_like(input_ids)
         if candidates is None:
@@ -493,6 +758,9 @@ class _DecoderBlock(nn.Module):
         self.q_proj = nn.Linear(d_model, d_model)
         self.k_proj = nn.Linear(d_model, d_model)
         self.v_proj = nn.Linear(d_model, d_model)
+        
+        self.lambda_p = nn.Parameter(torch.tensor(0.5))
+        self.lambda_l = nn.Parameter(torch.tensor(0.5))
         # geodesic product attention 용 MetricAttention (SPDMetric만 재사용)
         self.attn = MetricAttention(
             hidden_size=d_h,
@@ -604,9 +872,13 @@ class _DecoderBlock(nn.Module):
         d_l = lorentz_distance(q_l, k_l, c_l)  # [N_pairs]
 
         # Product manifold distance^2 = λ_p d_p^2 + λ_l d_l^2
-        lambda_p = 0.5
-        lambda_l = 0.5
-        d2_total = lambda_p * (d_p ** 2) + lambda_l * (d_l ** 2)
+        # 논문 Section 3.3 & 9.5: 학습 가능한 manifold 가중치
+        lambda_p = torch.sigmoid(self.lambda_p)
+        lambda_l = torch.sigmoid(self.lambda_l)
+        lambda_sum = lambda_p + lambda_l + 1e-8
+        lambda_p_norm = lambda_p / lambda_sum
+        lambda_l_norm = lambda_l / lambda_sum
+        d2_total = lambda_p_norm * (d_p ** 2) + lambda_l_norm * (d_l ** 2)
         d2 = d2_total.reshape(B, H, S, K)  # [B,H,S,K]
 
         # scores = -d^2 / τ
@@ -680,16 +952,23 @@ class HierarchicalSentenceTopicLLM(nn.Module):
         # L2: MetricContextRouter (MetriKey 기반 SPD metric slots)
         self.metric_router = MetricContextRouter(
             d_head=config.d_head,
-            lambda_min=0.1,
-            lambda_max=5.0,
+            lambda_min=config.metric_lambda_min,
+            lambda_max=config.metric_lambda_max,
+            spd_eps=config.spd_eps,
         )
         
         # L2.5: SPD Metric Mixer (barycenter-based mixing)
+        use_fast_mixing = getattr(config, "use_fast_spd_mixing", True)
         self.metric_mixer = SPDMetricMixer(
             d_head=config.d_head,
             gamma_up=config.gamma_up,
             gamma_self=config.gamma_self,
             gamma_down=config.gamma_down,
+            use_fast_mixing=use_fast_mixing,
+            spd_eps=config.spd_eps,
+            spd_eigval_min=config.spd_eigval_min,
+            spd_eigval_max=config.spd_eigval_max,
+            spd_log_eigval_clip=config.spd_log_eigval_clip,
         )
 
         if config.use_pretrained_embeddings:
@@ -719,8 +998,11 @@ class HierarchicalSentenceTopicLLM(nn.Module):
             manifold=config.manifold_sentence,
             c=config.c_poincare,
         )
-        self.edit_head = EditOperationHead(config.d_model, num_ops=5)
+        self.edit_head = EditOperationHead(config.d_model, num_ops=5, edit_budget=config.edit_budget)
         self.sentence_order_head = SentenceOrderHead(config.d_model)
+        
+        enable_dynamic_manifold = getattr(config, "enable_dynamic_manifold", False)
+        self.tree_processor = LevelInvariantTreeProcessor(config.d_model, enable_dynamic_manifold)
         
         # Freeze backbone if specified (문서 7.1절: pretrain 후 거의 고정)
         # 현재는 pretrain이 없으므로 freeze하지 않음
@@ -867,12 +1149,88 @@ class HierarchicalSentenceTopicLLM(nn.Module):
             tokens,
             metric_ctx_sentence=metric_ctx_sentence,
         )
+    
+    def _encode_with_tree_processor(
+        self,
+        tokens: torch.Tensor,
+        trees: List[DocumentTree],
+        direction: str = "up",
+        metric_ctx: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        B, T, L = tokens.shape
+        device = tokens.device
+        
+        sentence_embeddings_list = []
+        
+        for b in range(B):
+            tree = trees[b] if b < len(trees) else None
+            if tree is None:
+                sent_emb = self.encode_tokens_to_sentences(tokens[b:b+1])
+                sentence_embeddings_list.append(sent_emb[0])
+                continue
+            
+            node_embeddings: Dict[int, torch.Tensor] = {}
+            
+            sentence_nodes = [n for n in tree.nodes if n.type == "sentence"]
+            if len(sentence_nodes) > T:
+                sentence_nodes = sentence_nodes[:T]
+            
+            for sent_idx, sent_node in enumerate(sentence_nodes):
+                if sent_idx >= T:
+                    break
+                token_embs = self.token_embed(tokens[b, sent_idx].clamp(0, self.config.vocab_size - 1))
+                if isinstance(token_embs, torch.Tensor) and token_embs.dim() == 2:
+                    token_embs = token_embs.unsqueeze(0)
+                
+                sent_metric = metric_ctx[b, sent_idx] if metric_ctx is not None else None
+                sent_emb = self.sentence_aggregator(token_embs, metric_ctx=sent_metric)
+                
+                if sent_emb.dim() == 1:
+                    sent_emb = sent_emb.unsqueeze(0)
+                
+                node_embeddings[sent_node.id] = sent_emb.squeeze(0)
+            
+            if direction == "up":
+                processed_embs = self.tree_processor.process_tree(
+                    tree,
+                    node_embeddings,
+                    direction="up",
+                )
+                
+                sent_embs_batch = []
+                for sent_node in sentence_nodes[:T]:
+                    if sent_node.id in processed_embs:
+                        sent_embs_batch.append(processed_embs[sent_node.id])
+                    elif sent_node.id in node_embeddings:
+                        sent_embs_batch.append(node_embeddings[sent_node.id])
+                    else:
+                        sent_embs_batch.append(torch.zeros(self.config.d_model, device=device))
+                
+                while len(sent_embs_batch) < T:
+                    sent_embs_batch.append(torch.zeros(self.config.d_model, device=device))
+                
+                sentence_embeddings_list.append(torch.stack(sent_embs_batch[:T]))
+            else:
+                sent_embs_batch = []
+                for sent_node in sentence_nodes[:T]:
+                    if sent_node.id in node_embeddings:
+                        sent_embs_batch.append(node_embeddings[sent_node.id])
+                    else:
+                        sent_embs_batch.append(torch.zeros(self.config.d_model, device=device))
+                
+                while len(sent_embs_batch) < T:
+                    sent_embs_batch.append(torch.zeros(self.config.d_model, device=device))
+                
+                sentence_embeddings_list.append(torch.stack(sent_embs_batch[:T]))
+        
+        return torch.stack(sentence_embeddings_list, dim=0)
 
 
     def forward(
         self,
         batch: Dict[str, torch.Tensor],
         compute_loss: bool = True,
+        use_tree_processing: bool = False,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """
         한 배치에 대해 전체 L1–L3 파이프라인을 통과시키고,
@@ -882,7 +1240,9 @@ class HierarchicalSentenceTopicLLM(nn.Module):
             batch:
                 - "tokens": [B, T, L]
                 - "topo_idx": [B, T, K]
+                - "tree": Optional[List[DocumentTree]] - 트리 구조 (배치별)
             compute_loss: 손실 계산 여부
+            use_tree_processing: 트리 프로세서 사용 여부
 
         Returns:
             logits: [B, S, V] (토큰 시퀀스에 대한 다음 토큰 분포, S = T*L 또는 LM 시퀀스 길이)
@@ -898,6 +1258,7 @@ class HierarchicalSentenceTopicLLM(nn.Module):
         """
         tokens = batch["tokens"]          # [B, T, L]
         topo_idx = batch["topo_idx"]      # [B, T, K]
+        trees = batch.get("tree", None)   # Optional[List[DocumentTree]]
 
         device = next(self.parameters()).device
         tokens = tokens.to(device)
@@ -907,8 +1268,10 @@ class HierarchicalSentenceTopicLLM(nn.Module):
 
         # ========== 상향식 인코딩 (Bottom-up) ==========
         # Step 1: 토큰 → 문장 (Riemannian message passing)
-        # 초기에는 metric 없이 인코딩
-        sentence_embeddings_raw = self.encode_tokens_to_sentences(tokens)  # [B, T, d_model]
+        if use_tree_processing and trees is not None and len(trees) > 0:
+            sentence_embeddings_raw = self._encode_with_tree_processor(tokens, trees, direction="up")  # [B, T, d_model]
+        else:
+            sentence_embeddings_raw = self.encode_tokens_to_sentences(tokens)  # [B, T, d_model]
         
         # Step 2: 문장 → 주제/메트릭 키 (SentenceTopicHead)
         P_topic, scores, metric_keys = self.topic_head(sentence_embeddings_raw, topo_idx)
@@ -916,16 +1279,23 @@ class HierarchicalSentenceTopicLLM(nn.Module):
 
         # 문단 내 consistency: KL(P_topic || paragraph_mean)
         paragraph_mean = P_topic.mean(dim=1, keepdim=True).detach()  # [B,1,C]
+        paragraph_mean = paragraph_mean + 1e-8
+        paragraph_mean = paragraph_mean / paragraph_mean.sum(dim=-1, keepdim=True)
         paragraph_mean = paragraph_mean.expand(-1, T, -1)
-        log_p = (P_topic + 1e-10).log()
+        
+        log_p = torch.log(P_topic + 1e-8)
         loss_consistency = nn.KLDivLoss(reduction="batchmean")(log_p, paragraph_mean)
+        loss_consistency = torch.clamp(loss_consistency, min=0.0, max=10.0)
         
         # 배치 전체 diversity: KL(batch_mean || uniform)
         batch_mean = P_topic.mean(dim=(0, 1))  # [C]
+        batch_mean = batch_mean + 1e-8
+        batch_mean = batch_mean / batch_mean.sum()
         uniform = torch.full_like(batch_mean, 1.0 / C)
-        loss_diversity = nn.KLDivLoss(reduction="batchmean")(
-            (batch_mean + 1e-10).log(), uniform
-        )
+        
+        log_batch = torch.log(batch_mean + 1e-8)
+        loss_diversity = nn.KLDivLoss(reduction="batchmean")(log_batch, uniform)
+        loss_diversity = torch.clamp(loss_diversity, min=0.0, max=10.0)
 
         # Step 3: MetriKey → SPD 메트릭 (MetricContextRouter)
         metric_ctx_sentence = self.metric_router(metric_keys, scores)  # [B, T, d_h, d_h]
@@ -935,10 +1305,15 @@ class HierarchicalSentenceTopicLLM(nn.Module):
         metric_ctx_paragraph = metric_ctx_sentence.mean(dim=1)  # [B, d_h, d_h]
         
         # 메트릭 적용하여 재인코딩
-        sentence_embeddings = self.encode_tokens_to_sentences(
-            tokens,
-            metric_ctx_sentence=metric_ctx_sentence,
-        )  # [B, T, d_model]
+        if use_tree_processing and trees is not None and len(trees) > 0:
+            sentence_embeddings = self._encode_with_tree_processor(
+                tokens, trees, direction="up", metric_ctx=metric_ctx_sentence
+            )  # [B, T, d_model]
+        else:
+            sentence_embeddings = self.encode_tokens_to_sentences(
+                tokens,
+                metric_ctx_sentence=metric_ctx_sentence,
+            )  # [B, T, d_model]
         
         paragraph_embedding = self.encode_sentences_to_paragraph(
             sentence_embeddings,
@@ -1041,7 +1416,7 @@ class HierarchicalSentenceTopicLLM(nn.Module):
             metric_ctx=metric_ctx_flat,
             topo_idx=topo_idx_flat,
         )
-        logits = torch.nan_to_num(logits, nan=0.0, posinf=0.0, neginf=0.0)
+        logits = torch.clamp(logits, min=-self.config.logit_clip_value, max=self.config.logit_clip_value)
         edit_logits = self.edit_head(hidden)
 
         info: Dict[str, torch.Tensor] = {
@@ -1094,68 +1469,46 @@ class HierarchicalSentenceTopicLLM(nn.Module):
                 mask=semantic_mask,
             )
 
-            # ===== 논문 설계: Lexical Editing Loss =====
-            # replacement_mask가 1인 위치만 예측 학습 (문장 구조 보존)
-            # next-token prediction이 아닌 masked token prediction
+            # ===== 논문 설계: Next-token prediction (Autoregressive) =====
+            # Decoder는 autoregressive하게 다음 토큰을 예측
+            # input: tokens[:, :-1], target: tokens[:, 1:]
             
-            replacement_mask = batch.get("replacement_mask")  # [B, T, L]
-            if replacement_mask is not None:
-                # replacement_mask를 토큰 레벨로 평탄화
-                mask_flat = replacement_mask.view(B, T * L)  # [B, S]
-                S_max = min(mask_flat.size(1), logits.size(1))
-                mask_flat = mask_flat[:, :S_max]  # [B, S_max]
-                
-                # logits와 targets를 같은 위치에서 비교 (next-token이 아님!)
-                logits_pred = logits[:, :S_max, :]  # [B, S_max, V]
-                targets = tokens_flat[:, :S_max].clamp(0, self.config.vocab_size - 1)  # [B, S_max]
-                
-                # replacement_mask가 1인 위치만 loss 계산
-                V = logits_pred.size(-1)
-                logits_flat = logits_pred.reshape(-1, V)  # [B*S_max, V]
-                targets_flat = targets.reshape(-1)  # [B*S_max]
-                mask_binary = mask_flat.reshape(-1).bool()  # [B*S_max]
-                
-                if mask_binary.any():
-                    # 마스크된 위치만 선택
-                    logits_masked = logits_flat[mask_binary]  # [N_masked, V]
-                    targets_masked = targets_flat[mask_binary]  # [N_masked]
-                    
-                    lm_loss = F.cross_entropy(
-                        logits_masked,
-                        targets_masked,
-                        ignore_index=0,  # PAD 무시
-                    )
-                else:
-                    lm_loss = torch.tensor(0.0, device=device)
+            S = tokens_flat.size(1)
+            S_max = min(S, logits.size(1))
+            
+            # Autoregressive: 다음 토큰 예측
+            if S_max > 1:
+                logits_pred = logits[:, :S_max-1, :]  # [B, S-1, V]
+                targets = tokens_flat[:, 1:S_max].clamp(0, self.config.vocab_size - 1)  # [B, S-1]
             else:
-                # replacement_mask가 없으면 전체 시퀀스에 대해 학습 (fallback)
-                S = tokens_flat.size(1)
-                S_max = min(S, logits.size(1))
-                logits_pred = logits[:, :S_max, :]
-                targets = tokens_flat[:, :S_max].clamp(0, self.config.vocab_size - 1)
-                
-                V = logits_pred.size(-1)
-                lm_loss = F.cross_entropy(
-                    logits_pred.reshape(-1, V),
-                    targets.reshape(-1),
-                    ignore_index=0,
-                )
+                logits_pred = logits[:, :1, :]
+                targets = tokens_flat[:, :1].clamp(0, self.config.vocab_size - 1)
+            
+            V = logits_pred.size(-1)
+            lm_loss = F.cross_entropy(
+                logits_pred.reshape(-1, V),
+                targets.reshape(-1),
+                ignore_index=0,
+            )
 
-            # NaN 방지: 각 loss 성분을 안전하게 정규화
-            lm_loss = torch.nan_to_num(lm_loss, nan=0.0, posinf=0.0, neginf=0.0)
-            loss_consistency = torch.nan_to_num(
-                loss_consistency, nan=0.0, posinf=0.0, neginf=0.0
-            )
-            loss_diversity = torch.nan_to_num(
-                loss_diversity, nan=0.0, posinf=0.0, neginf=0.0
-            )
-            length_loss = torch.nan_to_num(
-                length_loss, nan=0.0, posinf=0.0, neginf=0.0
-            )
+            # Loss 안정화 및 NaN 체크
+            loss_clip = self.config.loss_clip_max
+            
+            lm_loss = torch.where(torch.isnan(lm_loss) | torch.isinf(lm_loss), torch.zeros_like(lm_loss), lm_loss)
+            lm_loss = torch.clamp(lm_loss, min=0.0, max=loss_clip)
+            
+            loss_consistency = torch.where(torch.isnan(loss_consistency) | torch.isinf(loss_consistency), torch.zeros_like(loss_consistency), loss_consistency)
+            loss_consistency = torch.clamp(loss_consistency, min=0.0, max=loss_clip * 0.1)
+            
+            loss_diversity = torch.where(torch.isnan(loss_diversity) | torch.isinf(loss_diversity), torch.zeros_like(loss_diversity), loss_diversity)
+            loss_diversity = torch.clamp(loss_diversity, min=0.0, max=loss_clip * 0.1)
+            
+            length_loss = torch.where(torch.isnan(length_loss) | torch.isinf(length_loss), torch.zeros_like(length_loss), length_loss)
+            length_loss = torch.clamp(length_loss, min=0.0, max=loss_clip * 0.1)
+            
             if topic_loss is not None:
-                topic_loss = torch.nan_to_num(
-                    topic_loss, nan=0.0, posinf=0.0, neginf=0.0
-                )
+                topic_loss = torch.where(torch.isnan(topic_loss) | torch.isinf(topic_loss), torch.zeros_like(topic_loss), topic_loss)
+                topic_loss = torch.clamp(topic_loss, min=0.0, max=loss_clip * 0.1)
 
             # Metric regularization: ||G - I||_F^2, G = L L^T
             d_h = self.config.d_head
@@ -1165,16 +1518,7 @@ class HierarchicalSentenceTopicLLM(nn.Module):
             diff_G = G_sentence - eye
             loss_metric = (diff_G.pow(2).sum(dim=(-2, -1))).mean()
 
-            # Curvature regularization: (c - c_target)^2 for Poincaré / Lorentz
-            c_p = float(self.config.c_poincare)
-            c_p_target = float(self.config.curvature_target_poincare)
-            loss_curv_p = (c_p - c_p_target) ** 2
-            c_l = float(self.config.c_lorentz)
-            c_l_target = float(self.config.curvature_target_lorentz)
-            loss_curv_l = (c_l - c_l_target) ** 2
-            loss_curvature = torch.as_tensor(
-                loss_curv_p + loss_curv_l, device=device, dtype=logits.dtype
-            )
+            loss_curvature = torch.tensor(0.0, device=device, dtype=logits.dtype, requires_grad=False)
 
             # 최종 loss 구성
             loss = (
@@ -1193,9 +1537,7 @@ class HierarchicalSentenceTopicLLM(nn.Module):
                 loss = loss + self.config.lambda_topic_supervision * topic_loss
                 info_str["loss_topic"] = topic_loss
             if self.config.lambda_semantic > 0.0:
-                semantic_loss = torch.nan_to_num(
-                    semantic_loss, nan=0.0, posinf=0.0, neginf=0.0
-                )
+                semantic_loss = torch.clamp(semantic_loss, min=0.0, max=self.config.loss_clip_max * 0.1)
                 loss = loss + self.config.lambda_semantic * semantic_loss
                 info_str["loss_semantic"] = semantic_loss
 
@@ -1212,7 +1554,10 @@ class HierarchicalSentenceTopicLLM(nn.Module):
                 loss = loss + self.config.lambda_edit * loss_edit
                 info_str["loss_edit"] = loss_edit
 
-            loss = torch.nan_to_num(loss, nan=0.0, posinf=0.0, neginf=0.0)
+            if torch.isnan(loss) or torch.isinf(loss):
+                loss = lm_loss + loss_consistency + loss_diversity + length_loss
+            
+            loss = torch.clamp(loss, min=0.0, max=self.config.loss_clip_max * 2.0)
 
             info_str["loss"] = loss
             info_str["loss_lm"] = lm_loss
@@ -1329,9 +1674,10 @@ def train_hierarchical_llm_from_text(
                 assert isinstance(loss, torch.Tensor)
                 loss.backward()
                 
-                # Gradient clipping (레이어별)
-                torch.nn.utils.clip_grad_norm_(metric_params, 0.5)  # 메트릭은 더 보수적
-                torch.nn.utils.clip_grad_norm_(backbone_params, 1.0)
+                # Gradient clipping (균형 조정)
+                # 논문 Section 7.1: 메트릭과 백본 동일한 범위로 클리핑
+                torch.nn.utils.clip_grad_norm_(metric_params, config.grad_clip_norm)
+                torch.nn.utils.clip_grad_norm_(backbone_params, config.grad_clip_norm)
                 
                 optimizer.step()
                 epoch_loss += float(loss.item())
@@ -1360,12 +1706,84 @@ def train_hierarchical_llm_from_text(
     return model, info_out
 
 
+def _apply_top_down_decoding(
+    model: HierarchicalSentenceTopicLLM,
+    tree: DocumentTree,
+    info: Dict[str, object],
+    tokens: torch.Tensor,
+    replacement_mask: torch.Tensor,
+    device: torch.device,
+) -> torch.Tensor:
+    B, T, L = tokens.shape
+    
+    paragraph_nodes = [n for n in tree.nodes if n.type == "document"]
+    sentence_nodes = [n for n in tree.nodes if n.type == "sentence"]
+    
+    if not paragraph_nodes:
+        S = T * L
+        input_ids_flat = tokens.clamp(0, model.config.vocab_size - 1).view(1, S)
+        return input_ids_flat
+    
+    para_node = paragraph_nodes[0]
+    
+    hidden = info.get("hidden")
+    if hidden is None or not isinstance(hidden, torch.Tensor):
+        S = T * L
+        input_ids_flat = tokens.clamp(0, model.config.vocab_size - 1).view(1, S)
+        return input_ids_flat
+    
+    paragraph_embedding = hidden.mean(dim=1)
+    
+    node_embeddings: Dict[int, torch.Tensor] = {}
+    node_embeddings[para_node.id] = paragraph_embedding[0]
+    
+    for sent_idx, sent_node in enumerate(sentence_nodes[:T]):
+        if sent_idx >= T:
+            break
+        node_embeddings[sent_node.id] = hidden[0, sent_idx * L]
+    
+    processed_embs = model.tree_processor.process_tree(
+        tree,
+        node_embeddings,
+        direction="down",
+    )
+    
+    result_tokens = []
+    for sent_idx, sent_node in enumerate(sentence_nodes[:T]):
+        if sent_node.id in processed_embs:
+            sent_emb = processed_embs[sent_node.id]
+        elif sent_node.id in node_embeddings:
+            sent_emb = node_embeddings[sent_node.id]
+        else:
+            sent_emb = torch.zeros(model.config.d_model, device=device)
+        
+        sent_emb_expanded = sent_emb.unsqueeze(0).unsqueeze(0)
+        logits_sent = model.decoder.lm_head(sent_emb_expanded)
+        pred_tokens_sent = torch.argmax(logits_sent, dim=-1)
+        
+        pred_tokens_sent = pred_tokens_sent.expand(1, L)
+        
+        original_tokens_sent = tokens[0, sent_idx].clamp(0, model.config.vocab_size - 1)
+        replacement_mask_sent = replacement_mask[sent_idx].to(device)
+        
+        edited_tokens_sent = torch.where(
+            replacement_mask_sent.bool(),
+            pred_tokens_sent[0],
+            original_tokens_sent,
+        )
+        result_tokens.append(edited_tokens_sent)
+    
+    result_flat = torch.cat(result_tokens, dim=0).unsqueeze(0)
+    return result_flat
+
+
 def infer_hierarchical_llm_on_text(
     model: HierarchicalSentenceTopicLLM,
     text: str,
     max_length: int = 128,
     k_neighbors: int = 3,
     max_new_tokens: int = 20,
+    use_top_down: bool = True,
 ) -> Dict[str, object]:
     """
     PreSegmenter 를 사용해 단일 문단 텍스트에 대해
@@ -1379,7 +1797,7 @@ def infer_hierarchical_llm_on_text(
             "topics": [...],
         }
     """
-    from reality_stone.utils.pre_segmenter import PreSegmenter  # local import
+    from reality_stone.utils.pre_segmenter import PreSegmenter
 
     device = next(model.parameters()).device
 
@@ -1394,99 +1812,62 @@ def infer_hierarchical_llm_on_text(
             "topics": [],
         }
 
-    # L0 output -> batch dict 형식으로 변환
-    tokens = seg_output["tokens"].unsqueeze(0).to(device)   # [1, T, L] -> model device
+    tokens = seg_output["tokens"].unsqueeze(0).to(device)
     topo_idx = seg_output["topo_idx"].unsqueeze(0).to(device)
+    tree = seg_output.get("tree")
 
-    batch: Dict[str, torch.Tensor] = {"tokens": tokens, "topo_idx": topo_idx}
+    batch: Dict[str, torch.Tensor] = {
+        "tokens": tokens,
+        "topo_idx": topo_idx,
+    }
+    if tree is not None:
+        batch["tree"] = [tree]
 
-    # 계층적 인코딩 + 메트릭 컨텍스트 + LM 디코딩을 한 번에 수행
     model.eval()
     with torch.no_grad():
-        logits, info = model(batch, compute_loss=False)
+        logits, info = model(batch, compute_loss=False, use_tree_processing=use_top_down)
 
     original_sentences: List[str] = seg_output["sentences"]
     tokenizer = segmenter.tokenizer
     pad_id = getattr(tokenizer, "pad_token_id", 0) if tokenizer is not None else 0
 
-    # ===== 문장 템플릿 유지 + 단어 치환 모드 =====
-    # logits: [1, S, V] (이미 디코더를 거친 결과)
-    # tokens: [1, T, L], replacement_mask: [T, L]
-    replacement_mask = seg_output["replacement_mask"].unsqueeze(0).to(device)  # [1, T, L]
-
-    B, T, L = tokens.shape
-    S = T * L  # 전체 토큰 길이
-
-    # 토큰/마스크를 평탄화
-    input_ids_flat = tokens.clamp(0, model.config.vocab_size - 1).view(1, S)          # [1, S]
-    mask_flat = replacement_mask.view(1, S)                                           # [1, S]
-
-    # 문장별 메트릭 컨텍스트를 토큰 수준으로 브로드캐스트 (autoregressive 생성용)
-    metric_ctx_sent = info.get("metric_ctx", None)  # [1, T, d_h, d_h]
-    if isinstance(metric_ctx_sent, torch.Tensor):
-        d_h = metric_ctx_sent.size(-1)
-        metric_ctx_token = (
-            metric_ctx_sent  # [1, T, d_h, d_h]
-            .unsqueeze(2)    # [1, T, 1, d_h, d_h]
-            .expand(1, T, L, d_h, d_h)
-            .contiguous()
-            .view(1, S, d_h, d_h)
-        )  # [1, S, d_h, d_h]
+    if use_top_down and tree is not None:
+        tokens_seq = _apply_top_down_decoding(
+            model=model,
+            tree=tree,
+            info=info,
+            tokens=tokens,
+            replacement_mask=seg_output["replacement_mask"],
+            device=device,
+        )
+        S_actual = tokens_seq.size(1)
     else:
-        metric_ctx_token = None
+        replacement_mask = seg_output["replacement_mask"].unsqueeze(0).to(device)
+        B, T, L = tokens.shape
+        S = T * L
+        input_ids_flat = tokens.clamp(0, model.config.vocab_size - 1).view(1, S)
+        mask_flat = replacement_mask.view(1, S)
+        
+        S_actual = logits.size(1)
+        if S_actual < S:
+            input_ids_flat = input_ids_flat[:, :S_actual]
+            mask_flat = mask_flat[:, :S_actual]
+        
+        pred_ids_flat = torch.argmax(logits, dim=-1)
+        edited_flat = torch.where(mask_flat.bool(), pred_ids_flat, input_ids_flat)
+        tokens_seq = edited_flat
 
-    # topology index 역시 토큰 수준으로 브로드캐스트
-    K_topo = topo_idx.size(-1)
-    topo_idx_token_base = topo_idx * L  # 문장 시작 토큰 인덱스
-    topo_idx_token = (
-        topo_idx_token_base
-        .unsqueeze(2)  # [1, T, 1, K]
-        .expand(1, T, L, K_topo)
-        .contiguous()
-        .view(1, S, K_topo)
-    )  # [1, S, K]
-
-    # logits에서 가장 확률 높은 토큰 선택 (이미 forward에서 계산됨)
-    # logits: [1, S_actual, V] (max_lm_seq_len로 잘렸을 수 있음)
-    S_actual = logits.size(1)
-    if S_actual < S:
-        # 잘린 경우 앞부분만 사용
-        input_ids_flat = input_ids_flat[:, :S_actual]
-        mask_flat = mask_flat[:, :S_actual]
-    
-    pred_ids_flat = torch.argmax(logits, dim=-1)  # [1, S_actual]
-
-    # Lexical constraint: 교체 가능(=1) 토큰만 새 토큰으로 바꾸고,
-    # 나머지는 원본을 그대로 유지 → 문장 구조/문법 보존
-    edited_flat = torch.where(mask_flat.bool(), pred_ids_flat, input_ids_flat)  # [1, S_actual]
-
-    tokens_seq = edited_flat
-
-    if getattr(model.config, "enable_structural_edit", False):
-        edit_logits = info.get("edit_logits")
-        if isinstance(edit_logits, torch.Tensor):
-            ops = torch.argmax(edit_logits[:, :S_actual, :], dim=-1)
-            max_edits = max(1, int(S_actual * float(model.config.max_edit_ratio)))
-            new_tokens = []
-            insert_count = 0
-            delete_count = 0
-            for i in range(S_actual):
-                op = int(ops[0, i].item())
-                base_tok = int(tokens_seq[0, i].item())
-                if op == 4 and delete_count < max_edits:
-                    delete_count += 1
-                    continue
-                if op == 2 and insert_count < max_edits:
-                    new_tokens.append(int(pred_ids_flat[0, i].item()))
-                    insert_count += 1
-                new_tokens.append(base_tok)
-                if op == 3 and insert_count < max_edits:
-                    new_tokens.append(int(pred_ids_flat[0, i].item()))
-                    insert_count += 1
-            if not new_tokens:
-                new_tokens = tokens_seq[0].tolist()
-            tokens_seq = torch.tensor(new_tokens, device=device).unsqueeze(0)
-            S_actual = tokens_seq.size(1)
+        if getattr(model.config, "enable_structural_edit", False):
+            edit_logits = info.get("edit_logits")
+            if isinstance(edit_logits, torch.Tensor):
+                tokens_seq = model.edit_head.apply_edits(
+                    tokens=tokens_seq,
+                    edit_logits=edit_logits[:, :S_actual, :],
+                    pred_tokens=pred_ids_flat[:, :S_actual],
+                    enable_structural=True,
+                    replacement_mask=mask_flat[:, :S_actual] if 'mask_flat' in locals() else None,
+                )
+                S_actual = tokens_seq.size(1)
 
     final_ids_flat = tokens_seq[0].tolist()
     if tokenizer is not None:
@@ -1639,8 +2020,16 @@ def answer_question_from_corpus(
     d_l = lorentz_distance(q_l, z_l, c_l)          # [N]
 
     # Product manifold 거리: d_total^2 = λ_p d_p^2 + λ_l d_l^2
-    lambda_p = 0.5
-    lambda_l = 0.5
+    # 학습된 lambda 사용 (첫 번째 decoder block에서)
+    if hasattr(model.decoder.blocks[0], 'lambda_p'):
+        lambda_p = torch.sigmoid(model.decoder.blocks[0].lambda_p).item()
+        lambda_l = torch.sigmoid(model.decoder.blocks[0].lambda_l).item()
+        lambda_sum = lambda_p + lambda_l + 1e-8
+        lambda_p = lambda_p / lambda_sum
+        lambda_l = lambda_l / lambda_sum
+    else:
+        lambda_p = 0.5
+        lambda_l = 0.5
     dists = lambda_p * (d_p ** 2) + lambda_l * (d_l ** 2)  # [N]
 
     k = min(top_k, z_corpus.shape[0])

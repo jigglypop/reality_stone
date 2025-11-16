@@ -277,30 +277,36 @@ class PreSegmenter:
         """
         토큰 교체 가능 여부 판정
         
-        docs 명세:
-        - 특수 토큰, 조사, 어미, 숫자, 기호 제외
-        - 일반 명사, 동사, 형용사 허용
+        개선: 논문 Section 6.2의 lexical space 확장
+        - 한글 명사/동사 (2자 이상) 허용
+        - 영어 단어 (3자 이상) 허용
+        - 특수 토큰, 문장부호, 단독 조사만 제외
         """
-        # 숫자, 기호 제외
-        if token.isdigit() or token in ".,!?;:()[]{}\"'":
+        if not token or not token.strip():
             return False
         
-        # 공백 제외
-        if token.isspace():
+        # 문장부호 제외
+        if token in ".,!?;:()[]{}\"'":
             return False
         
-        # 한글 자음/모음 단독은 조사로 간주
-        if len(token) == 1 and ord('ㄱ') <= ord(token) <= ord('ㅎ'):
+        # BERT 특수 토큰 제외
+        if token.startswith('[') and token.endswith(']'):
             return False
-        if len(token) == 1 and ord('ㅏ') <= ord(token) <= ord('ㅣ'):
-            return False
-        
-        # 기본적으로 한글/영문은 교체 가능
-        if token.isalnum():
+        if token.startswith('##'):
             return True
         
-        # 한글 판정
-        if '가' <= token <= '힣':
+        # 한글 단어 (2자 이상) 허용
+        if len(token) >= 2:
+            has_hangul = any('가' <= c <= '힣' for c in token)
+            if has_hangul:
+                return True
+        
+        # 영어 단어 (3자 이상) 허용
+        if token.isalpha() and len(token) >= 3:
+            return True
+        
+        # 영문+숫자 혼합 (4자 이상) 허용
+        if token.isalnum() and len(token) >= 4:
             return True
         
         return False

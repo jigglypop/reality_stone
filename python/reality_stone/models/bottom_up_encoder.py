@@ -19,19 +19,9 @@ class BottomUpEncoder(nn.Module):
         self.d_model = d_model
         self.d_head = d_head
         
-        self.token_to_sentence = RiemannianAggregation(
-            d=d_model,
-            manifold=manifold,
-            c=c,
-            temperature=temperature,
-        )
+        self.token_to_sentence = RiemannianAggregation(d_model=d_model, manifold=manifold, c=c, temperature=temperature)
         
-        self.sentence_to_paragraph = RiemannianAggregation(
-            d=d_model,
-            manifold=manifold,
-            c=c,
-            temperature=temperature,
-        )
+        self.sentence_to_paragraph = RiemannianAggregation(d_model=d_model, manifold=manifold, c=c, temperature=temperature)
         
         self.poincare_proj = nn.Linear(d_model, d_head)
     
@@ -51,13 +41,7 @@ class BottomUpEncoder(nn.Module):
             else:
                 metric_t = None
             
-            mu = tokens_t.mean(dim=1)
-            
-            sent_emb = self.token_to_sentence(
-                children_states=tokens_t,
-                mu=mu,
-                metric_ctx=metric_t,
-            )
+            sent_emb = self.token_to_sentence(children_states=tokens_t, metric_ctx=metric_t)
             
             sentence_list.append(sent_emb)
         

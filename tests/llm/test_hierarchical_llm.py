@@ -7,6 +7,8 @@ from reality_stone.models.hierarchical_sentence_topic_llm import (
     HierarchicalLLMConfig,
     infer_hierarchical_llm_on_text,
 )
+from reality_stone.models.bottom_up_encoder import BottomUpEncoder
+from reality_stone.models.top_down_decoder import TopDownDecoder
 
 
 @pytest.fixture
@@ -156,4 +158,120 @@ def test_encode_sentences_to_paragraph(sample_model):
         )
     
     assert paragraph_embedding.shape == (B, sample_model.config.d_model)
+
+
+@pytest.mark.parametrize(
+    "d_model,n_layer_decoder",
+    [
+        (128, 2),
+        (256, 4),
+        (768, 6),
+    ],
+)
+def test_full_pipeline_config_grid(d_model, n_layer_decoder):
+    """
+    다양한 d_model, n_layer 설정에서
+    텍스트 → PreSegmenter → 리만 인코딩 → MetricAttention → LM 디코딩
+    전체 파이프라인이 정상 동작하는지 검증.
+    """
+    config = HierarchicalLLMConfig(
+        vocab_size=1000,
+        d_model=d_model,
+        d_head=32,
+        num_topics=8,
+        num_heads_topic=2,
+        n_layer_decoder=n_layer_decoder,
+        n_head_decoder=2,
+        use_pretrained_embeddings=False,
+    )
+    model = HierarchicalSentenceTopicLLM(config)
+    model.eval()
+
+    segmenter = PreSegmenter(max_length=16, k_neighbors=3)
+    text = "첫 번째 문장입니다. 두 번째 문장입니다. 세 번째 문장입니다."
+    seg_output = segmenter(text)
+
+    tokens = seg_output["tokens"].unsqueeze(0)
+    topo_idx = seg_output["topo_idx"].unsqueeze(0)
+    replacement_mask = seg_output["replacement_mask"].unsqueeze(0)
+
+    batch = {
+        "tokens": tokens,
+        "topo_idx": topo_idx,
+        "replacement_mask": replacement_mask,
+    }
+
+    with torch.no_grad():
+        logits, info = model(batch, compute_loss=True)
+
+    assert logits.shape[0] == 1
+    assert "P_topic" in info
+    assert "metric_ctx" in info
+
+
+def test_bottom_up_encoder_shapes(sample_config):
+    """
+    BottomUpEncoder가 토큰 임베딩을 문장/문단 임베딩으로
+    올바른 shape으로 인코딩하는지 검증.
+    """
+    encoder = BottomUpEncoder(
+        d_model=sample_config.d_model,
+        d_head=sample_config.d_head,
+        manifold=sample_config.manifold_sentence,
+        c=sample_config.c_poincare,
+        temperature=sample_config.temperature_agg,
+    )
+
+    B, T, L = 2, 3, 5
+    token_embeddings = torch.randn(B, T, L, sample_config.d_model)
+
+    sentence_metric = torch.eye(sample_config.d_head).unsqueeze(0).unsqueeze(0).expand(
+        B, T, sample_config.d_head, sample_config.d_head
+    )
+
+    encoder.eval()
+    with torch.no_grad():
+        sentence_embeddings, paragraph_embedding = encoder(
+            token_embeddings,
+            sentence_metric=sentence_metric,
+            paragraph_metric=None,
+        )
+
+    assert sentence_embeddings.shape == (B, T, sample_config.d_model)
+    assert paragraph_embedding.shape == (B, sample_config.d_model)
+
+
+def test_top_down_decoder_shapes(sample_config):
+    """
+    TopDownDecoder가 문단 임베딩으로부터
+    문장/토큰 시퀀스를 올바른 shape으로 생성하는지 검증.
+    """
+    decoder = TopDownDecoder(
+        d_model=sample_config.d_model,
+        d_head=sample_config.d_head,
+        vocab_size=sample_config.vocab_size,
+    )
+
+    B = 2
+    num_sentences = 4
+    max_length = 6
+
+    paragraph_embedding = torch.randn(B, sample_config.d_model)
+
+    decoder.eval()
+    with torch.no_grad():
+        out = decoder(
+            paragraph_embedding=paragraph_embedding,
+            num_sentences=num_sentences,
+            max_length=max_length,
+            paragraph_metric=None,
+            replacement_mask=None,
+            original_tokens=None,
+        )
+
+    sentence_embeddings = out["sentence_embeddings"]
+    tokens = out["tokens"]
+
+    assert sentence_embeddings.shape == (B, num_sentences, sample_config.d_model)
+    assert tokens.shape == (B, num_sentences, max_length)
 

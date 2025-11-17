@@ -210,6 +210,35 @@ mod tests {
         assert_eq!(g.shape(), &[1, 2]);
         assert!(g.iter().all(|x| x.is_finite()));
     }
+
+    #[test]
+    fn test_mobius_add_euclidean_limit_small_c() {
+        let c = 1e-5_f32;
+        let x = arr2(&[[0.01_f32, 0.02_f32]]);
+        let y = arr2(&[[0.03_f32, -0.01_f32]]);
+        let sum = &x + &y;
+        let result = mobius_add(&x.view(), &y.view(), c);
+        let diff = (&result - &sum).mapv(f32::abs).sum();
+        assert!(diff < 1e-4);
+    }
+
+    #[test]
+    fn test_mobius_scalar_negative_curvature_finite() {
+        let c = -0.5_f32;
+        let x = arr2(&[[0.1_f32, 0.2_f32]]);
+        let y = mobius_scalar(&x.view(), c, 0.5_f32);
+        assert!(y.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn test_mobius_scalar_vs_add_for_small_vector() {
+        let c = 0.1_f32;
+        let x = arr2(&[[0.01_f32, -0.02_f32]]);
+        let scaled = mobius_scalar(&x.view(), c, 2.0_f32);
+        let added = mobius_add(&x.view(), &x.view(), c);
+        let diff = (&scaled - &added).mapv(f32::abs).sum();
+        assert!(diff < 1e-3);
+    }
 }
 
 #[cfg(feature = "cuda")]

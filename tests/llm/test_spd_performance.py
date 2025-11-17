@@ -60,6 +60,8 @@ def test_spd_log_euclidean_mean_batch():
     assert result.shape == (B, d, d)
     assert not torch.isnan(result).any()
     assert not torch.isinf(result).any()
+    eigvals = torch.linalg.eigvalsh(result)
+    assert torch.all(eigvals > 0)
 
 
 def test_spd_mixer_gradient_flow():
@@ -94,6 +96,8 @@ def test_spd_mixer_with_children():
     
     assert result.shape == (B, d_head, d_head)
     assert not torch.isnan(result).any()
+    eigvals = torch.linalg.eigvalsh(result)
+    assert torch.all(eigvals > 0)
 
 
 def test_spd_mixer_weights_normalized():

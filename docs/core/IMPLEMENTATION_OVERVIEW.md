@@ -40,6 +40,17 @@ Reality Stone은 3개의 쌍곡 기하 모델을 Rust/CUDA로 구현하고 PyTor
 └─────────────────────────────────────────────────────────┘
 ```
 
+### 벨만-리만 통합 아키텍처와의 관계
+
+- **역할**: 이 문서는 하이퍼볼릭/리만 커널과 PyTorch 바인딩의 구현 관점에 집중합니다.
+- **상위 아키텍처**: 같은 리포지토리의 Bellman-Riemannian 통합 아키텍처는 이 커널들을 삼중 하이퍼볼릭 레이어(Poincaré / Lorentz / Klein)로 묶어 사용합니다.
+- **자세한 연결**
+  - [`../CORE_EQUATIONS.md`](../CORE_EQUATIONS.md): 통합 수식 및 이론
+  - [`../EQUATION_REFERENCE.md`](../EQUATION_REFERENCE.md): 손실/연산 빠른 참조
+  - [`../IMPLEMENTATION_GUIDE.md`](../IMPLEMENTATION_GUIDE.md): 통합 모델 및 학습 루프
+
+여기서 설명하는 코어 레이어들이 Bellman-Riemannian LLM의 `TripleHyperbolicLayer`, `MetricAttention`, `SPDMetric` 모듈의 하위 구현으로 재사용됩니다.
+
 ---
 
 ## 구현 레이어

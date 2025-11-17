@@ -24,25 +24,27 @@ def main():
         print(f"토크나이저 로드 실패: {e}")
         vocab_size = 32000
     
+    effective_vocab_size = vocab_size
+
     config = HierarchicalLLMConfig(
-        vocab_size=vocab_size,
-        d_model=128,
-        d_head=32,
+        vocab_size=effective_vocab_size,
+        d_model=256,
+        d_head=64,
         num_topics=8,
         num_heads_topic=2,
-        n_layer_decoder=2,
-        n_head_decoder=2,
+        n_layer_decoder=3,
+        n_head_decoder=4,
         use_pretrained_embeddings=False,
         pretrained_tokenizer=tokenizer_name,
-        lr_backbone=3e-4,
-        lr_metric=1e-4,
+        lr_backbone=1e-3,
+        lr_metric=5e-4,
         lambda_consistency=0.02,
         lambda_diversity=0.01,
-        lambda_consistency_schedule="warmup",
-        lambda_diversity_schedule="warmup",
+        lambda_consistency_schedule="constant",
+        lambda_diversity_schedule="constant",
         lambda_semantic=0.0,
         lambda_metric=0.0,
-        lambda_length=0.0,
+        lambda_length=0.01,
         grad_clip_norm=1.0,
         logit_clip_value=20.0,
         loss_clip_max=100.0,

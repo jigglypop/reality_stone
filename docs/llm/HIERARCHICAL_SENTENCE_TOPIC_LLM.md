@@ -638,3 +638,166 @@
 새 타입을 추가해도 \(\mathcal{T}\) 와 \(\mathrm{UP}_\tau, \mathrm{DOWN}_\tau, \mathrm{MetriKey}_\tau\) 만 덧붙이면 되므로  
 이론상 임의 레벨/임의 타입의 확장(예: 더 깊은 의미 단위, 프로그램 AST, 멀티모달 노드)까지 자연스럽게 수용한다.
 
+---
+
+### 11. 리만 메트릭 + Bellman 방정식/강화학습 통합 (핵심식)
+
+이 섹션은 앞선 계층적 리만 LLM 설계를 **“시간축을 따라 움직이는 강화학습/의사결정 과정”** 과 결합하기 위한 핵심 수식을 정리한 것이다.  
+상태는 트리 노드의 표현 \(h_v\) 로, 동역학과 보상은 Bellman 방정식에, 기하 구조는 리만 메트릭 \(G_v\) 와 manifold \( \mathcal{M}_v \) 에 담긴다.
+
+#### 11.1 상태·가치 함수를 리만 다양체 위에 올리기
+
+- **상태 표현**: 시점 \(t\) 의 상태를 트리 노드 \(v_t\) 와 그 표현으로 본다.
+  $$
+  s_t \equiv v_t,\quad h_t \equiv h_{v_t} \in \mathcal{M}_{v_t}
+  $$
+- **가치/행동가치 함수**:
+  $$
+  V_\phi(h_t) \in \mathbb{R},\quad
+  Q_\phi(h_t, a_t) \in \mathbb{R}
+  $$
+- **표준 Bellman 기대 방정식**을 manifold 표현에 직접 올리면
+  $$
+  V_\phi(h_t)
+  =
+  \mathbb{E}_{a_t \sim \pi,\, h_{t+1} \sim P}
+  \big[
+    r(h_t, a_t)
+    + \gamma V_\phi(h_{t+1})
+  \big]
+  $$
+  로 쓰고, \(h_{t+1}\) 은 지오데식 업데이트/편집 결과로 얻어진다.
+
+#### 11.2 에너지/라그랑지안 관점의 핵심식
+
+한 스텝 전이를 \((h_t, a_t, h_{t+1})\) 라 할 때,  
+리만 기하와 Bellman 조건을 하나의 **이산 라그랑지안(에너지)** 으로 묶는다.
+
+- **기본 라그랑지안**:
+  $$
+  \mathcal{L}_\theta(h_t, a_t, h_{t+1})
+  =
+  \lambda_{\mathrm{geom}}\,
+  d^2_{\mathcal{M}_{v_t}}(h_t, h_{t+1})
+  +
+  \lambda_{\mathrm{RL}}\,
+  \delta_{\mathrm{Bell}}(h_t, a_t, h_{t+1})^2
+  $$
+- **Bellman 위반(에너지) 항**:
+  $$
+  \delta_{\mathrm{Bell}}(h_t, a_t, h_{t+1})
+  =
+  Q_\phi(h_t, a_t)
+  - \big(
+      r(h_t, a_t)
+      + \gamma V_\phi(h_{t+1})
+    \big)
+  $$
+
+에피소드 궤적 \(\tau = (h_0, a_0, h_1, a_1, \dots, h_T)\) 에 대해  
+전체 **작용(누적 에너지)** 는
+$$
+\mathcal{S}_\theta(\tau)
+=
+\sum_{t=0}^{T-1}
+  \mathcal{L}_\theta(h_t, a_t, h_{t+1})
+$$
+이며, 학습은
+$$
+\min_\theta\;
+\mathbb{E}_{\tau}
+  \big[
+    \mathcal{S}_\theta(\tau)
+  \big]
+$$
+를 경사하강으로 근사하는 과정으로 본다.  
+즉, **지오데식에 가깝게 움직이면서 Bellman 위반을 최소화하는 궤적** 이 선택된다.
+
+#### 11.3 지오데식 soft Bellman 정책 (exp 안에 결합)
+
+편집/행동 정책 \(\pi_\theta\) 를 **지오데식 에너지 + Bellman 에너지** 로 정의하면,
+
+$$
+\pi_\theta(a_t \mid h_t)
+\propto
+\exp\Big(
+  -\tfrac{1}{\tau}
+  \big[
+    E_{\mathrm{geom}}(h_t, a_t; G_{v_t}^{\mathrm{eff}})
+    + \beta\, E_{\mathrm{Bell}}(h_t, a_t)
+  \big]
+\Big)
+$$
+
+- **지오데식 에너지** (리만 편집 비용):
+  $$
+  E_{\mathrm{geom}}(h_t, a_t; G_{v_t}^{\mathrm{eff}})
+  =
+  d^2_{\mathcal{M}_{v_t}}
+  \big(
+    h_t,\,
+    f_\theta(h_t, a_t)
+  \big)
+  $$
+  - \(f_\theta(h_t, a_t)\): 행동 \(a_t\) 를 택했을 때의 후보 다음 상태/편집 결과.
+  - \(d_{\mathcal{M}}\): Poincaré/Lorentz/Klein/SPD product manifold 거리 (섹션 3, 5, 9와 연결).
+
+- **Bellman 에너지** (TD error 기반):
+  $$
+  E_{\mathrm{Bell}}(h_t, a_t)
+  =
+  \big|
+    Q_\phi(h_t, a_t)
+    - \big(
+        r(h_t, a_t)
+        + \gamma V_\phi(h_{t+1})
+      \big)
+  \big|
+  $$
+
+이렇게 하면 **한 번의 softmax 안에서**  
+- 리만 거리(geometry)  
+- Bellman 구조(강화학습)  
+가 동시에 policy 에 반영된다.
+
+#### 11.4 메트릭 키를 보상/정책에 연결하기
+
+섹션 4의 metric-key 를 강화학습 보상/정책에 직접 연결하면,
+
+- 노드 \(v\) 의 효과적 메트릭:
+  $$
+  G_v^{\mathrm{eff}}
+  = \mathrm{SPD\text{-}Barycenter}
+  \big(
+    \{G_k : k \in \mathcal{K}_v\},
+    \{\alpha_{v,k}\}
+  \big)
+  $$
+- 보상/가중치에 메트릭 키를 주입:
+  $$
+  r(h_t, a_t)
+  =
+  r_{\mathrm{task}}(h_t, a_t)
+  +
+  r_{\mathrm{metric}}(G_{v_t}^{\mathrm{eff}})
+  $$
+  - \(r_{\mathrm{metric}}\): 예를 들어 “자기 성장/안정성/안전성” 등을 eigenvalue 범위나 Lipschitz 상한(섹션 9.7)을 통해 정량화한 항.
+
+이 구조에서 **키 집합 \(\mathcal{K}_v\) 를 바꾸는 것** 은  
+geometry 와 동시에 **강화학습 보상 지형을 바꾸는 것** 이 된다.
+
+#### 11.5 추가 복잡도 (속도/메모리 개략)
+
+강화학습/가치 함수 헤드를 추가했을 때, 기존 LLM 대비 추가되는 주요 비용을 요약하면 다음과 같다.
+
+| 컴포넌트                    | 추가 연산량(대략)                    | 추가 메모리(대략)                    |
+| -------------------------- | ------------------------------------- | ------------------------------------- |
+| 가치/행동가치 헤드 \(V,Q\) | \(O(N_{\text{state}} \cdot d_h)\)     | 파라미터 수: 기존 헤드의 수 % 단위  |
+| Bellman 에너지 계산        | \(O(N_{\text{transition}})\)          | TD 버퍼(배치 크기 수준)              |
+| 메트릭 기반 거리 항        | 이미 core 거리/지오데식 커널 재사용  | 추가 없음 (커널 결과만 캐시)         |
+| policy softmax (11.3식)    | 기존 geodesic softmax 와 동일 차수    | 기존 attention/decoder와 동일        |
+
+즉, **리만 커널/메트릭 슬롯 설계는 그대로 두고**,  
+작은 \(V,Q\) 헤드와 Bellman 에너지 항만 얹는 구조로 RL 을 통합하면  
+모델 용량과 추론 속도는 기존 리만 LLM 대비 **수 % 수준의 오버헤드** 에 머무르도록 설계할 수 있다.
+

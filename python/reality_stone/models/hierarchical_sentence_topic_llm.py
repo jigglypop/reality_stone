@@ -339,8 +339,10 @@ def compute_dynamic_lambda(
     elif schedule == "grow":
         return base_lambda * (0.1 + 0.9 * progress)
     elif schedule == "warmup":
-        if progress < 0.1:
-            return base_lambda * (progress / 0.1)
+        warmup_ratio = 0.1
+        if progress < warmup_ratio:
+            min_factor = 0.1
+            return base_lambda * (min_factor + (1.0 - min_factor) * (progress / warmup_ratio))
         else:
             return base_lambda
     
@@ -482,6 +484,11 @@ class MetricContextRouter(nn.Module):
             self._metrikey = None
             self._has_metrikey = False
 
+        self._metrikey = None
+        self._has_metrikey = False
+        
+        self.metric_adjustment = nn.Parameter(torch.zeros(d_head, d_head))
+
     def _clamp_eigen(self, G: torch.Tensor) -> torch.Tensor:
         G_sym = (G + G.transpose(-2, -1)) / 2.0
         G_sym = G_sym + torch.eye(G.shape[-1], device=G.device, dtype=G.dtype) * self.spd_eps
@@ -531,19 +538,27 @@ class MetricContextRouter(nn.Module):
         B, T = scores.shape
         device = scores.device
         scores = torch.clamp(scores, min=-10.0, max=10.0)
-        scores_flat = scores.flatten()
-
-        L_list: List[torch.Tensor] = []
-        with torch.no_grad():
-            for i, key in enumerate(metric_keys):
-                score_val = float(scores_flat[i].item())
-                if not (float("-inf") < score_val < float("inf")):
-                    score_val = 0.0
-                score_quantized = round(score_val / self.score_quantize) * self.score_quantize
-                L = self._make_metric(key, score_quantized, device)
-                L_list.append(L)
-        L_stack = torch.stack(L_list, dim=0)
-        return L_stack.view(B, T, self.d_head, self.d_head)
+        
+        eye_base = torch.eye(self.d_head, device=device, dtype=scores.dtype)
+        
+        scores_norm = torch.tanh(scores / 10.0)
+        scale = 1.0 + 0.2 * scores_norm
+        
+        adjustment_sym = (self.metric_adjustment + self.metric_adjustment.t()) / 2.0
+        adjustment_scale = 0.1 * torch.tanh(adjustment_sym)
+        
+        L_list = []
+        for b in range(B):
+            for t in range(T):
+                s = scale[b, t]
+                L_bt = eye_base * s + adjustment_scale
+                L_bt = L_bt + eye_base * self.spd_eps
+                L_list.append(L_bt)
+        
+        L_stacked = torch.stack(L_list, dim=0)
+        L_adjusted = L_stacked.view(B, T, self.d_head, self.d_head)
+        
+        return L_adjusted
 
 
 def _spd_log_euclidean_mean(
@@ -728,6 +743,7 @@ class HierarchicalLMDecoder(nn.Module):
         )
         self.ln_f = nn.LayerNorm(d_model)
         self.lm_head = nn.Linear(d_model, vocab_size, bias=False)
+        self.lm_head.weight = self.token_embed.weight
 
     def _make_block(self) -> nn.Module:
         return _DecoderBlock(self.d_model, self.n_head, self.manifold, self.c_lorentz)
@@ -1002,8 +1018,9 @@ class HierarchicalSentenceTopicLLM(nn.Module):
             c_lorentz=config.c_lorentz,
         )
         
-        # Decoder와 Embedding 공유
+        # Decoder와 Embedding 공유 + Weight Tying
         self.decoder.token_embed = self.token_embed
+        self.decoder.lm_head.weight = self.token_embed.weight
         self.semantic_loss = SemanticPreservationLoss(
             manifold=config.manifold_sentence,
             c=config.c_poincare,
@@ -1192,7 +1209,10 @@ class HierarchicalSentenceTopicLLM(nn.Module):
                 if isinstance(token_embs, torch.Tensor) and token_embs.dim() == 2:
                     token_embs = token_embs.unsqueeze(0)
                 
-                sent_metric = metric_ctx[b, sent_idx] if metric_ctx is not None else None
+                if metric_ctx is not None:
+                    sent_metric = metric_ctx[b, sent_idx].unsqueeze(0)
+                else:
+                    sent_metric = None
                 sent_emb = self.sentence_aggregator(token_embs, metric_ctx=sent_metric)
                 
                 if sent_emb.dim() == 1:
@@ -1643,6 +1663,7 @@ def train_hierarchical_llm_from_text(
     for name, param in model.topic_head.named_parameters():
         if param.requires_grad and ("metric" in name.lower() or "spd" in name.lower()):
             metric_params.append(param)
+    metric_params.extend(model.metric_router.parameters())
     metric_params.extend(model.metric_mixer.parameters())
     metric_params.extend(model.sentence_aggregator.parameters())
     metric_params.extend(model.paragraph_aggregator.parameters())
@@ -1676,16 +1697,19 @@ def train_hierarchical_llm_from_text(
 
     from tqdm import tqdm  # local import
 
+    base_lambda_consistency = config.lambda_consistency
+    base_lambda_diversity = config.lambda_diversity
+    
     for epoch in range(epochs):
         # 동적 lambda 계산
         lambda_consistency_current = compute_dynamic_lambda(
-            config.lambda_consistency,
+            base_lambda_consistency,
             config.lambda_consistency_schedule,
             epoch,
             epochs,
         )
         lambda_diversity_current = compute_dynamic_lambda(
-            config.lambda_diversity,
+            base_lambda_diversity,
             config.lambda_diversity_schedule,
             epoch,
             epochs,

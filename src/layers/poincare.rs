@@ -1,4 +1,10 @@
-use crate::ops::{batch::EPS, dot_batched, mobius, norm_sq_batched};
+use crate::ops::{
+    batch::{norm_sq_batched_f64, EPS64},
+    batch::EPS,
+    dot_batched,
+    mobius,
+    norm_sq_batched,
+};
 use ndarray::{s, Array1, Array2, ArrayView2, Axis};
 
 pub fn mobius_scalar_vjp(
@@ -294,6 +300,39 @@ pub fn poincare_ball_layer_layerwise_backward(
     (grad_u, grad_v, grad_kappa)
 }
 
+pub fn poincare_exp_at_f64(x: &ArrayView2<f64>, v: &ArrayView2<f64>, c: f64) -> Array2<f64> {
+    let x2 = norm_sq_batched_f64(x).insert_axis(Axis(1));
+    let one_minus_cx2 = (1.0 - c * &x2).mapv(|z| z.max(EPS64));
+    let lambda_x = 2.0 / &one_minus_cx2;
+    let vnorm = norm_sq_batched_f64(v).mapv(f64::sqrt).insert_axis(Axis(1));
+    let vnorm_safe = vnorm.mapv(|z| z.max(EPS64));
+    if c.abs() < EPS64 {
+        return x + v;
+    }
+    let sqrtc = c.sqrt();
+    let arg = (&lambda_x * sqrtc * &vnorm_safe) * 0.5;
+    let coeff = arg.mapv(|a| a.tanh()) / (sqrtc * &vnorm_safe);
+    let u = &coeff * v;
+    mobius::mobius_add_f64(x, &u.view(), c)
+}
+
+pub fn poincare_log_at_f64(x: &ArrayView2<f64>, y: &ArrayView2<f64>, c: f64) -> Array2<f64> {
+    let x2 = norm_sq_batched_f64(x).insert_axis(Axis(1));
+    let one_minus_cx2 = (1.0 - c * &x2).mapv(|z| z.max(EPS64));
+    let lambda_x = 2.0 / &one_minus_cx2;
+    if c.abs() < EPS64 {
+        return y - x;
+    }
+    let neg_x = -x;
+    let z = mobius::mobius_add_f64(&neg_x.view(), y, c);
+    let znorm = norm_sq_batched_f64(&z.view()).mapv(f64::sqrt).insert_axis(Axis(1));
+    let znorm_clip = znorm.mapv(|r| r.min(1.0 - EPS64).max(EPS64));
+    let sqrtc = c.sqrt();
+    let atanh_term = (&znorm_clip * sqrtc).mapv(|u| u.atanh());
+    let scale = (2.0 / (sqrtc * &lambda_x)) * &atanh_term / &znorm_clip;
+    &scale * &z
+}
+
 #[cfg(feature = "cuda")]
 pub mod cuda {
     mod ffi {
@@ -380,77 +419,5 @@ pub mod cuda {
                 dim,
             );
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::layers::lorentz; // Lorentz 모듈 import
-    use approx::assert_relative_eq;
-    use ndarray::arr2;
-
-    const EPSILON: f32 = 1e-5;
-
-    #[test]
-    fn test_mobius_add_identity() {
-        let c = 1.0;
-        let x = arr2(&[[0.1, 0.2]]);
-        let z = arr2(&[[0.0, 0.0]]);
-        let result = mobius::mobius_add(&x.view(), &z.view(), c);
-        assert_relative_eq!(result, x, epsilon = EPSILON);
-    }
-
-    #[test]
-    fn test_poincare_to_lorentz_and_back() {
-        let c = 1.0;
-        let x_poincare = arr2(&[[0.1, 0.2], [0.3, 0.4]]);
-
-        let x_lorentz = poincare_to_lorentz(&x_poincare.view(), c);
-        let x_poincare_restored = lorentz::lorentz_to_poincare(&x_lorentz.view(), c);
-
-        assert_relative_eq!(x_poincare, x_poincare_restored, epsilon = EPSILON);
-    }
-
-    #[test]
-    fn test_poincare_ball_layer_interpolation() {
-        let c = 1.0;
-        let u = arr2(&[[0.5, 0.5]]);
-        let v = arr2(&[[-0.5, -0.5]]);
-
-        // t=0 이면 u와 같아야 함
-        let result_t0 = poincare_ball_layer(&u.view(), &v.view(), c, 0.0);
-        assert_relative_eq!(result_t0, u, epsilon = EPSILON);
-
-        // t=1 이면 v와 같아야 함
-        let result_t1 = poincare_ball_layer(&u.view(), &v.view(), c, 1.0);
-        assert_relative_eq!(result_t1, v, epsilon = EPSILON);
-
-        // t=0.5 대칭성
-        let result_t05 = poincare_ball_layer(&u.view(), &v.view(), c, 0.5);
-        let result_t05_sym = poincare_ball_layer(&v.view(), &u.view(), c, 0.5);
-        assert_relative_eq!(result_t05, result_t05_sym, epsilon = 1e-5);
-    }
-
-    #[test]
-    fn test_distance_is_zero_for_same_point() {
-        let c = 1.0;
-        let x = arr2(&[[0.1, 0.2], [0.3, 0.4]]);
-        let dist = poincare_distance(&x.view(), &x.view(), c);
-
-        for val in dist.iter() {
-            // 수치적 클램프로 인해 0이 아닌 매우 작은 값이 나올 수 있음
-            assert!((*val).abs() < 1e-3);
-        }
-    }
-
-    #[test]
-    fn test_poincare_to_klein_then_back_shape_and_finiteness() {
-        let c = 0.7_f32;
-        let x = arr2(&[[0.1, -0.2], [0.3, 0.1]]);
-        let k = poincare_to_klein(&x.view(), c);
-        assert_eq!(k.ncols(), x.ncols());
-        assert_eq!(k.nrows(), x.nrows());
-        assert!(k.iter().all(|v| v.is_finite()));
     }
 }

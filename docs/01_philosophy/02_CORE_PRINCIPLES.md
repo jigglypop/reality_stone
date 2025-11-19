@@ -7,10 +7,10 @@
 이는 단순한 손실 함수 최소화를 넘어, 모델이 '에너지'와 '가치'의 개념을 기반으로 동적으로 추론하고 생성하는 과정을 설명합니다.
 
 - **관련 상세 문서**
-  - 철학적 배경: [`WHY_RIEMANNIAN.md`](./WHY_RIEMANNIAN.md) **[필독]**
-  - 수식/이론 전체: [`CORE_EQUATIONS.md`](./CORE_EQUATIONS.md)
-  - 수식 빠른 참조: [`EQUATION_REFERENCE.md`](./EQUATION_REFERENCE.md)
-  - 구현 가이드: [`IMPLEMENTATION_GUIDE.md`](./IMPLEMENTATION_GUIDE.md)
+  - 철학적 배경: [`WHY_RIEMANNIAN.md`](./01_WHY_RIEMANNIAN.md) **[필독]**
+  - 수식/이론 전체: [`CORE_EQUATIONS.md`](../02_theory/02_CORE_EQUATIONS.md)
+  - 수식 빠른 참조: [`EQUATION_REFERENCE.md`](../02_theory/03_EQUATION_REFERENCE.md)
+  - 구현 가이드: [`IMPLEMENTATION_GUIDE.md`](../04_implementation/01_GUIDE.md)
 
 ---
 
@@ -25,23 +25,26 @@
 ### 2.2. 동역학: 라그랑주 역학 (Dynamics: Lagrangian Mechanics)
 
 - 모델의 학습 및 추론(토큰 생성) 과정은 최소 작용의 원리(Principle of Least Action)를 따르는 물리계로 간주됩니다.
-- 시스템의 상태는 라그랑지안(Lagrangian) $L$ 에 의해 기술됩니다.
+- 시스템의 상태는 라그랑지안(Lagrangian) $L$ 로 표현합니다.
 
-\[ L(x, \dot{x}) = T(\dot{x}) - V(x) \]
+$$
+L(x, \dot{x}) = T(\dot{x}) - V(x) 
+$$
 
 - **운동 에너지 (Kinetic Energy, $T$)**: 다양체 상에서 상태가 얼마나 '빠르게' 변하는지를 나타냅니다. 메트릭 텐서 $g$를 이용해 다음과 같이 정의됩니다.
-  \[ T = \frac{1}{2} g_{\mu\nu}(x) \dot{x}^\mu \dot{x}^\nu \]
+$$ T = \frac{1}{2} g_{\mu\nu}(x) \dot{x}^\mu \dot{x}^\nu $$
   여기서 $\dot{x}$는 시퀀스 진행(시간)에 따른 상태의 변화율(속도)입니다.
 
-- **잠재 에너지 (Potential Energy, $V$)**: 특정 상태 $x$가 얼마나 '바람직하지 않은지'를 나타내는 값입니다. 에너지가 낮을수록 안정적이고 바람직한 상태입니다. 이 잠재 에너지는 강화학습의 가치 함수와 직접적으로 연결됩니다.
+- **잠재 에너지 (Potential Energy, $V$)**: 특정 상태 $x$가 얼마나 '바람직하지 않은지'를 나타내는 값입니다. 에너지가 낮을수록 안정적이고 바람직한 상태입니다. 
+이 잠재 에너지는 강화학습의 가치 함수와 직접적으로 연결됩니다.
 
 ### 2.3. 학습 목표: 벨만 방정식 (Learning Objective: Bellman Equation)
 
 - 모델의 목표는 단순히 다음 토큰을 예측하는 것이 아니라, 장기적인 보상(가치)을 최대화하는 것입니다.
 - 최적 행동-가치 함수 $Q^*(s, a)$는 벨만 최적 방정식(Bellman Optimality Equation)을 통해 정의됩니다. 이는 현재 상태 $s$에서 행동 $a$를 취했을 때 얻을 수 있는 미래 보상의 총합 기댓값입니다.
-  \[ Q^*(s, a) = \mathbb{E}\left[ R_{t+1} + \gamma \max_{a'} Q^*(s', a') \mid s, a \right] \]
+$$ Q^*(s, a) = \mathbb{E}\left[ R_{t+1} + \gamma \max_{a'} Q^*(s', a') \mid s, a \right] $$
 - **잠재 에너지와 가치 함수의 연결**: 모델의 잠재 에너지 $V(x)$는 최적 가치의 음수 값으로 정의됩니다. 즉, 가치가 높은 상태일수록 잠재 에너지는 낮아집니다.
-  \[ V(x_s) = - \max_a Q^*(s, a) \]
+$$ V(x_s) = - \max_a Q^*(s, a) $$
   이를 통해 모델은 자연스럽게 잠재 에너지가 낮은 (가치가 높은) 상태로 이동하려는 경향을 갖게 됩니다.
 
 ---
@@ -50,11 +53,11 @@
 
 위 세 가지 요소를 결합하면 모델의 상태 $x$가 따라야 할 운동 방정식이 오일러-라그랑주 방정식(Euler-Lagrange Equation)으로부터 유도됩니다.
 
-\[ \frac{d}{dt}\left(\frac{\partial L}{\partial \dot{x}^\sigma}\right) - \frac{\partial L}{\partial x^\sigma} = 0 \]
+$$ \frac{d}{dt}\left(\frac{\partial L}{\partial \dot{x}^\sigma}\right) - \frac{\partial L}{\partial x^\sigma} = 0 $$
 
 이를 풀어서 정리하면, 외부 힘(Force)이 존재하는 상황에서의 측지선 방정식(Geodesic Equation)을 얻게 됩니다.
 
-\[ \ddot{x}^\lambda + \Gamma^\lambda_{\mu\nu} \dot{x}^\mu \dot{x}^\nu = -g^{\lambda\sigma} \frac{\partial V}{\partial x^\sigma} \]
+$$ \ddot{x}^\lambda + \Gamma^\lambda_{\mu\nu} \dot{x}^\mu \dot{x}^\nu = -g^{\lambda\sigma} \frac{\partial V}{\partial x^\sigma} $$
 
 - **$\ddot{x}^\lambda$**: 상태의 가속도.
 - **$\Gamma^\lambda_{\mu\nu}$**: 크리스토펠 기호(Christoffel Symbols). 다양체의 곡률(curvature) 정보를 담고 있으며, 메트릭 텐서 $g$로부터 계산됩니다.

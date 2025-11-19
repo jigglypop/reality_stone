@@ -21,10 +21,6 @@ def convert_to_hyperbolic(model: nn.Module, layer_map: dict, **kwargs):
             if isinstance(module, old_layer_type):
                 new_layer = new_layer_class.from_linear(module, **kwargs)
                 setattr(model, name, new_layer)
-                try:
-                    print(f"Replaced '{name}' -> {new_layer_class.__name__}")
-                except Exception:
-                    pass
                 replaced = True
                 break  # 한 번 변환되면 루프 종료
 
@@ -35,7 +31,3 @@ def convert_to_hyperbolic(model: nn.Module, layer_map: dict, **kwargs):
                 new_layer_class = list(layer_map.values())[0]
                 new_layer = new_layer_class.from_linear(module, **kwargs)
                 setattr(model, name, new_layer)
-                try:
-                    print(f"Replaced Conv1D '{name}' -> {new_layer_class.__name__}")
-                except Exception:
-                    pass

@@ -13,7 +13,7 @@ macro_rules! create_binding {
     // (u, v, c) -> Array2<f32>
     ($py_fn_name:ident, $rust_fn:path, [u, v, c], PyArray2) => {
         #[pyo3::prelude::pyfunction]
-        fn $py_fn_name<'py>(
+        pub fn $py_fn_name<'py>(
             py: pyo3::prelude::Python<'py>,
             u: numpy::PyReadonlyArray2<f32>,
             v: numpy::PyReadonlyArray2<f32>,
@@ -29,7 +29,7 @@ macro_rules! create_binding {
     // (u, r, c) -> Array2<f32>
     ($py_fn_name:ident, $rust_fn:path, [u, r, c], PyArray2) => {
         #[pyo3::prelude::pyfunction]
-        fn $py_fn_name<'py>(
+        pub fn $py_fn_name<'py>(
             py: pyo3::prelude::Python<'py>,
             u: numpy::PyReadonlyArray2<f32>,
             r: f32,
@@ -44,7 +44,7 @@ macro_rules! create_binding {
     // (u, v, c) -> Array1<f32>
     ($py_fn_name:ident, $rust_fn:path, [u, v, c], PyArray1) => {
         #[pyo3::prelude::pyfunction]
-        fn $py_fn_name<'py>(
+        pub fn $py_fn_name<'py>(
             py: pyo3::prelude::Python<'py>,
             u: numpy::PyReadonlyArray2<f32>,
             v: numpy::PyReadonlyArray2<f32>,
@@ -60,7 +60,7 @@ macro_rules! create_binding {
     // (x, c) -> Array2<f32>
     ($py_fn_name:ident, $rust_fn:path, [x, c], PyArray2) => {
         #[pyo3::prelude::pyfunction]
-        fn $py_fn_name<'py>(
+        pub fn $py_fn_name<'py>(
             py: pyo3::prelude::Python<'py>,
             x: numpy::PyReadonlyArray2<f32>,
             c: f32,

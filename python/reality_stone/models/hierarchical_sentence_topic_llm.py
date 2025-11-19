@@ -9,6 +9,7 @@ from .riemannian_aggregation import RiemannianAggregation
 from reality_stone.layers.metric_attention import MetricAttention
 from reality_stone.layers.poincare import project_to_ball, poincare_distance
 from reality_stone.layers.lorentz import from_poincare, lorentz_distance
+from reality_stone.layers.suppression import HyperbolicSuppressionField
 from reality_stone.models.semantic_preservation import SemanticPreservationLoss
 from .pretrained_backbone import PretrainedBackbone
 from reality_stone.utils.pre_segmenter import PreSegmenter, TreeNode, DocumentTree
@@ -80,6 +81,13 @@ class HierarchicalLLMConfig:
     metric_lambda_min: float = 0.1
     metric_lambda_max: float = 5.0
     grad_clip_norm: float = 1.0 
+    
+    # SFE Variable Suppression Parameters
+    suppression_base: float = 0.37
+    suppression_linear: float = 0.0
+    suppression_hyp: float = 0.1
+    suppression_scale: float = 1.0
+    enable_variable_suppression: bool = True
 
 
 class EditOperationHead(nn.Module):
@@ -944,6 +952,14 @@ class HierarchicalSentenceTopicLLM(nn.Module):
         super().__init__()
         self.config = config
 
+        # SFE Variable Suppression Field
+        self.suppression_field = HyperbolicSuppressionField(
+            base=getattr(config, "suppression_base", 0.37),
+            linear=getattr(config, "suppression_linear", 0.0),
+            hyp=getattr(config, "suppression_hyp", 0.1),
+            scale=getattr(config, "suppression_scale", 1.0)
+        ) if getattr(config, "enable_variable_suppression", False) else None
+
         # L0: Riemannian Aggregation (bottom-up encoding)
         self.sentence_aggregator = RiemannianAggregation(
             d_model=config.d_model,
@@ -1123,6 +1139,32 @@ class HierarchicalSentenceTopicLLM(nn.Module):
             metric_flat = None
         
         # 한번에 aggregation
+        # SFE: Dynamic Temperature 적용
+        # 억압장이 강할수록(epsilon↑) -> 유효 질량 감소(m_eff↓) -> 온도 증가(T_eff↑) -> 분포가 평평해짐 (Smoothing)
+        # 반대로 epsilon이 작으면 -> T_eff 감소 -> 분포가 뾰족해짐 (Sharpening/Focusing)
+        
+        metric_ctx_reshaped = metric_flat # [BT, d, d] or None
+        
+        # 토큰들의 Norm을 억압장의 입력으로 사용 (원점에서의 거리 = 정보량/깊이)
+        # tokens_flat: [BT, L, d_model]
+        token_norms = tokens_flat.norm(dim=-1).mean(dim=-1, keepdim=True) # [BT, 1]
+        
+        current_temp = self.config.temperature_agg
+        if self.suppression_field is not None:
+            # 배치 단위로 동적 온도 계산
+            dynamic_temp = self.suppression_field.compute_effective_temperature(
+                t0=current_temp, 
+                x=token_norms
+            ) # [BT, 1]
+            # RiemannianAggregation은 scalar temperature만 받거나, 
+            # 내부에서 broadcasting을 지원해야 함. 현재 구현은 scalar만 받음.
+            # 따라서 여기서는 평균적인 온도를 사용하거나, Aggregator를 수정해야 함.
+            # 일단 평균 온도로 근사하여 적용 (구현 단순화)
+            avg_temp = dynamic_temp.mean().item()
+            self.sentence_aggregator.temperature = avg_temp
+        else:
+            self.sentence_aggregator.temperature = current_temp
+
         sentence_embeddings_flat = self.sentence_aggregator(
             tokens_flat,  # [B*T, L, d_model]
             metric_ctx=metric_flat,
@@ -1138,16 +1180,22 @@ class HierarchicalSentenceTopicLLM(nn.Module):
     ) -> torch.Tensor:
         """
         문장 → 문단 상향식 인코딩 (Riemannian message passing).
-        
-        h_paragraph = RiemannAgg({h_sentence : sentence ∈ paragraph}; M_paragraph, G_paragraph)
-        
-        Args:
-            sentence_embeddings: [B, T, d_model]
-            metric_ctx_paragraph: [B, d, d] 문단 SPD 메트릭 (optional)
-            
-        Returns:
-            paragraph_embedding: [B, d_model]
         """
+        
+        # SFE: Dynamic Temperature 적용 (Paragraph Level)
+        sent_norms = sentence_embeddings.norm(dim=-1).mean(dim=-1, keepdim=True) # [B, 1]
+        
+        current_temp = self.config.temperature_agg
+        if self.suppression_field is not None:
+            dynamic_temp = self.suppression_field.compute_effective_temperature(
+                t0=current_temp,
+                x=sent_norms
+            )
+            avg_temp = dynamic_temp.mean().item()
+            self.paragraph_aggregator.temperature = avg_temp
+        else:
+            self.paragraph_aggregator.temperature = current_temp
+
         # RiemannAgg
         paragraph_embedding = self.paragraph_aggregator(
             sentence_embeddings,  # [B, T, d_model]
@@ -1667,6 +1715,8 @@ def train_hierarchical_llm_from_text(
     metric_params.extend(model.metric_mixer.parameters())
     metric_params.extend(model.sentence_aggregator.parameters())
     metric_params.extend(model.paragraph_aggregator.parameters())
+    if model.suppression_field is not None:
+        metric_params.extend(model.suppression_field.parameters())
     
     # Backbone parameters (low LR)
     backbone_params = []

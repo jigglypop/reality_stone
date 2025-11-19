@@ -588,7 +588,7 @@ impl CollapsedRunnerF32 {
 
     /// step: ids (batch,) -> logits (batch, vocab)
     fn step<'py>(&self, py: Python<'py>, ids: PyReadonlyArray1<'py, i64>) -> &'py PyArray2<f32> {
-        use ndarray::{Array2, Axis};
+        use ndarray::Array2;
         let ids_arr = ids.as_array();
         let batch = ids_arr.len();
         let d = self.t.dim().1;

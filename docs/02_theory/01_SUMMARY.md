@@ -4,31 +4,33 @@
 
 벨만 방정식을 좌표계로, 리만 기하학을 공간 구조로, 라그랑지안을 최적화 원리로 사용하는 통합 신경망 아키텍처.
 
+> **먼저 읽어보기**: [왜 리만 기하학인가?](../01_philosophy/01_WHY_RIEMANNIAN.md)
+
 ## 수식 에센스
 
 ### 1. 벨만 방정식 (좌표계)
-```
+$$
 V(s) = max_a [R(s,a) + γ V(s')]
-```
+$$
 
 ### 2. 리만 메트릭 (공간 구조)
-```
+$$
 g_ij(s) = ⟨∂_i, ∂_j⟩
-```
+$$
 
 ### 3. 라그랑지안 (최적화 원리)
-```
+$$
 L = (1/2) g_ij ẋ^i ẋ^j - V(s)
-```
+$$
 
 ### 4. 통합 손실
-```
+$$
 Loss = L_bellman + λ₁·L_energy + λ₂·L_metric + λ₃·L_rl
-```
+$$
 
 ## 아키텍처 블록
 
-```
+$$
 입력 상태
     ↓
 [벨만 좌표계] ← 사고의 시작점
@@ -42,7 +44,7 @@ Loss = L_bellman + λ₁·L_energy + λ₂·L_metric + λ₃·L_rl
 [시간 미분] ← 창의성 측정
     ↓
 출력 (가치 + 정책)
-```
+$$
 
 ## 성능 예측
 
@@ -136,15 +138,15 @@ Loss = L_bellman + λ₁·L_energy + λ₂·L_metric + λ₃·L_rl
 ### 창의성
 지형이 시간에 따라 변하는 속도
 
-## 실행 방법
+### 실행 방법
 
 ### 데모 실행
-```bash
+$$bash
 python examples/bellman_riemannian_demo.py
-```
+$$
 
 ### 기본 사용
-```python
+$$python
 from examples.bellman_riemannian_demo import BellmanRiemannianNetwork
 
 model = BellmanRiemannianNetwork(
@@ -157,7 +159,7 @@ model = BellmanRiemannianNetwork(
 
 outputs = model.forward(state, key=key, return_details=True)
 print(outputs['creativity'])
-```
+$$
 
 ## 수학적 완결성
 

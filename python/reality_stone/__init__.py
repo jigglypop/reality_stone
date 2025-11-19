@@ -39,17 +39,38 @@ if _so_file:
         else:
             _has_cuda = False
     except ImportError as e:
-        print(f" Reality Stone: Found .so file, but failed to import: {_so_file[0]}")
-        print(f" Error: {e}")
         _rust = None  # type: ignore
 else:
-    print(" Reality Stone: Rust extension (.so/.pyd) not found in package directory.")
-    print(" Please build the project first (e.g., `maturin develop`).")
     _rust = None  # type: ignore
 
 
 from .core.mobius import MobiusAdd, MobiusScalarMul
-from .layers import *
+# Explicit re-exports from layers to avoid wildcard imports
+from .layers.poincare import (
+    PoincareBallLayer,
+    poincare_add,
+    poincare_scalar_mul,
+    poincare_distance,
+    poincare_to_lorentz,
+    poincare_to_klein,
+)
+from .layers.lorentz import (
+    LorentzLayer,
+    lorentz_add,
+    lorentz_scalar_mul,
+    lorentz_distance,
+    lorentz_inner,
+    lorentz_to_poincare,
+    lorentz_to_klein,
+)
+from .layers.klein import (
+    KleinLayer,
+    klein_add,
+    klein_scalar_mul,
+    klein_distance,
+    klein_to_poincare,
+    klein_to_lorentz,
+)
 from .layers.spline import SplineLinear
 # Optional MetriKey (Rust) binding
 try:

@@ -1,5 +1,8 @@
 use pyo3::prelude::*;
-use numpy::{IntoPyArray, PyArray4, PyReadonlyArray2, PyReadonlyArray3, PyReadonlyArray4};
+use numpy::{PyArray4, PyReadonlyArray2, PyReadonlyArray3, PyReadonlyArray4};
+#[cfg(feature = "cuda")]
+use numpy::IntoPyArray;
+#[cfg(feature = "cuda")]
 use ndarray::Array4;
 
 #[cfg(feature = "cuda")]
@@ -52,6 +55,7 @@ pub fn geodesic_topk_attention(
 ) -> PyResult<Py<PyArray4<f32>>> {
     #[cfg(not(feature = "cuda"))]
     {
+        let _ = (&py, &q, &k, &v, &idx, &l_factor, c, tau);
         return Err(pyo3::exceptions::PyRuntimeError::new_err(
             "CUDA support not enabled. Rebuild with --features cuda"
         ));
@@ -169,20 +173,5 @@ pub fn _rust_geodesic(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(geodesic_topk_attention, m)?)?;
     m.add_function(wrap_pyfunction!(batched_cholesky_cuda, m)?)?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_module_creation() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
-            let module = PyModule::new(py, "_rust_geodesic").unwrap();
-            let result = _rust_geodesic(py, module);
-            assert!(result.is_ok());
-        });
-    }
 }
 

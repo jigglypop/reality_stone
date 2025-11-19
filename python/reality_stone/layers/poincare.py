@@ -123,8 +123,8 @@ class PoincareBallLayer(Function):
                 grad_v = torch.from_numpy(grad_v_np).to(grad_output.device)
             return grad_u, grad_v, None, None, None, None, None, None
 
-def poincare_add(x: Tensor, y: Tensor, c: float = None, kappas: Tensor = None, layer_idx: int = None) -> Tensor:
-    return MobiusAdd.apply(x, y, c, kappas, layer_idx)
+def poincare_add(x: Tensor, y: Tensor, c: float = None, kappas: Tensor = None, layer_idx: int = None, c_min: float = -2.0, c_max: float = -0.1) -> Tensor:
+    return MobiusAdd.apply(x, y, c, kappas, layer_idx, c_min, c_max)
 
 def poincare_scalar_mul(x: Tensor, r: float, c: float) -> Tensor:
     return MobiusScalarMul.apply(x, r, c)

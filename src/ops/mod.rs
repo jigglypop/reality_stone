@@ -11,6 +11,9 @@ pub use self::mobius::{
     mobius_add, mobius_add_dynamic, mobius_add_dynamic_backward, mobius_add_grad_c,
     mobius_add_layerwise, mobius_add_layerwise_backward, mobius_scalar, mobius_scalar_grad_c,
 };
+pub use self::mobius::{
+    mobius_add_f64, mobius_add_grad_c_f64, mobius_scalar_f64, mobius_scalar_grad_c_f64,
+};
 pub use self::project::project_to_ball;
 pub use curvature::{DynamicCurvature, LayerWiseDynamicCurvature};
 pub use metrikey::{

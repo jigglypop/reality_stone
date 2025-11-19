@@ -133,25 +133,22 @@ def pipeline(
         llm = HierarchicalLLM.from_config(config, device)
     else:
         raise ValueError("Either model or config must be provided")
-    
-    if task == "text-generation":
-        from .inference import TextGenerator
-        return TextGenerator(llm, **kwargs)
-    
-    elif task == "text-editing":
-        from .inference import TextEditor
-        return TextEditor(llm, **kwargs)
-    
-    elif task == "question-answering":
-        from .qa import QuestionAnswerer
-        return QuestionAnswerer(llm, **kwargs)
-    
-    elif task == "document-indexing":
-        from .indexing import DocumentIndexer
-        return DocumentIndexer(llm, **kwargs)
-    
-    else:
+
+    # task dispatcher
+    from .inference import TextGenerator, TextEditor
+    from .qa import QuestionAnswerer
+    from .indexing import DocumentIndexer
+
+    task_map = {
+        "text-generation": TextGenerator,
+        "text-editing": TextEditor,
+        "question-answering": QuestionAnswerer,
+        "document-indexing": DocumentIndexer,
+    }
+    cls = task_map.get(task)
+    if cls is None:
         raise ValueError(
             f"Unknown task: {task}. "
-            f"Available: text-generation, text-editing, question-answering, document-indexing"
+            f"Available: {', '.join(task_map.keys())}"
         )
+    return cls(llm, **kwargs)

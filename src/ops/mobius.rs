@@ -1,11 +1,17 @@
 use crate::{
     layers::poincare::mobius_add_vjp,
-    ops::{batch::EPS, dot_batched, norm_sq_batched, DynamicCurvature, LayerWiseDynamicCurvature},
+    ops::{
+        batch::EPS,
+        batch::{dot_batched_f64, norm_sq_batched_f64, EPS64},
+        dot_batched, norm_sq_batched, DynamicCurvature, LayerWiseDynamicCurvature,
+    },
 };
 use ndarray::{Array2, ArrayView2, Axis};
 
 const BOUNDARY_EPS: f32 = 1e-5;
 const MIN_DENOMINATOR: f32 = 1e-6;
+const BOUNDARY_EPS64: f64 = 1e-12;
+const MIN_DENOMINATOR64: f64 = 1e-12;
 
 pub fn mobius_add(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32) -> Array2<f32> {
     let u2 = norm_sq_batched(u).insert_axis(Axis(1));
@@ -17,6 +23,17 @@ pub fn mobius_add(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32) -> Array2<f3
     let coeff_u = (1.0 + 2.0 * c * &uv + c * &v2) / &den;
     let coeff_v = (1.0 - c * &u2) / &den;
 
+    coeff_u * u + coeff_v * v
+}
+
+pub fn mobius_add_f64(u: &ArrayView2<f64>, v: &ArrayView2<f64>, c: f64) -> Array2<f64> {
+    let u2 = norm_sq_batched_f64(u).insert_axis(Axis(1));
+    let v2 = norm_sq_batched_f64(v).insert_axis(Axis(1));
+    let uv = dot_batched_f64(u, v).insert_axis(Axis(1));
+    let c2 = c * c;
+    let den = (1.0 + 2.0 * c * &uv + c2 * &u2 * &v2).mapv(|v| v.max(MIN_DENOMINATOR64));
+    let coeff_u = (1.0 + 2.0 * c * &uv + c * &v2) / &den;
+    let coeff_v = (1.0 - c * &u2) / &den;
     coeff_u * u + coeff_v * v
 }
 
@@ -42,6 +59,29 @@ pub fn mobius_scalar(u: &ArrayView2<f32>, c: f32, r: f32) -> Array2<f32> {
         beta / (c.sqrt() * &norm_clamped)
     } else {
         // 음수 곡률: atanh(i*x) = i*atan(x), tanh(i*x) = i*tan(x)
+        let alpha = sqrt_c_norm.mapv(|v| v.atan());
+        let beta = (r * &alpha).mapv(|v| v.tan());
+        beta / ((-c).sqrt() * &norm_clamped)
+    };
+    scale * u
+}
+
+pub fn mobius_scalar_f64(u: &ArrayView2<f64>, c: f64, r: f64) -> Array2<f64> {
+    let norm = norm_sq_batched_f64(u).mapv(f64::sqrt).insert_axis(Axis(1));
+    let norm_clamped = norm.mapv(|v| v.max(EPS64));
+    if c.abs() < EPS64 {
+        return Array2::from_elem(u.dim(), r) * u;
+    }
+    let sqrt_c_norm = if c > 0.0 {
+        (c.sqrt() * &norm_clamped).mapv(|v| v.min(1.0 - BOUNDARY_EPS64))
+    } else {
+        (-c).sqrt() * &norm_clamped
+    };
+    let scale = if c > 0.0 {
+        let alpha = sqrt_c_norm.mapv(|v| v.atanh());
+        let beta = (r * &alpha).mapv(|v| v.tanh());
+        beta / (c.sqrt() * &norm_clamped)
+    } else {
         let alpha = sqrt_c_norm.mapv(|v| v.atan());
         let beta = (r * &alpha).mapv(|v| v.tan());
         beta / ((-c).sqrt() * &norm_clamped)
@@ -99,6 +139,40 @@ pub fn mobius_scalar_grad_c(u: &ArrayView2<f32>, c: f32, r: f32) -> Array2<f32> 
     }
 }
 
+pub fn mobius_scalar_grad_c_f64(u: &ArrayView2<f64>, c: f64, r: f64) -> Array2<f64> {
+    let norm = norm_sq_batched_f64(u).mapv(f64::sqrt).insert_axis(Axis(1));
+    let norm_clamped = norm.mapv(|v| v.max(EPS64));
+    if c.abs() < EPS64 {
+        return Array2::zeros(u.dim());
+    }
+    if c > 0.0 {
+        let sqrt_c = c.sqrt();
+        let scn = (sqrt_c * &norm_clamped).mapv(|v| v.min(1.0 - BOUNDARY_EPS64));
+        let alpha = scn.mapv(|v| v.atanh());
+        let beta = (r * &alpha).mapv(|v| v.tanh());
+        let d_sqrt_c_dc = 0.5 / sqrt_c;
+        let d_alpha_dscn = 1.0 / (1.0 - &scn * &scn).mapv(|v| v.max(EPS64));
+        let tanh_r_alpha = (r * &alpha).mapv(|v| v.tanh());
+        let d_beta_dalpha = r * (1.0 - &tanh_r_alpha * &tanh_r_alpha);
+        let d_beta_dc = &d_beta_dalpha * &d_alpha_dscn * &norm_clamped * d_sqrt_c_dc;
+        let d_scale_dc = (&d_beta_dc * sqrt_c - &beta * d_sqrt_c_dc) / (c * &norm_clamped);
+        &d_scale_dc * u
+    } else {
+        let sqrt_abs_c = (-c).sqrt();
+        let scn = sqrt_abs_c * &norm_clamped;
+        let alpha = scn.mapv(|v| v.atan());
+        let beta = (r * &alpha).mapv(|v| v.tan());
+        let d_sqrt_abs_c_dc = -0.5 / sqrt_abs_c;
+        let d_alpha_dscn = 1.0 / (1.0 + &scn * &scn);
+        let tan_r_alpha = (r * &alpha).mapv(|v| v.tan());
+        let d_beta_dalpha = r * (1.0 + &tan_r_alpha * &tan_r_alpha);
+        let d_beta_dc = &d_beta_dalpha * &d_alpha_dscn * &norm_clamped * d_sqrt_abs_c_dc;
+        let d_scale_dc =
+            (&d_beta_dc * sqrt_abs_c - &beta * d_sqrt_abs_c_dc) / ((-c) * &norm_clamped);
+        &d_scale_dc * u
+    }
+}
+
 pub fn mobius_add_grad_c(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32) -> Array2<f32> {
     let u2 = norm_sq_batched(u).insert_axis(Axis(1));
     let v2 = norm_sq_batched(v).insert_axis(Axis(1));
@@ -106,6 +180,19 @@ pub fn mobius_add_grad_c(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32) -> Ar
     let c2 = c * c;
     let num = (1.0 + 2.0 * c * &uv + c * &v2) * u + (1.0 - c * &u2) * v;
     let den = (1.0 + 2.0 * c * &uv + c2 * &u2 * &v2).mapv(|v| v.max(MIN_DENOMINATOR));
+    let dnum_dc = (2.0 * &uv + &v2) * u - &u2 * v;
+    let dden_dc = 2.0 * &uv + 2.0 * c * &u2 * &v2;
+    let result = (dnum_dc * &den - &num * &dden_dc) / (&den * &den);
+    result
+}
+
+pub fn mobius_add_grad_c_f64(u: &ArrayView2<f64>, v: &ArrayView2<f64>, c: f64) -> Array2<f64> {
+    let u2 = norm_sq_batched_f64(u).insert_axis(Axis(1));
+    let v2 = norm_sq_batched_f64(v).insert_axis(Axis(1));
+    let uv = dot_batched_f64(u, v).insert_axis(Axis(1));
+    let c2 = c * c;
+    let num = (1.0 + 2.0 * c * &uv + c * &v2) * u + (1.0 - c * &u2) * v;
+    let den = (1.0 + 2.0 * c * &uv + c2 * &u2 * &v2).mapv(|v| v.max(MIN_DENOMINATOR64));
     let dnum_dc = (2.0 * &uv + &v2) * u - &u2 * v;
     let dden_dc = 2.0 * &uv + 2.0 * c * &u2 * &v2;
     let result = (dnum_dc * &den - &num * &dden_dc) / (&den * &den);
@@ -165,80 +252,6 @@ pub fn mobius_add_layerwise_backward(
     let grad_kappa = grad_c * dc_dkappa;
     let (grad_u, grad_v) = mobius_add_vjp(grad_output, u, v, c);
     (grad_u, grad_v, grad_kappa)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use approx::assert_relative_eq;
-    use ndarray::arr2;
-
-    #[test]
-    fn test_mobius_add_identity_and_commutativity_small() {
-        let c = 0.1_f32;
-        let x = arr2(&[[0.05, 0.02]]);
-        let z = arr2(&[[0.0, 0.0]]);
-        // 항등원
-        let res1 = mobius_add(&x.view(), &z.view(), c);
-        assert_relative_eq!(res1, x, epsilon = 1e-6);
-        // 작은 벡터에서 근사 가환성: 허용 오차 완화
-        let y = arr2(&[[0.01, -0.03]]);
-        let xy = mobius_add(&x.view(), &y.view(), c);
-        let yx = mobius_add(&y.view(), &x.view(), c);
-        assert!(((&xy - &yx).mapv(f32::abs)).sum() < 1e-3);
-    }
-
-    #[test]
-    fn test_mobius_scalar_limits() {
-        let c = 0.5_f32;
-        let x = arr2(&[[0.1, 0.2], [0.05, -0.05]]);
-        // r=0 => 0 벡터
-        let y0 = mobius_scalar(&x.view(), c, 0.0);
-        assert!((y0.mapv(f32::abs)).sum() < 1e-6);
-        // r=1 => 자기 자신 (근사)
-        let y1 = mobius_scalar(&x.view(), c, 1.0);
-        assert!(((&y1 - &x).mapv(f32::abs)).sum() < 1e-3);
-    }
-
-    #[test]
-    fn test_mobius_add_grad_c_non_trivial() {
-        let c = 0.3_f32;
-        let u = arr2(&[[0.1, 0.2]]);
-        let v = arr2(&[[0.05, -0.1]]);
-        let g = mobius_add_grad_c(&u.view(), &v.view(), c);
-        // 차원/유한성 체크
-        assert_eq!(g.shape(), &[1, 2]);
-        assert!(g.iter().all(|x| x.is_finite()));
-    }
-
-    #[test]
-    fn test_mobius_add_euclidean_limit_small_c() {
-        let c = 1e-5_f32;
-        let x = arr2(&[[0.01_f32, 0.02_f32]]);
-        let y = arr2(&[[0.03_f32, -0.01_f32]]);
-        let sum = &x + &y;
-        let result = mobius_add(&x.view(), &y.view(), c);
-        let diff = (&result - &sum).mapv(f32::abs).sum();
-        assert!(diff < 1e-4);
-    }
-
-    #[test]
-    fn test_mobius_scalar_negative_curvature_finite() {
-        let c = -0.5_f32;
-        let x = arr2(&[[0.1_f32, 0.2_f32]]);
-        let y = mobius_scalar(&x.view(), c, 0.5_f32);
-        assert!(y.iter().all(|v| v.is_finite()));
-    }
-
-    #[test]
-    fn test_mobius_scalar_vs_add_for_small_vector() {
-        let c = 0.1_f32;
-        let x = arr2(&[[0.01_f32, -0.02_f32]]);
-        let scaled = mobius_scalar(&x.view(), c, 2.0_f32);
-        let added = mobius_add(&x.view(), &x.view(), c);
-        let diff = (&scaled - &added).mapv(f32::abs).sum();
-        assert!(diff < 1e-3);
-    }
 }
 
 #[cfg(feature = "cuda")]

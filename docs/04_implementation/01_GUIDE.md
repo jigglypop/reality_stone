@@ -278,18 +278,8 @@ class NaturalGradientOptimizer:
 
 ```python
 class BellmanRiemannianLLM(nn.Module):
-    def __init__(
-        self,
-        state_dim,
-        action_dim,
-        hidden_dim,
-        num_layers=4,
-        gamma=0.99,
-        c=1e-3,
-        key_size=32
-    ):
+    def __init__(self, state_dim, action_dim, hidden_dim):
         super().__init__()
-        
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.hidden_dim = hidden_dim

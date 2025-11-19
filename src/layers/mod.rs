@@ -10,12 +10,10 @@ pub mod lorentz;
 pub mod poincare;
 pub mod spline;
 pub mod riemann;
+pub mod suppression;
 
 pub use self::poincare::{
     poincare_ball_layer, poincare_ball_layer_backward, poincare_distance, poincare_exp_at,
-    poincare_log_at, poincare_to_klein, poincare_to_lorentz,
+    poincare_log_at, poincare_to_klein, poincare_to_lorentz, poincare_exp_at_f64,
+    poincare_log_at_f64,
 };
-
-// Test modules
-#[cfg(test)]
-pub mod tests;

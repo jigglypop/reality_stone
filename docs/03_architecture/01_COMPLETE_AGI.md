@@ -1,4 +1,4 @@
-# Reality Stone: 완전한 AGI 아키텍처
+# Reality Stone: AGI 아키텍처
 
 ## 개요
 
@@ -186,6 +186,7 @@ class HierarchicalSentenceTopicLLM(nn.Module):
 ```python
 class LagrangianEnergySystem(nn.Module):
     def __init__(self, dim):
+        super().__init__()
         self.dim = dim
     
     def kinetic_energy(self, velocity, metric):
@@ -657,6 +658,13 @@ Natural Gradient + 라그랑지안 최적화로 **2-3배 빠른 수렴**
 
 ## 구현 로드맵
 
+### 설계 원칙
+
+- **단위 테스트 우선**: Rust 코어 연산과 CUDA 커널은 반드시 단위 테스트를 작성하고, `cargo test` 및 Python `pytest`를 통과한 뒤에만 상위 계층(LLM, 파이프라인)에 노출한다.
+- **통합 테스트로 마무리**: 최종 빌드 산출물(파이썬 패키지, Rust 라이브러리, CUDA 커널)은 end-to-end 통합 테스트(파이프라인, LLM, API, 예제 스크립트)로 실제 사용 시나리오를 검증한 후에만 배포 단계로 이동한다.
+- **단일 소스 수학 정의**: 모비우스 합, 하이퍼볼릭 거리, 메트릭 연산 등 기본 수식은 중복 구현을 피하고, 하나의 코어 구현(Rust `ops`/`layers`)을 기준으로 Python 레이어와 바인딩이 이를 재사용하도록 정리한다.
+- **운영 스케일 정밀도(f64 강화)**: 기본 연산은 f32 경로를 유지하되, 거리/exp·log/에너지와 같이 수치적으로 민감한 연산은 f64 경로를 함께 제공하고, f32와 f64가 허용 오차 내에서 일치하는지 테스트로 보증한다.
+
 ### Phase 1: 코어 레이어 (완료)
 
 - [x] 푸앵카레/로렌츠/클라인 레이어
@@ -696,6 +704,85 @@ Natural Gradient + 라그랑지안 최적화로 **2-3배 빠른 수렴**
 - [ ] 성능 검증
 - [ ] 논문 발표
 - [ ] 오픈소스 릴리스
+
+### Rust 코어 및 CUDA 커널 구현 계획
+
+- **레이어/연산 계층 정리**
+  - `src/layers`: 푸앵카레/로렌츠/클라인/스플라인/서프레션 레이어를 하이퍼볼릭 레벨(표현 흐름)의 단일 진입점으로 사용한다.
+  - `src/ops`: 모비우스 연산, 곡률/프로젝션/메트릭 키 등 기본 수학 연산을 정의하고, 상위 레이어와 CUDA 커널이 모두 이 모듈을 경유하도록 정리한다.
+  - `src/bindings`: Python에서 호출되는 공개 API의 표면을 담당하며, 수학 로직을 중복 구현하지 않고 `layers`/`ops`를 래핑만 한다.
+- **단위 테스트 전략 (Rust)**
+  - 기존 `src/layers/tests` 및 `tests/mobius_grad.rs` 패턴을 확장해, 각 레이어/연산에 대해
+    - 자기 일관성(distance(self, self)≈0, exp/log roundtrip 등),
+    - 수치 미분 대비 analytic gradient 일치,
+    - 도메인 제약(하이퍼볼릭 볼 내부 등) 검증을 공통 패턴으로 가져간다.
+  - f32와 f64에 대해 동일한 테스트 케이스를 공유하되, 허용 오차만 다르게 두는 형태로 테스트 코드를 구성한다.
+- **CUDA 커널 검증**
+  - `src/layers/cuda` 및 `src/ops/cuda` 커널마다 참조 CPU 구현(Rust `ops`)과 결과를 비교하는 테스트를 작성한다.
+  - 커널 단위 테스트는 작은 배치/저차원 입력에 대해
+    - 값 일치(또는 허용 오차 내),
+    - 경계 조건(0 벡터, 최대 노름 근처, 큰 배치 직전 스케일)에서의 안정성,
+    - 실패 시 명확한 에러 전파를 검증한다.
+
+### Python 계층 및 LLM 통합 계획
+
+- **코어 레이어 바인딩**
+  - `python/reality_stone/layers` 모듈은 가능한 한 Rust `_rust` 바인딩의 연산을 직접 호출하고, 파이썬 단에서는 배치 구성·shape 변환·마스킹 로직만 담당한다.
+  - Poincare/Lorentz/Klein/Spline/Suppression 레이어가 모두 동일한 인터페이스(`forward(x, metric, ...)`)를 제공하도록 정리해, 트리플 하이퍼볼릭 레이어와 LLM이 레이어 교체를 쉽게 하도록 한다.
+- **벨만-리만 레벨 구현**
+  - 논문 상 `BellmanCoordinateSystem`, `RiemannianMetricTensor`, `LagrangianEnergySystem`, `TemporalCreativityModule`을 각각 Python 모듈로 구현하되,
+    - 벨만 좌표계는 `reality_stone.models`에 가치/정책 네트워크와 함께 배치하고,
+    - 메트릭/라그랑지안/창의성 모듈은 이미 존재하는 하이퍼볼릭 연산과 Riemannian 레이어를 재사용하도록 설계한다.
+  - 각 모듈마다 최소 1개 이상의 빠른 단위 테스트(입출력 shape, 기본 수학 성질, 에너지/창의성 양의성 여부 등)를 추가한다.
+- **계층적 LLM과의 통합**
+  - `reality_stone.models.hierarchical_sentence_topic_llm`이
+    - 문장/문단 표현을 하이퍼볼릭 공간으로 임베딩하고,
+    - MetricAttention/MetricRouter 모듈이 리만 메트릭과 통합되도록, 메트릭 텐서와 Lagrangian 에너지 출력을 입력 피처로 받는 경로를 추가한다.
+  - 기존 LLM 테스트(`tests/llm`)는 유지하되, 벨만-리만 신호가 추가되었을 때에도 shape/타입/추론 경로가 깨지지 않는 회귀 테스트를 추가한다.
+
+### 테스트 전략 (단위 테스트 / 통합 테스트)
+
+- **Rust 단위 테스트**
+  - `cargo test` 기본 타깃: CPU 기반 f32/f64 연산의 정확성 검증.
+  - `--features=cuda` 활성화 시 CUDA 커널과의 동등성 테스트를 함께 수행하도록 구성한다.
+  - 모든 새로운 레이어/ops 함수 추가 시, 최소 1개의 자기 일관성 테스트와 1개의 gradient/수치 안정성 테스트를 함께 추가하는 것을 규칙으로 강제한다.
+- **Python 단위 테스트**
+  - `tests/layer`: 하이퍼볼릭 레이어/MetricAttention/Router의 shape·수치 범위·마스크 처리 검증.
+  - `tests/llm`: PreSegmenter → 인코더 → MetricAttention → 디코더까지의 계층적 흐름이 다양한 설정(d_model, n_layer 등)에서 깨지지 않는지 검증.
+  - `tests/api`: `reality_stone.api.pipeline`을 통해 text-generation / text-editing이 최소 기능 요구사항(문자열 roundtrip, 배치 처리)을 만족하는지 확인한다.
+- **통합 테스트**
+  - Reality Stone AGI 풀 파이프라인에 대한 통합 테스트를 추가해,
+    - 텍스트 입력 → 상태/트리 변환 → 벨만 좌표계 → 리만 메트릭 → 하이퍼볼릭 레이어 → Lagrangian/창의성 → LLM 디코더 → 텍스트 출력까지 하나의 함수 호출로 검증한다.
+  - 이 통합 테스트는 소규모 설정(작은 vocab, 작은 차원, 짧은 길이)에서 빠르게 돌아가도록 설계하여, 개발 중에도 자주 실행할 수 있게 한다.
+
+### 정밀도 및 f64 스케일 정책
+
+- **핵심 연산 f64 확장**
+  - `ops::mobius`, Poincare exp/log, 거리 계산, Lagrangian 에너지 등은 f32/f64 두 경로를 모두 제공하고, f64를 기준 진실(truth)로 삼아 f32와의 편차를 테스트로 관리한다.
+  - 고차원/고곡률 영역에서 발생하는 수치 불안정은 f64 기준 테스트를 먼저 추가한 뒤, 필요한 경우 커스텀 안정화 기법(클리핑, 안전한 log/exp 등)을 도입한다.
+- **혼합 정밀도 운용**
+  - LLM 본체는 기본적으로 f32 또는 mixed precision을 사용하되, 메트릭 계산/에너지 누적/창의성 측정과 같이 누적 오차가 큰 부분은 f64로 계산한 후 결과만 f32로 캐스팅한다.
+  - Python API/config 차원에서 정밀도 정책을 선택할 수 있도록 하고, 각 정책(f32-only, hybrid, full-f64)에 대해 최소 1개의 통합 테스트를 유지한다.
+
+### 중복 함수 정리 전략
+
+- **수학 공식 단일화**
+  - 모비우스 합, 하이퍼볼릭 거리, 메트릭 텐서 조합과 같이 논문에서 정의한 핵심 수식은 Rust `ops` 계층에만 구현하고, Rust `layers`/`bindings`, Python 레이어는 이를 호출하는 래퍼만 두도록 정리한다.
+  - Python 쪽에서 동일한 공식을 다시 구현한 부분이 있다면, 단계적으로 `_rust` 바인딩 호출로 교체하고, 교체 전후를 비교하는 회귀 테스트를 먼저 추가한 뒤 코드를 정리한다.
+- **인터페이스 정리**
+  - 하이퍼볼릭 레이어/모듈 간 공통 인터페이스(입력 텐서 shape, 곡률 파라미터, 메트릭 입력 등)를 맞춰, 동일한 연산이 여러 시그니처로 흩어지지 않도록 한다.
+  - API 레벨(`reality_stone.api`)에서는 최소한의 태스크 타입(text-generation, text-editing 등)만 노출하고, 내부 구현 변경이 외부 사용자 코드에 영향을 주지 않도록 캡슐화한다.
+
+### 최종 빌드 및 배포 플로우
+
+- **빌드 파이프라인**
+  - Rust 크레이트 빌드 및 테스트 → CUDA 기능 포함 빌드 확인 → Python 패키지 빌드/설치 → Python 단위 테스트/통합 테스트 순으로 단계를 고정한다.
+  - 각 단계는 실패 시 즉시 중단하며, 상위 단계(예: LLM 통합 테스트)는 하위 단계(Rust/CUDA 단위 테스트)가 모두 통과한 뒤에만 실행된다.
+- **배포 전 체크리스트**
+  - 모든 단위 테스트 및 통합 테스트 통과.
+  - f32/f64 경로 비교 테스트에서 허용 오차 이내 일치.
+  - 새로 추가된 수학 연산이 기존 API 시그니처를 깨지 않는지 검증.
+  - 문서(`SUMMARY`, `COMPLETE_AGI`, `ROADMAP`)의 구현 상태 체크박스가 실제 코드 상태와 일치하도록 갱신.
 
 ## AGI로 가는 길
 

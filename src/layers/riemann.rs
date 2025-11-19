@@ -2,7 +2,6 @@ use ndarray::{Array2, ArrayView1, ArrayView2, Axis};
 
 use crate::layers::poincare::{poincare_exp_at, poincare_log_at};
 use crate::ops::project_to_ball;
-use rayon::prelude::*;
 
 fn zeros_like(x: &ArrayView2<f32>) -> Array2<f32> {
     Array2::<f32>::zeros((x.nrows(), x.ncols()))

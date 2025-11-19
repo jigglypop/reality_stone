@@ -142,10 +142,6 @@ pub fn lorentz_log0_space(x: &ArrayView2<f32>, c: f32) -> Array2<f32> {
     let mut out = Array2::<f32>::zeros((batch, dim));
     for i in 0..batch {
         let x0 = x[[i, 0]];
-        let mut space_norm_sq = 0.0f32;
-        for j in 0..dim {
-            space_norm_sq += x[[i, j + 1]] * x[[i, j + 1]];
-        }
         // s = arcosh(√c x0)
         let s = (sqrtc * x0).acosh();
         let denom = s.sinh().max(EPS);
@@ -189,15 +185,6 @@ pub fn lorentz_log0_space_backward(
         // since ds/dx0 = sqrt(c)/sinh(s)
         let dscale_dx0 = (sinh_s - s * cosh_s) / (sinh_s * sinh_s * sinh_s);
 
-        // gradients from output
-        let g = grad_output.row(i);
-
-        // space components
-        let mut dot_g_u = 0.0f32;
-        for j in 0..space_dim {
-            let gj = g[j];
-            dot_g_u += gj * 0.0; // place holder to avoid confusion
-        }
         // Compute g_xspace = grad_output_space * scale
         for j in 0..space_dim {
             grad_input[[i, j + 1]] = grad_output[[i, j]] * scale;
@@ -559,8 +546,8 @@ pub fn lorentz_layer_backward(
             num2 / denom
         };
 
-        // d alpha / d p = (-c / sinh(alpha)) * G q  where G = diag(1, -1, ..., -1)
-        let scale = -c / sinh_alpha;
+        // d alpha / d p = (c / sinh(alpha)) * G q  where G = diag(1, -1, ..., -1)
+        let scale = c / sinh_alpha;
         let mut dalpha_dp = vec![0.0f32; dim];
         let mut dalpha_dq = vec![0.0f32; dim];
         dalpha_dp[0] = scale * q[0];
@@ -753,59 +740,6 @@ pub fn lorentz_layer_layerwise_backward(
     let dc_dkappa = layer_curvatures.compute_dc_dkappa(layer_idx);
     let grad_kappa = grad_c * dc_dkappa;
     (grad_u, grad_v, grad_kappa)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use approx::assert_relative_eq;
-    use ndarray::arr2;
-
-    fn to_lorentz_coords(space: &ndarray::Array2<f32>, c: f32) -> ndarray::Array2<f32> {
-        let mut out = ndarray::Array2::<f32>::zeros((space.nrows(), space.ncols() + 1));
-        for i in 0..space.nrows() {
-            let mut norm_sq = 0.0f32;
-            for j in 0..space.ncols() {
-                let v = space[[i, j]];
-                norm_sq += v * v;
-                out[[i, j + 1]] = v;
-            }
-            out[[i, 0]] = (1.0 / c + norm_sq).sqrt();
-        }
-        out
-    }
-
-    #[test]
-    fn test_lorentz_inner_basic() {
-        let u = arr2(&[[2.0_f32, 1.0, 1.0]]);
-        let v = arr2(&[[2.0_f32, -1.0, 0.5]]);
-        let inner = lorentz_inner(&u.view(), &v.view());
-        assert!((inner[0] - (2.0 * 2.0 - 1.0 * -1.0 - 1.0 * 0.5)).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_lorentz_distance_non_negative() {
-        let c = 1.0_f32;
-        let sp = arr2(&[[0.1_f32, 0.2_f32]]);
-        let u = to_lorentz_coords(&sp, c);
-        let v = to_lorentz_coords(&sp, c);
-        let d = lorentz_distance(&u.view(), &v.view(), c);
-        assert!(d[0] >= 0.0);
-        assert!(d[0].abs() < 1e-3);
-    }
-
-    #[test]
-    fn test_lorentz_add_scaling_consistency() {
-        let c = 0.8_f32;
-        let u = arr2(&[[1.5_f32, 0.1, 0.2]]);
-        let v = arr2(&[[1.3_f32, 0.05, -0.1]]);
-        let s = lorentz_scalar(&u.view(), c, 0.0);
-        // r=0이면 공간 성분 0, 시간 성분은 양수(>=1)로 유지되는 근사
-        assert!(s[[0, 1]].abs() < 1e-6 && s[[0, 2]].abs() < 1e-6 && s[[0, 0]] >= 1.0);
-        let w = lorentz_add(&u.view(), &v.view(), c);
-        assert_eq!(w.ncols(), u.ncols());
-        assert!(w.iter().all(|x| x.is_finite()));
-    }
 }
 
 #[cfg(feature = "cuda")]

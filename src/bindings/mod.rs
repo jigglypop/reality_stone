@@ -1,10 +1,11 @@
-mod klein;
-mod lorentz;
+pub mod klein;
+pub mod lorentz;
 mod metrikey;
 mod mobius;
-mod poincare;
+pub mod poincare;
 mod riemann;
 mod spline;
+mod suppression;
 pub mod geodesic_attention;
 
 #[macro_use]
@@ -16,7 +17,7 @@ use pyo3::types::PyModule;
 /// Reality Stone - High-performance hyperbolic neural networks in Rust
 #[pymodule]
 pub fn _rust(_py: Python, m: &PyModule) -> PyResult<()> {
-    m.add("__version__", "0.2.0")?;
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     // Mobius operations
     mobius::register(m)?;
     // Poincaré ball operations
@@ -29,6 +30,8 @@ pub fn _rust(_py: Python, m: &PyModule) -> PyResult<()> {
     riemann::register(m)?;
     // Spline Layer
     spline::register_spline_module(_py, m)?;
+    // Suppression Field
+    suppression::register(m)?;
     // RBE (Riemannian Basis Encoding) Module - disabled
     // rbe::init_module(_py, m)?;
     // MetriKey Module

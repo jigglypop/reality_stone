@@ -255,31 +255,33 @@ pub fn poincare_ball_layer_backward_cuda(
 // --- 모듈 등록 ---
 
 pub fn register(m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(poincare_distance_cpu, m)?)?;
-    m.add_function(wrap_pyfunction!(poincare_to_lorentz_cpu, m)?)?;
-    m.add_function(wrap_pyfunction!(poincare_to_klein_cpu, m)?)?;
-    m.add_function(wrap_pyfunction!(poincare_ball_layer_cpu, m)?)?;
-    m.add_function(wrap_pyfunction!(poincare_ball_layer_backward_cpu, m)?)?;
-    m.add_function(wrap_pyfunction!(mobius_add_vjp_cpu, m)?)?;
-    m.add_function(wrap_pyfunction!(mobius_scalar_vjp_cpu, m)?)?;
-    m.add_function(wrap_pyfunction!(project_to_ball_cpu, m)?)?;
+    let sub = PyModule::new(m.py(), "poincare")?;
+    sub.add_function(wrap_pyfunction!(poincare_distance_cpu, sub)?)?;
+    sub.add_function(wrap_pyfunction!(poincare_to_lorentz_cpu, sub)?)?;
+    sub.add_function(wrap_pyfunction!(poincare_to_klein_cpu, sub)?)?;
+    sub.add_function(wrap_pyfunction!(poincare_ball_layer_cpu, sub)?)?;
+    sub.add_function(wrap_pyfunction!(poincare_ball_layer_backward_cpu, sub)?)?;
+    sub.add_function(wrap_pyfunction!(mobius_add_vjp_cpu, sub)?)?;
+    sub.add_function(wrap_pyfunction!(mobius_scalar_vjp_cpu, sub)?)?;
+    sub.add_function(wrap_pyfunction!(project_to_ball_cpu, sub)?)?;
 
     // Dynamic / Layerwise
-    m.add_function(wrap_pyfunction!(poincare_ball_layer_dynamic_cpu, m)?)?;
-    m.add_function(wrap_pyfunction!(
+    sub.add_function(wrap_pyfunction!(poincare_ball_layer_dynamic_cpu, sub)?)?;
+    sub.add_function(wrap_pyfunction!(
         poincare_ball_layer_dynamic_backward_cpu,
-        m
+        sub
     )?)?;
-    m.add_function(wrap_pyfunction!(poincare_ball_layer_layerwise_cpu, m)?)?;
-    m.add_function(wrap_pyfunction!(poincare_ball_layer_layerwise_backward_cpu, m)?)?;
+    sub.add_function(wrap_pyfunction!(poincare_ball_layer_layerwise_cpu, sub)?)?;
+    sub.add_function(wrap_pyfunction!(poincare_ball_layer_layerwise_backward_cpu, sub)?)?;
 
     // CUDA bindings
     #[cfg(feature = "cuda")]
     {
-        m.add_function(wrap_pyfunction!(poincare_distance_cuda, m)?)?;
-        m.add_function(wrap_pyfunction!(poincare_ball_layer_cuda, m)?)?;
-        m.add_function(wrap_pyfunction!(poincare_ball_layer_backward_cuda, m)?)?;
+        sub.add_function(wrap_pyfunction!(poincare_distance_cuda, sub)?)?;
+        sub.add_function(wrap_pyfunction!(poincare_ball_layer_cuda, sub)?)?;
+        sub.add_function(wrap_pyfunction!(poincare_ball_layer_backward_cuda, sub)?)?;
     }
 
+    m.add_submodule(sub)?;
     Ok(())
 }

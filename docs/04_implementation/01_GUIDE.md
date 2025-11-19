@@ -661,6 +661,160 @@ scaler.step(optimizer)
 scaler.update()
 ```
 
+## 11. 테스트 및 환경 설정 가이드
+
+### 11.1 Rust 단위테스트
+
+- **레이어 관련 테스트만 실행**
+
+```bash
+cargo test --features abi3-py38 --test layers
+```
+
+- **ops / gradient 포함 전체 핵심 테스트**
+
+```bash
+cargo test --features abi3-py38 --test ops --test mobius_grad --test layers
+```
+
+- 커버 범위:
+  - `tests/ops.rs`: SPD 메트릭, Mahalanobis, block orthogonal, batched 연산, Dynamic/Layerwise 곡률 등
+  - `tests/mobius_grad.rs`: Möbius add/scalar f32/f64 gradient, Poincaré f64 exp/log, LayerNorm f32/f64 일관성
+  - `tests/layers.rs`: Poincaré / Lorentz / Klein / Spline 레이어, 거리, 지오데식, 제약 조건, Python 바인딩 일관성
+
+> **주의**: `--features abi3-py38` 를 쓰면 pyo3 빌드 스크립트가 Python 3.x 를 요구한다.  
+> Python 이 안 잡혀 있으면 `error: no Python 3.x interpreter found` 로 바로 종료된다. (아래 Python 환경 설정 참고)
+
+### 11.2 CUDA 커널 유닛테스트
+
+Rust 와 분리된, 순수 CUDA 단위테스트용 실행 파일:
+
+#### 11.2.1 빌드
+
+```bash
+cd src/layers/cuda
+nvcc -arch=sm_70 test_kernels.cu poincare.cu lorentz.cu klein.cu mobius.cu -o test_kernels
+```
+
+- MSVC/Windows SDK(UCRT) 가 제대로 설치되어 있어야 한다.
+  - UCRT 헤더 예시:  
+    `C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\ucrt\corecrt.h`
+  - lib 예시:  
+    `C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\um\x64\uuid.lib`
+
+#### 11.2.2 실행
+
+```bash
+cd src/layers/cuda
+./test_kernels.exe
+```
+
+- 출력 예:
+
+```text
+=======================================================
+        CUDA kernel unit tests
+=======================================================
+...
+Result: 15/15 tests passed [OK]
+=======================================================
+```
+
+### 11.3 Python 바인딩 vs Rust 코어 일관성 테스트
+
+- 위치: `tests/layers.rs` 하단
+  - `poincare_distance_binding_matches_rust`
+  - `lorentz_distance_binding_matches_rust`
+  - `klein_distance_binding_matches_rust`
+
+#### 11.3.1 하는 일
+
+- Rust 코어 거리 함수(Poincaré / Lorentz / Klein) 결과와
+- Python 바인딩(`_rust.poincare.*`, `_rust.lorentz.*`, `_rust.klein.*`) 결과를  
+  **절대 오차 1e-5 이내**에서 비교하여, pyo3/numpy 경로에서 수치 오염이 없는지 확인한다.
+
+#### 11.3.2 실행
+
+```bash
+cargo test --features abi3-py38 --test layers
+```
+
+- numpy 가 없으면 해당 테스트는 내부에서 스킵되도록 구현되어 있다.
+
+### 11.4 Python / uv 환경 설정 (Windows 기준)
+
+#### 11.4.1 uv 설치 및 Python 준비
+
+```bash
+# PowerShell
+curl -LsSf https://astral.sh/uv/install.ps1 | powershell
+
+uv python install 3.11
+```
+
+#### 11.4.2 프로젝트 venv 생성 및 활성화
+
+```bash
+cd E:\reality_stone
+uv venv .venv
+```
+
+- PowerShell:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+- Git Bash:
+
+```bash
+source .venv/Scripts/activate
+```
+
+#### 11.4.3 의존성 설치
+
+```bash
+uv pip install --upgrade pip
+uv pip install "datasets>=2.0.0" "transformers>=4.44.0" "accelerate>=0.30.0" "scikit-learn>=1.4.0" "numpy"
+```
+
+#### 11.4.4 pyo3 가 사용할 Python 지정 (선택)
+
+```bash
+export PYO3_PYTHON="./.venv/Scripts/python.exe"  # Git Bash
+
+# 또는 PowerShell
+$env:PYO3_PYTHON = ".\.venv\Scripts\python.exe"
+```
+
+그 후에:
+
+```bash
+cargo test --features abi3-py38 --test layers
+```
+
+### 11.5 CLINC150 의도분류 예제 스크립트 실행
+
+- 스크립트 경로: `examples/intent_clinc_train.py`
+- 데이터셋: HuggingFace `clinc_oos`, config `"plus"`
+- 모델: `microsoft/deberta-v3-large`
+
+실행 방법:
+
+```bash
+cd E:\reality_stone
+python examples/intent_clinc_train.py
+```
+
+또는 Windows 기본 런처를 사용할 경우:
+
+```bash
+py examples/intent_clinc_train.py
+```
+
+성공 시 마지막에 CLINC150 테스트셋에 대한 `accuracy`, `macro_f1` 가 출력되며,  
+하이퍼볼릭 레이어/AGI 상위 모듈과의 통합 전 **베이스라인 SOTA 근처 성능**을 확인하는 기준이 된다.
+
 ## 결론
 
 이 가이드는 벨만 방정식, 리만 기하학, 라그랑지안, 강화학습을 통합한 완전한 구현 방법을 제시합니다. 각 모듈은 독립적으로 테스트 가능하며, 단계적으로 통합할 수 있습니다.

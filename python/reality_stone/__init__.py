@@ -2,46 +2,46 @@ import torch
 import sys
 from pathlib import Path
 
-# 현재 파일의 디렉토리를 기준으로 .so 파일 경로를 명시적으로 지정
-_lib_path = Path(__file__).parent.resolve()
-_so_file = list(_lib_path.glob('_rust*.so')) or list(_lib_path.glob('_rust*.pyd'))
-
 _has_rust_ext = False
 _has_cuda = False
 
-if _so_file:
-    try:
-        if str(_lib_path) not in sys.path:
-            sys.path.insert(0, str(_lib_path))
-        from . import _rust
-        _has_rust_ext = True
-        # CUDA 가용 여부는 PyTorch CUDA 가능 + Rust 확장에 필요한 CUDA 심볼 존재 여부를 함께 확인
-        if torch.cuda.is_available():
-            # 현재 Python 레이어에서 직접 사용하는 CUDA 바인딩 검사
-            required_cuda_symbols = [
-                # Möbius
-                'mobius_add_cuda',
-                'mobius_scalar_cuda',
-                # Poincaré
-                'poincare_ball_layer_cuda',
-                'poincare_ball_layer_backward_cuda',
-                'poincare_distance_cuda',
-                # Lorentz
-                'lorentz_layer_forward_cuda',
-                'lorentz_ball_layer_backward_cuda',
-                'lorentz_distance_cuda',
-                # Klein
-                'klein_layer_forward_cuda',
-                'klein_ball_layer_backward_cuda',
-                'klein_distance_cuda',
-            ]
-            _has_cuda = all(hasattr(_rust, name) for name in required_cuda_symbols)
-        else:
-            _has_cuda = False
-    except ImportError as e:
-        _rust = None  # type: ignore
-else:
+# 1) 우선 site-packages에 설치된 확장을 우선 시도 (maturin develop로 설치된 최신 빌드)
+try:
+    from . import _rust  # type: ignore
+    _has_rust_ext = True
+except Exception:
+    # 2) 실패 시에만 로컬 번들된 바이너리(_rust*.pyd/.so)를 fallback으로 시도
     _rust = None  # type: ignore
+    try:
+        lib_path = Path(__file__).parent.resolve()
+        local_ext = list(lib_path.glob('_rust*.so')) or list(lib_path.glob('_rust*.pyd'))
+        if local_ext:
+            if str(lib_path) not in sys.path:
+                sys.path.insert(0, str(lib_path))
+            from . import _rust as _rust_local  # type: ignore
+            _rust = _rust_local  # type: ignore
+            _has_rust_ext = True
+    except Exception:
+        _rust = None  # type: ignore
+
+# CUDA 가용 여부는 PyTorch CUDA 가능 + Rust 확장에 필요한 CUDA 심볼 존재 여부를 함께 확인
+if _has_rust_ext and torch.cuda.is_available():
+    required_cuda_symbols = [
+        'mobius_add_cuda',
+        'mobius_scalar_cuda',
+        'poincare_ball_layer_cuda',
+        'poincare_ball_layer_backward_cuda',
+        'poincare_distance_cuda',
+        'lorentz_layer_forward_cuda',
+        'lorentz_ball_layer_backward_cuda',
+        'lorentz_distance_cuda',
+        'klein_layer_forward_cuda',
+        'klein_ball_layer_backward_cuda',
+        'klein_distance_cuda',
+    ]
+    _has_cuda = all(hasattr(_rust, name) for name in required_cuda_symbols)  # type: ignore
+else:
+    _has_cuda = False
 
 
 from .core.mobius import MobiusAdd, MobiusScalarMul

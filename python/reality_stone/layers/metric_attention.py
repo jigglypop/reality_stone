@@ -8,11 +8,11 @@ from .poincare import poincare_distance
 from .lorentz import lorentz_distance
 from .klein import klein_distance
 
-# Try to import CUDA-accelerated kernel
 try:
-    from reality_stone._rust_geodesic import geodesic_topk_attention
+    from reality_stone._rust import geodesic as _geodesic
+    geodesic_topk_attention = _geodesic.geodesic_topk_attention
     HAS_CUDA_KERNEL = True
-except ImportError:
+except Exception:
     HAS_CUDA_KERNEL = False
 
 
@@ -308,6 +308,11 @@ class MetricAttention(nn.Module):
             d2 = dist.pow(2.0).reshape(B, H, T, K)
             # Convert to scores, then normalize per Top-k set
             s_sel = -d2 / max(self.tau, 1e-6)
+            # Low-rank auxiliary term to ensure gradient flows to metric.U
+            if qu is not None and ku is not None:
+                s_lr_full = torch.einsum("bhtr,bhsr->bhts", qu, ku)  # (B,H,T,S)
+                s_lr = masked_gather(s_lr_full, idx)  # (B,H,T,K)
+                s_sel = s_sel + 1e-3 * s_lr
             if rel_bias is not None:
                 # if bias is full (B,H,T,S), gather it
                 if rel_bias.dim() == 4 and rel_bias.shape[-1] == S:

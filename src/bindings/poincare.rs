@@ -38,6 +38,32 @@ pub fn poincare_ball_layer_cpu<'py>(
     poincare::poincare_ball_layer(&u_arr, &v_arr, c, t).into_pyarray(py)
 }
 
+/// Exponential map on the Poincaré ball at point x with tangent vector v.
+#[pyfunction]
+pub fn poincare_exp_at_cpu<'py>(
+    py: Python<'py>,
+    x: PyReadonlyArray2<f32>,
+    v: PyReadonlyArray2<f32>,
+    c: f32,
+) -> &'py PyArray2<f32> {
+    let x_arr = x.as_array();
+    let v_arr = v.as_array();
+    poincare::poincare_exp_at(&x_arr, &v_arr, c).into_pyarray(py)
+}
+
+/// Logarithmic map on the Poincaré ball at point x for point y.
+#[pyfunction]
+pub fn poincare_log_at_cpu<'py>(
+    py: Python<'py>,
+    x: PyReadonlyArray2<f32>,
+    y: PyReadonlyArray2<f32>,
+    c: f32,
+) -> &'py PyArray2<f32> {
+    let x_arr = x.as_array();
+    let y_arr = y.as_array();
+    poincare::poincare_log_at(&x_arr, &y_arr, c).into_pyarray(py)
+}
+
 #[pyfunction]
 pub fn poincare_ball_layer_backward_cpu<'py>(
     py: Python<'py>,
@@ -260,6 +286,8 @@ pub fn register(m: &PyModule) -> PyResult<()> {
     sub.add_function(wrap_pyfunction!(poincare_to_lorentz_cpu, sub)?)?;
     sub.add_function(wrap_pyfunction!(poincare_to_klein_cpu, sub)?)?;
     sub.add_function(wrap_pyfunction!(poincare_ball_layer_cpu, sub)?)?;
+    sub.add_function(wrap_pyfunction!(poincare_exp_at_cpu, sub)?)?;
+    sub.add_function(wrap_pyfunction!(poincare_log_at_cpu, sub)?)?;
     sub.add_function(wrap_pyfunction!(poincare_ball_layer_backward_cpu, sub)?)?;
     sub.add_function(wrap_pyfunction!(mobius_add_vjp_cpu, sub)?)?;
     sub.add_function(wrap_pyfunction!(mobius_scalar_vjp_cpu, sub)?)?;

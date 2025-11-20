@@ -294,3 +294,66 @@ __global__ void geodesic_topk_attention_fp16_kernel(
 }
 #endif
 
+// Batched Cholesky Decomposition
+// Each block handles one matrix.
+// Assumes d is small (e.g. <= 32 or 64).
+// A: [B * T, d, d]
+// L: [B * T, d, d]
+__global__ void batched_cholesky_kernel(
+    const float* __restrict__ A,
+    float* __restrict__ L,
+    int batch_count,
+    int d
+) {
+    int b_idx = blockIdx.x;
+    if (b_idx >= batch_count) return;
+
+    const float* A_mat = A + b_idx * d * d;
+    float* L_mat = L + b_idx * d * d;
+
+    // Initialize L to 0
+    for (int i = threadIdx.x; i < d * d; i += blockDim.x) {
+        L_mat[i] = 0.0f;
+    }
+    __syncthreads();
+
+    for (int k = 0; k < d; ++k) {
+        // Compute L_kk
+        if (threadIdx.x == 0) {
+            float sum = 0.0f;
+            for (int j = 0; j < k; ++j) {
+                float val = L_mat[k * d + j];
+                sum += val * val;
+            }
+            float diag = A_mat[k * d + k] - sum;
+            L_mat[k * d + k] = sqrtf(fmaxf(diag, 1e-6f));
+        }
+        __syncthreads();
+
+        float l_kk = L_mat[k * d + k];
+
+        // Compute L_ik for i > k
+        for (int i = k + 1 + threadIdx.x; i < d; i += blockDim.x) {
+            float sum = 0.0f;
+            for (int j = 0; j < k; ++j) {
+                sum += L_mat[i * d + j] * L_mat[k * d + j];
+            }
+            L_mat[i * d + k] = (A_mat[i * d + k] - sum) / l_kk;
+        }
+        __syncthreads();
+    }
+}
+
+extern "C" void batched_cholesky_cuda(
+    const float* A,
+    float* L,
+    int batch_count,
+    int d
+) {
+    int block_size = 256;
+    batched_cholesky_kernel<<<batch_count, block_size>>>(A, L, batch_count, d);
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("CUDA Error in batched_cholesky: %s\n", cudaGetErrorString(err));
+    }
+}

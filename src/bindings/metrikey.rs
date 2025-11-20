@@ -495,6 +495,7 @@ pub fn init_module(_py: Python, m: &PyModule) -> PyResult<()> {
     sub.add_class::<CollapsedTransformF32>()?;
     sub.add_class::<CollapsedTransformF64>()?;
     sub.add_class::<CollapsedRunnerF32>()?;
+    sub.add_class::<CollapsedRunnerF64>()?;
 
     m.add_submodule(sub)?;
     Ok(())

@@ -38,7 +38,7 @@ class PoincareBallLayer(Function):
             else:
                 kappa_val = kappas[layer_idx].item()
                 
-            output_np, c_val = _rust.poincare_ball_layer_layerwise_cpu(
+            output_np, c_val = _rust.poincare.poincare_ball_layer_layerwise_cpu(
                 u.cpu().numpy(), v.cpu().numpy(), kappa_val, layer_idx, c_min, c_max, t
             )
             ctx.c_val = c_val
@@ -48,20 +48,16 @@ class PoincareBallLayer(Function):
             ctx.c = c if c is not None else 1.0
             ctx.save_for_backward(u, v)
             # CUDA 경로는 실제 바인딩이 존재할 때만 사용 (안전 가드)
-            if (
-                u.is_cuda
-                and _has_cuda
-                and hasattr(_rust, "poincare_ball_layer_cuda")
-            ):
+            if (u.is_cuda and _has_cuda and hasattr(_rust, "poincare") and hasattr(_rust.poincare, "poincare_ball_layer_cuda")):
                 output = torch.empty_like(u)
-                _rust.poincare_ball_layer_cuda(
+                _rust.poincare.poincare_ball_layer_cuda(
                     output.data_ptr(), u.data_ptr(), v.data_ptr(),
                     ctx.c, t, u.shape[0], u.shape[1]
                 )
                 return output
             else:
                 # CPU Path
-                output_np = _rust.poincare_ball_layer_cpu(
+                output_np = _rust.poincare.poincare_ball_layer_cpu(
                     u.cpu().numpy(), v.cpu().numpy(), ctx.c, t
                 )
                 return torch.from_numpy(output_np).to(u.device)
@@ -82,7 +78,7 @@ class PoincareBallLayer(Function):
             else:
                 kappa_val = kappas[layer_idx].item()
                 
-            grad_u_np, grad_v_np, grad_kappa_val = _rust.poincare_ball_layer_layerwise_backward_cpu(
+            grad_u_np, grad_v_np, grad_kappa_val = _rust.poincare.poincare_ball_layer_layerwise_backward_cpu(
                 grad_output.cpu().numpy(), u.cpu().numpy(), v.cpu().numpy(), 
                 kappa_val, layer_idx, c_min, c_max, t
             )
@@ -103,20 +99,16 @@ class PoincareBallLayer(Function):
             c = ctx.c
             grad_u = grad_v = None
             # CUDA 경로는 실제 바인딩이 존재할 때만 사용
-            if (
-                grad_output.is_cuda
-                and _has_cuda
-                and hasattr(_rust, "poincare_ball_layer_backward_cuda")
-            ):
+            if (grad_output.is_cuda and _has_cuda and hasattr(_rust, "poincare") and hasattr(_rust.poincare, "poincare_ball_layer_backward_cuda")):
                 grad_u = torch.empty_like(u)
                 grad_v = torch.empty_like(v)
-                _rust.poincare_ball_layer_backward_cuda(
+                _rust.poincare.poincare_ball_layer_backward_cuda(
                     grad_output.data_ptr(), u.data_ptr(), v.data_ptr(),
                     grad_u.data_ptr(), grad_v.data_ptr(),
                     c, t, u.shape[0], u.shape[1]
                 )
             else:
-                grad_u_np, grad_v_np = _rust.poincare_ball_layer_backward_cpu(
+                grad_u_np, grad_v_np = _rust.poincare.poincare_ball_layer_backward_cpu(
                     grad_output.cpu().numpy(), u.cpu().numpy(), v.cpu().numpy(), c, t
                 )
                 grad_u = torch.from_numpy(grad_u_np).to(grad_output.device)
@@ -145,11 +137,11 @@ def poincare_distance(x: Tensor, y: Tensor, c: float) -> Tensor:
     return (2.0 / sqrtc) * torch.atanh(arg)
 
 def poincare_to_lorentz(x: Tensor, c: float) -> Tensor:
-    output_np = _rust.poincare_to_lorentz_cpu(x.cpu().numpy(), c)
+    output_np = _rust.poincare.poincare_to_lorentz_cpu(x.cpu().numpy(), c)
     return torch.from_numpy(output_np).to(x.device)
 
 def poincare_to_klein(x: Tensor, c: float) -> Tensor:
-    output_np = _rust.poincare_to_klein_cpu(x.cpu().numpy(), c)
+    output_np = _rust.poincare.poincare_to_klein_cpu(x.cpu().numpy(), c)
     return torch.from_numpy(output_np).to(x.device)
 
 # --- HyperbolicLinear 및 관련 함수 ---

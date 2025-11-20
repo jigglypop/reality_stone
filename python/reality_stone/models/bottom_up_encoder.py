@@ -56,11 +56,8 @@ class BottomUpEncoder(nn.Module):
     ) -> torch.Tensor:
         B, T, d = sentence_embeddings.shape
         
-        mu = sentence_embeddings.mean(dim=1)
-        
         paragraph_emb = self.sentence_to_paragraph(
             children_states=sentence_embeddings,
-            mu=mu,
             metric_ctx=metric_ctx,
         )
         

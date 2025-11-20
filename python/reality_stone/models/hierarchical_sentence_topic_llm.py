@@ -98,6 +98,8 @@ class EditOperationHead(nn.Module):
         self.edit_budget = edit_budget
         self.proj = nn.Linear(d_model, num_ops)
         self.value_proj = nn.Linear(d_model, d_model)
+        for p in self.value_proj.parameters():
+            p.requires_grad = False
 
     def forward(self, hidden: torch.Tensor) -> torch.Tensor:
         return self.proj(hidden)
@@ -546,6 +548,9 @@ class MetricContextRouter(nn.Module):
         B, T = scores.shape
         device = scores.device
         scores = torch.clamp(scores, min=-10.0, max=10.0)
+        if self.score_quantize is not None and self.score_quantize > 0:
+            q = torch.as_tensor(self.score_quantize, dtype=scores.dtype, device=device)
+            scores = torch.round(scores / q) * q
         
         eye_base = torch.eye(self.d_head, device=device, dtype=scores.dtype)
         
@@ -918,6 +923,14 @@ class _DecoderBlock(nn.Module):
         # scores = -d^2 / τ
         tau = max(self.attn.tau, 1e-6)
         scores = -d2 / tau  # [B,H,S,K]
+        # Low-rank auxiliary term to ensure gradient flows to SPDMetric.U
+        qu = self.attn.metric.lowrank_proj(q)
+        ku = self.attn.metric.lowrank_proj(k)
+        if qu is not None and ku is not None:
+            s_lr_full = torch.einsum("bhtr,bhsr->bhts", qu, ku)  # [B,H,S,S]
+            idx_bhs = idx_causal.unsqueeze(1).expand(B, H, S, K)  # [B,H,S,K]
+            s_lr = s_lr_full.gather(dim=3, index=idx_bhs)  # [B,H,S,K]
+            scores = scores + 1e-3 * s_lr
 
         # softmax over K (Top‑k 이웃들)
         a = torch.softmax(scores, dim=-1)  # [B,H,S,K]
@@ -1036,7 +1049,8 @@ class HierarchicalSentenceTopicLLM(nn.Module):
         
         # Decoder와 Embedding 공유 + Weight Tying
         self.decoder.token_embed = self.token_embed
-        self.decoder.lm_head.weight = self.token_embed.weight
+        if hasattr(self.token_embed, "weight"):
+            self.decoder.lm_head.weight = self.token_embed.weight
         self.semantic_loss = SemanticPreservationLoss(
             manifold=config.manifold_sentence,
             c=config.c_poincare,
@@ -1150,24 +1164,18 @@ class HierarchicalSentenceTopicLLM(nn.Module):
         token_norms = tokens_flat.norm(dim=-1).mean(dim=-1, keepdim=True) # [BT, 1]
         
         current_temp = self.config.temperature_agg
+        temperature_override = None
         if self.suppression_field is not None:
-            # 배치 단위로 동적 온도 계산
             dynamic_temp = self.suppression_field.compute_effective_temperature(
-                t0=current_temp, 
+                t0=current_temp,
                 x=token_norms
-            ) # [BT, 1]
-            # RiemannianAggregation은 scalar temperature만 받거나, 
-            # 내부에서 broadcasting을 지원해야 함. 현재 구현은 scalar만 받음.
-            # 따라서 여기서는 평균적인 온도를 사용하거나, Aggregator를 수정해야 함.
-            # 일단 평균 온도로 근사하여 적용 (구현 단순화)
-            avg_temp = dynamic_temp.mean().item()
-            self.sentence_aggregator.temperature = avg_temp
-        else:
-            self.sentence_aggregator.temperature = current_temp
+            )  # [BT, 1]
+            temperature_override = dynamic_temp.mean()  # Tensor (keeps grad path)
 
         sentence_embeddings_flat = self.sentence_aggregator(
             tokens_flat,  # [B*T, L, d_model]
             metric_ctx=metric_flat,
+            temperature_override=temperature_override,
         )  # [B*T, d_model]
         
         sentence_embeddings = sentence_embeddings_flat.reshape(B, T, self.config.d_model)  # [B, T, d_model]
@@ -1186,15 +1194,13 @@ class HierarchicalSentenceTopicLLM(nn.Module):
         sent_norms = sentence_embeddings.norm(dim=-1).mean(dim=-1, keepdim=True) # [B, 1]
         
         current_temp = self.config.temperature_agg
+        temperature_override = None
         if self.suppression_field is not None:
             dynamic_temp = self.suppression_field.compute_effective_temperature(
                 t0=current_temp,
                 x=sent_norms
             )
-            avg_temp = dynamic_temp.mean().item()
-            self.paragraph_aggregator.temperature = avg_temp
-        else:
-            self.paragraph_aggregator.temperature = current_temp
+            temperature_override = dynamic_temp.mean()
 
         # RiemannAgg
         paragraph_embedding = self.paragraph_aggregator(
@@ -1642,6 +1648,11 @@ class HierarchicalSentenceTopicLLM(nn.Module):
                 loss = loss + self.config.lambda_semantic * semantic_loss
                 info_str["loss_semantic"] = semantic_loss
 
+            # Tiny regularizer to keep sentence_order_head in graph
+            order_reg = (sentence_order_scores ** 2).mean() * 1e-6
+            loss = loss + order_reg
+            info_str["loss_sentence_order_reg"] = order_reg
+
             if self.config.lambda_edit > 0.0:
                 num_ops = edit_logits.size(-1)
                 probs_edit = F.softmax(edit_logits, dim=-1)
@@ -1654,6 +1665,18 @@ class HierarchicalSentenceTopicLLM(nn.Module):
                 loss_edit = expected_cost.mean()
                 loss = loss + self.config.lambda_edit * loss_edit
                 info_str["loss_edit"] = loss_edit
+            else:
+                loss_edit_reg = (edit_logits ** 2).mean() * 1e-6
+                loss = loss + loss_edit_reg
+                info_str["loss_edit_reg"] = loss_edit_reg
+
+            gamma_reg = (
+                (self.metric_mixer.gamma_up ** 2)
+                + (self.metric_mixer.gamma_self ** 2)
+                + (self.metric_mixer.gamma_down ** 2)
+            ) * 1e-6
+            loss = loss + gamma_reg
+            info_str["loss_gamma_reg"] = gamma_reg
             
             loss = torch.clamp(loss, min=0.0, max=self.config.loss_clip_max * 2.0)
 
@@ -1845,7 +1868,8 @@ def _apply_top_down_decoding(
     for sent_idx, sent_node in enumerate(sentence_nodes[:T]):
         if sent_idx >= T:
             break
-        node_embeddings[sent_node.id] = hidden[0, sent_idx * L]
+        pos = min(sent_idx * L, hidden.size(1) - 1)
+        node_embeddings[sent_node.id] = hidden[0, pos]
     
     processed_embs = model.tree_processor.process_tree(
         tree,

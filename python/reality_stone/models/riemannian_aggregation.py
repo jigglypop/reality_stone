@@ -34,6 +34,7 @@ class RiemannianAggregation(nn.Module):
         children_states: torch.Tensor,
         metric_ctx: Optional[torch.Tensor] = None,
         mask: Optional[torch.Tensor] = None,
+        temperature_override: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         B, N, d = children_states.shape
         device = children_states.device
@@ -69,9 +70,9 @@ class RiemannianAggregation(nn.Module):
         
         # Riemannian aggregation
         if self.manifold == "poincare":
-            return self._poincare_agg(children_states, mu, mask)
+            return self._poincare_agg(children_states, mu, mask, temperature_override)
         elif self.manifold == "lorentz":
-            return self._lorentz_agg(children_states, mu, mask)
+            return self._lorentz_agg(children_states, mu, mask, temperature_override)
         else:
             return mu
     
@@ -80,6 +81,7 @@ class RiemannianAggregation(nn.Module):
         children_states: torch.Tensor,
         mu: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
+        temperature_override: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         B, N, d = children_states.shape
 
@@ -90,7 +92,8 @@ class RiemannianAggregation(nn.Module):
         child_flat = children_states.reshape(B * N, d)
         dist_flat = poincare_distance(mu_exp, child_flat, self.c)
         distances = dist_flat.reshape(B, N)
-        scores = -distances / self.temperature
+        temp = temperature_override if temperature_override is not None else torch.as_tensor(self.temperature, device=distances.device, dtype=distances.dtype)
+        scores = -distances / temp
 
         if mask is not None:
             scores = scores.masked_fill(~mask, float("-inf"))
@@ -107,6 +110,7 @@ class RiemannianAggregation(nn.Module):
         children_states: torch.Tensor,
         mu: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
+        temperature_override: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         B, N, d = children_states.shape
         
@@ -120,7 +124,8 @@ class RiemannianAggregation(nn.Module):
             distances.append(dist)
         
         distances = torch.stack(distances, dim=1)
-        scores = -distances / self.temperature
+        temp = temperature_override if temperature_override is not None else torch.as_tensor(self.temperature, device=distances.device, dtype=distances.dtype)
+        scores = -distances / temp
         
         if mask is not None:
             scores = scores.masked_fill(~mask, float('-inf'))

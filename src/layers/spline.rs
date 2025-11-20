@@ -191,3 +191,76 @@ struct CatmullRomGradients {
     p2_grads: Vec<Array1<f32>>,
     p3_grads: Vec<Array1<f32>>,
 }
+
+#[cfg(feature = "cuda")]
+pub mod cuda {
+    mod ffi {
+        extern "C" {
+            pub fn spline_interpolate_cuda(
+                control_points: *const f32,
+                weights: *mut f32,
+                k: i32,
+                in_features: i32,
+                out_features: i32,
+            );
+            pub fn spline_forward_cuda(
+                input: *const f32,
+                control_points: *const f32,
+                output: *mut f32,
+                batch_size: i32,
+                k: i32,
+                in_features: i32,
+                out_features: i32,
+            );
+            pub fn spline_backward_cuda(
+                grad_output: *const f32,
+                input: *const f32,
+                grad_control_points: *mut f32,
+                batch_size: i32,
+                k: i32,
+                in_features: i32,
+                out_features: i32,
+            );
+        }
+    }
+
+    pub fn spline_interpolate_cuda(
+        control_points: *const f32,
+        weights: *mut f32,
+        k: i32,
+        in_features: i32,
+        out_features: i32,
+    ) {
+        unsafe {
+            ffi::spline_interpolate_cuda(control_points, weights, k, in_features, out_features);
+        }
+    }
+
+    pub fn spline_forward_cuda(
+        input: *const f32,
+        control_points: *const f32,
+        output: *mut f32,
+        batch_size: i32,
+        k: i32,
+        in_features: i32,
+        out_features: i32,
+    ) {
+        unsafe {
+            ffi::spline_forward_cuda(input, control_points, output, batch_size, k, in_features, out_features);
+        }
+    }
+
+    pub fn spline_backward_cuda(
+        grad_output: *const f32,
+        input: *const f32,
+        grad_control_points: *mut f32,
+        batch_size: i32,
+        k: i32,
+        in_features: i32,
+        out_features: i32,
+    ) {
+        unsafe {
+            ffi::spline_backward_cuda(grad_output, input, grad_control_points, batch_size, k, in_features, out_features);
+        }
+    }
+}

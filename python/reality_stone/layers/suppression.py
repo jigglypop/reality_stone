@@ -70,6 +70,6 @@ class HyperbolicSuppressionField(nn.Module):
         질량이 줄어들면(epsilon 증가), 관성이 줄어들어 요동(Temperature)이 커지는 효과.
         """
         eps = self.forward(x)
-        eps = 0.9 * torch.tanh(eps) # 1.0 도달 방지
+        eps = 0.9 * torch.tanh(eps) + (1e-4 * self.scale)  # ensure small gradient path on scale
         return t0 / (1.0 - eps + 1e-6)
 

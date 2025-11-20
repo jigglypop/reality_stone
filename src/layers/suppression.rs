@@ -1,6 +1,4 @@
 use ndarray::{Array2, ArrayView2, Zip};
-#[cfg(feature = "cuda")]
-use crate::ops::cuda::*;
 
 /// Computes the dynamic suppression field epsilon(x) = base + linear * x + hyp * tanh(scale * x)
 /// element-wise.

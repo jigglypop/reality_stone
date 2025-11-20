@@ -36,5 +36,15 @@ pub fn _rust(_py: Python, m: &PyModule) -> PyResult<()> {
     // rbe::init_module(_py, m)?;
     // MetriKey Module
     metrikey::init_module(_py, m)?;
+    // Root-level CUDA symbol re-exports expected by tests
+    #[cfg(feature = "cuda")]
+    {
+        use crate::bindings::poincare as pc;
+        m.add_function(wrap_pyfunction!(pc::poincare_distance_cuda, m)?)?;
+        m.add_function(wrap_pyfunction!(pc::poincare_ball_layer_cuda, m)?)?;
+        m.add_function(wrap_pyfunction!(pc::poincare_ball_layer_backward_cuda, m)?)?;
+    }
+    // Geodesic Attention (CUDA)
+    geodesic_attention::register(m)?;
     Ok(())
 }

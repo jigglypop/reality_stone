@@ -24,6 +24,15 @@ extern "C" {
         d_v: i32,
         out: *mut f32,
     );
+
+    // Low-level CUDA entry point; actual C symbol name is `batched_cholesky_cuda`.
+    #[link_name = "batched_cholesky_cuda"]
+    fn batched_cholesky_cuda_ffi(
+        A: *const f32,
+        L: *mut f32,
+        batch_count: i32,
+        d: i32,
+    );
 }
 
 /// Fused Geodesic Top-k Attention (CUDA)
@@ -159,19 +168,47 @@ pub fn batched_cholesky_cuda(
 
     #[cfg(feature = "cuda")]
     {
-        // TODO: Implement batched Cholesky CUDA kernel
-        // For now, fallback to CPU
-        Err(pyo3::exceptions::PyNotImplementedError::new_err(
-            "batched_cholesky_cuda not yet implemented"
-        ))
+        let g_shape = _g.shape();
+        if g_shape[2] != g_shape[3] {
+             return Err(pyo3::exceptions::PyValueError::new_err(
+                format!("Input must be square matrices, got shape {:?}", g_shape)
+            ));
+        }
+
+        let batch_count = (g_shape[0] * g_shape[1]) as i32;
+        let d = g_shape[2] as i32;
+
+        let g_ptr = _g.as_slice()?.as_ptr();
+        
+        // Allocate output L
+        let l_size = (batch_count * d * d) as usize;
+        let mut l_vec = vec![0.0f32; l_size];
+        
+        unsafe {
+            batched_cholesky_cuda_ffi(
+                g_ptr,
+                l_vec.as_mut_ptr(),
+                batch_count,
+                d
+            );
+        }
+        
+        let out_shape = (g_shape[0], g_shape[1], g_shape[2], g_shape[3]);
+        let out_array = Array4::from_shape_vec(out_shape, l_vec).map_err(|e| {
+             pyo3::exceptions::PyValueError::new_err(format!(
+                "Failed to reshape cholesky output: {e}"
+            ))
+        })?;
+        
+        Ok(out_array.into_pyarray(_py).to_owned())
     }
 }
 
-/// Register Python module
-#[pymodule]
-pub fn _rust_geodesic(_py: Python, m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(geodesic_topk_attention, m)?)?;
-    m.add_function(wrap_pyfunction!(batched_cholesky_cuda, m)?)?;
+pub fn register(m: &PyModule) -> PyResult<()> {
+    let sub = PyModule::new(m.py(), "geodesic")?;
+    sub.add_function(wrap_pyfunction!(geodesic_topk_attention, sub)?)?;
+    sub.add_function(wrap_pyfunction!(batched_cholesky_cuda, sub)?)?;
+    m.add_submodule(sub)?;
     Ok(())
 }
 

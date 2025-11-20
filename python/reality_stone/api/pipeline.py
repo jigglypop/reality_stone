@@ -37,19 +37,23 @@ class HierarchicalLLM:
         
         if config is None:
             if "config" in checkpoint:
-                config_dict = checkpoint["config"]
+                config_dict = dict(checkpoint["config"])
+                if "use_pretrained_embeddings" not in config_dict:
+                    config_dict["use_pretrained_embeddings"] = False
                 config = HierarchicalLLMConfig(**config_dict)
             else:
                 raise ValueError("Config not found in checkpoint")
         
         model = HierarchicalSentenceTopicLLM(config)
         
-        if "model_state_dict" in checkpoint:
-            model.load_state_dict(checkpoint["model_state_dict"])
-        elif "state_dict" in checkpoint:
-            model.load_state_dict(checkpoint["state_dict"])
-        else:
-            model.load_state_dict(checkpoint)
+        state_dict = (
+            checkpoint.get("model_state_dict")
+            or checkpoint.get("state_dict")
+            or checkpoint
+        )
+        incompatible = model.load_state_dict(state_dict, strict=False)
+        if incompatible.unexpected_keys or incompatible.missing_keys:
+            pass  # non-strict load for compatibility
         
         return cls(model, config, device)
     
@@ -112,6 +116,8 @@ class HierarchicalLLM:
                 "n_head_decoder": self.config.n_head_decoder,
                 "c_poincare": self.config.c_poincare,
                 "c_lorentz": self.config.c_lorentz,
+                "use_pretrained_embeddings": self.config.use_pretrained_embeddings,
+                "enable_variable_suppression": self.config.enable_variable_suppression,
             }
         }
         

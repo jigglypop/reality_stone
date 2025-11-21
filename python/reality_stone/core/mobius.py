@@ -69,7 +69,7 @@ class MobiusAdd(Function):
         else:
             x, y = ctx.saved_tensors
             c = ctx.c
-            grad_x_np, grad_y_np = _rust.mobius_add_vjp_cpu(
+            grad_x_np, grad_y_np = _rust.poincare.mobius_add_vjp_cpu(
                 grad_output.cpu().numpy(), x.cpu().numpy(), y.cpu().numpy(), c
             )
             grad_x = torch.from_numpy(grad_x_np).to(grad_output.device)
@@ -93,7 +93,7 @@ class MobiusScalarMul(Function):
     def backward(ctx, grad_output: Tensor):
         x, = ctx.saved_tensors
         r, c = ctx.r, ctx.c
-        grad_x_np = _rust.mobius_scalar_vjp_cpu(
+        grad_x_np = _rust.poincare.mobius_scalar_vjp_cpu(
             grad_output.cpu().numpy(), x.cpu().numpy(), c, r
         )
         grad_x = torch.from_numpy(grad_x_np).to(grad_output.device)

@@ -11,9 +11,27 @@ pub mod poincare;
 pub mod spline;
 pub mod riemann;
 pub mod suppression;
+pub mod bellman;
+pub mod utils;
+
+// 통합 리만 시스템
+pub mod metric;
+pub mod geodesic;
+pub mod bellman_lagrangian;
+pub mod unified_riemannian;
 
 pub use self::poincare::{
     poincare_ball_layer, poincare_ball_layer_backward, poincare_distance, poincare_exp_at,
-    poincare_log_at, poincare_to_klein, poincare_to_lorentz, poincare_exp_at_f64,
-    poincare_log_at_f64,
+    poincare_log_at, poincare_to_klein, poincare_to_lorentz,
 };
+
+pub use self::unified_riemannian::{
+    UnifiedRiemannianLayer, LayerOutput, LayerCache, LayerGradients,
+};
+pub use self::metric::{MetricType, MetricTensor, DiagonalMetric, PoincareMetric, LorentzMetric, KleinMetric};
+pub use self::geodesic::{exponential_map, logarithmic_map, geodesic_path, geodesic_interpolation};
+pub use self::bellman_lagrangian::{
+    ValueFunction, LagrangianParams, EnergyComponents,
+    bellman_potential, kinetic_energy, representation_flow,
+};
+

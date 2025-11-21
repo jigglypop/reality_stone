@@ -7,6 +7,7 @@ mod riemann;
 mod spline;
 mod suppression;
 pub mod geodesic_attention;
+pub mod unified_riemannian;
 
 #[macro_use]
 mod macros;
@@ -32,6 +33,8 @@ pub fn _rust(_py: Python, m: &PyModule) -> PyResult<()> {
     spline::register_spline_module(_py, m)?;
     // Suppression Field
     suppression::register(m)?;
+    // Unified Riemannian Layer
+    unified_riemannian::register(m)?;
     // RBE (Riemannian Basis Encoding) Module - disabled
     // rbe::init_module(_py, m)?;
     // MetriKey Module
@@ -48,3 +51,4 @@ pub fn _rust(_py: Python, m: &PyModule) -> PyResult<()> {
     geodesic_attention::register(m)?;
     Ok(())
 }
+

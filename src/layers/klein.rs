@@ -27,17 +27,105 @@ pub fn klein_distance(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32) -> Array
 }
 
 pub fn klein_add(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32) -> Array2<f32> {
+    // Einstein addition: u (+) v = (1 / (1 + c<u,v>)) * (u + v/gamma_u + (c*gamma_u / (1+gamma_u)) * <u,v> * u)
+    // where gamma_u = 1 / sqrt(1 - c|u|^2)
+    
     let u_norm_sq = norm_sq_batched(u).insert_axis(Axis(1));
-    let v_norm_sq = norm_sq_batched(v).insert_axis(Axis(1));
+    let uv = dot_batched(u, v).insert_axis(Axis(1));
+    
+    let gamma_u = (1.0 - c * &u_norm_sq).mapv(|val| 1.0 / safe_sqrt(val));
+    let denom = 1.0 + c * &uv;
+    let denom_inv = denom.mapv(|val| 1.0 / val.max(EPS));
+    
+    let coeff_v = &gamma_u.mapv(|g| 1.0 / g); // 1/gamma_u = sqrt(1-c|u|^2)
+    let coeff_u_part = (c * &gamma_u * &uv) / (1.0 + &gamma_u);
+    let coeff_u = 1.0 + &coeff_u_part;
+    
+    // Result = denom_inv * (coeff_u * u + coeff_v * v)
+    let mut result = u * &coeff_u;
+    result = &result + &(v * coeff_v);
+    result * &denom_inv
+}
 
-    let u_denom = (1.0 - c * &u_norm_sq).mapv_into(|v| safe_sqrt(v));
-    let v_denom = (1.0 - c * &v_norm_sq).mapv_into(|v| safe_sqrt(v));
-
-    let temp = u / &u_denom + v / &v_denom;
-    let temp_norm_sq = norm_sq_batched(&temp.view()).insert_axis(Axis(1));
-
-    let result_denom = (1.0 + (1.0 + c * temp_norm_sq).mapv(|z| safe_sqrt(z))).mapv(|v| v.max(EPS));
-    temp / result_denom
+pub fn klein_add_vjp(
+    grad_output: &ArrayView2<f32>,
+    u: &ArrayView2<f32>,
+    v: &ArrayView2<f32>,
+    c: f32,
+) -> (Array2<f32>, Array2<f32>) {
+    // Backward pass for Einstein addition
+    // Recalculate forward intermediates
+    let u_norm_sq = norm_sq_batched(u).insert_axis(Axis(1));
+    let uv = dot_batched(u, v).insert_axis(Axis(1));
+    
+    let gamma_u = (1.0 - c * &u_norm_sq).mapv(|val| 1.0 / safe_sqrt(val));
+    let denom = 1.0 + c * &uv;
+    let denom_inv = denom.mapv(|val| 1.0 / val.max(EPS));
+    
+    let inv_gamma_u = gamma_u.mapv(|g| 1.0 / g); // 1/gamma_u
+    let coeff_u_part = (c * &gamma_u * &uv) / (1.0 + &gamma_u);
+    let coeff_u = 1.0 + &coeff_u_part;
+    
+    let num = u * &coeff_u + v * &inv_gamma_u; // Numerator
+    // output = num / denom
+    
+    // Gradients
+    // dL/dNum = grad_output / denom
+    let grad_num = grad_output * &denom_inv;
+    
+    // dL/dDenom = - <grad_output, num> / denom^2 = - <grad_output, output> / denom
+    let output = &num * &denom_inv;
+    let grad_denom = -(grad_output * &output).sum_axis(Axis(1)).insert_axis(Axis(1)) * &denom_inv;
+    
+    // Denom = 1 + c <u,v>
+    // dL/du += c * grad_denom * v
+    // dL/dv += c * grad_denom * u
+    let mut grad_u = v * (&grad_denom * c);
+    let mut grad_v = u * (&grad_denom * c);
+    
+    // Num = coeff_u * u + inv_gamma_u * v
+    // dL/du += coeff_u * grad_num
+    // dL/dv += inv_gamma_u * grad_num
+    grad_u = &grad_u + &(&grad_num * &coeff_u);
+    grad_v = &grad_v + &(&grad_num * &inv_gamma_u);
+    
+    // dL/d_coeff_u = <grad_num, u>
+    let grad_coeff_u = (&grad_num * u).sum_axis(Axis(1)).insert_axis(Axis(1));
+    // dL/d_inv_gamma_u = <grad_num, v>
+    let grad_inv_gamma_u = (&grad_num * v).sum_axis(Axis(1)).insert_axis(Axis(1));
+    
+    // inv_gamma_u = sqrt(1 - c|u|^2)
+    // d_inv_gamma_u / du = - c u / sqrt(...) = -c u inv_gamma_u ? No
+    // d(sqrt(1-cx^2)) = 1/(2sqrt) * (-2cx) = -cx / sqrt = -cx / gamma_u * gamma_u = -cx / gamma_u ??
+    // d/du (1/gamma_u) = d/du (1-c u^2)^0.5 = 0.5 (1-cu^2)^-0.5 (-2cu) = -c u gamma_u
+    // Wait, gamma_u = (1-cu^2)^-0.5.
+    // inv_gamma_u = (1-cu^2)^0.5.
+    // d(inv_gamma_u) = 0.5 * (inv_gamma_u)^-1 * (-2cu) = -c u / inv_gamma_u = -c u gamma_u.
+    // Correct: d_inv_gamma_u / du = -c * gamma_u * u
+    grad_u = &grad_u - &(u * (&grad_inv_gamma_u * c * &gamma_u));
+    
+    // coeff_u = 1 + c * gamma_u * uv / (1 + gamma_u)
+    // Let K = c * uv. Term = K * gamma_u / (1 + gamma_u)
+    // d_coeff_u = d_coeff_u/d_gamma_u * d_gamma_u + d_coeff_u/d_uv * d_uv
+    
+    // d_coeff_u / d_uv = c * gamma_u / (1 + gamma_u)
+    let d_coeff_u_d_uv = c * &gamma_u / (1.0 + &gamma_u);
+    
+    // d_coeff_u / d_gamma_u = K * [ (1+g) - g ] / (1+g)^2 = K / (1+g)^2
+    let d_coeff_u_d_gamma_u = (c * &uv) / ((1.0 + &gamma_u) * (1.0 + &gamma_u));
+    
+    // d_uv / du = v. d_uv / dv = u.
+    let grad_uv = &grad_coeff_u * &d_coeff_u_d_uv;
+    grad_u = &grad_u + &(v * &grad_uv);
+    grad_v = &grad_v + &(u * &grad_uv);
+    
+    // d_gamma_u / du
+    // gamma_u = (1 - c u^2)^-0.5
+    // d_gamma_u = -0.5 (...) ^-1.5 (-2cu) = c u gamma_u^3
+    let grad_gamma_u = &grad_coeff_u * &d_coeff_u_d_gamma_u;
+    grad_u = &grad_u + &(u * (&grad_gamma_u * c * &gamma_u * &gamma_u * &gamma_u));
+    
+    (grad_u, grad_v)
 }
 
 pub fn klein_scalar(u: &ArrayView2<f32>, c: f32, r: f32) -> Array2<f32> {
@@ -91,47 +179,6 @@ pub fn klein_scalar_vjp(
     grad_x
 }
 
-/// Klein 덧셈의 VJP(Vector-Jacobian Product)를 계산합니다.
-pub fn klein_add_vjp(
-    grad_output: &ArrayView2<f32>,
-    u: &ArrayView2<f32>,
-    v: &ArrayView2<f32>,
-    c: f32,
-) -> (Array2<f32>, Array2<f32>) {
-    let u_norm_sq = norm_sq_batched(u).insert_axis(Axis(1));
-    let v_norm_sq = norm_sq_batched(v).insert_axis(Axis(1));
-    let u_denom = (1.0 - c * &u_norm_sq).mapv_into(|val| val.max(EPS).sqrt());
-    let v_denom = (1.0 - c * &v_norm_sq).mapv_into(|val| val.max(EPS).sqrt());
-    let temp = u / &u_denom + v / &v_denom;
-    let temp_norm_sq = norm_sq_batched(&temp.view()).insert_axis(Axis(1));
-    let result_denom_inner_sqrt = (1.0 + c * &temp_norm_sq).mapv(f32::sqrt);
-    let result_denom = (1.0 + &result_denom_inner_sqrt).mapv(|val| val.max(EPS));
-
-    let grad_temp_part1 = grad_output / &result_denom;
-    let grad_result_denom = -(grad_output * &temp / (&result_denom * &result_denom))
-        .sum_axis(Axis(1))
-        .insert_axis(Axis(1));
-    let grad_temp_norm_sq = grad_result_denom * c / (2.0 * &result_denom_inner_sqrt);
-    let grad_temp = grad_temp_part1 + 2.0 * &grad_temp_norm_sq * &temp;
-
-    let grad_u_from_temp = &grad_temp / &u_denom;
-    let grad_v_from_temp = &grad_temp / &v_denom;
-
-    let grad_u_denom = -(&grad_temp * u / (&u_denom * &u_denom))
-        .sum_axis(Axis(1))
-        .insert_axis(Axis(1));
-    let grad_v_denom = -(&grad_temp * v / (&v_denom * &v_denom))
-        .sum_axis(Axis(1))
-        .insert_axis(Axis(1));
-
-    let grad_u_norm_sq = grad_u_denom * (-c / (2.0 * &u_denom));
-    let grad_v_norm_sq = grad_v_denom * (-c / (2.0 * &v_denom));
-
-    let grad_u = grad_u_from_temp + 2.0 * &grad_u_norm_sq * u;
-    let grad_v = grad_v_from_temp + 2.0 * &grad_v_norm_sq * v;
-
-    (grad_u, grad_v)
-}
 
 /// Klein 모델의 순전파 레이어를 계산합니다.
 pub fn klein_layer_forward(

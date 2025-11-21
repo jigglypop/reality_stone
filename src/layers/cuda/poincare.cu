@@ -70,9 +70,9 @@ __global__ void poincare_ball_layer_forward_kernel(const float* u, const float* 
     float u_prime[256]; // Max dim 256
     float v_prime[256];
     
-    mobius_scalar_kernel_impl(u_i, u_prime, dim, c, 1.0f - t, 1e-7f);
-    mobius_scalar_kernel_impl(v_i, v_prime, dim, c, t, 1e-7f);
-    mobius_add_kernel_impl(u_prime, v_prime, out_i, dim, c, 1e-7f);
+    mobius_scalar_kernel_impl(u_i, u_prime, dim, c, 1.0f - t, POINCARE_EPS);
+    mobius_scalar_kernel_impl(v_i, v_prime, dim, c, t, POINCARE_EPS);
+    mobius_add_kernel_impl(u_prime, v_prime, out_i, dim, c, POINCARE_EPS);
 }
 
 // Helper device function for mobius_scalar_vjp
@@ -228,7 +228,7 @@ __global__ void poincare_distance_kernel(const float* x, const float* y, float* 
     const float* x_i = x + i * dim;
     const float* y_i = y + i * dim;
     
-    out[i] = poincare_distance_impl(x_i, y_i, dim, c, 1e-7f);
+    out[i] = poincare_distance_impl(x_i, y_i, dim, c, POINCARE_EPS);
 }
 
 

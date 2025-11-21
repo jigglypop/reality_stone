@@ -1,6 +1,7 @@
 fn main() {
     #[cfg(feature = "cuda")]
     {
+        // Trigger rebuild
         use glob::glob;
         use std::env;
         use std::fs;

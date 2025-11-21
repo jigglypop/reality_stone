@@ -9,7 +9,7 @@ class LorentzLayer(Function):
     def forward(ctx, u: Tensor, v: Tensor, c: float, t: float) -> Tensor:
         ctx.c = c
         ctx.t = t
-        ctx.save_for_backward(u.clone(), v.clone())
+        ctx.save_for_backward(u, v)
         if u.is_cuda and _has_cuda:
             output = torch.empty_like(u)
             _rust.lorentz_layer_forward_cuda(

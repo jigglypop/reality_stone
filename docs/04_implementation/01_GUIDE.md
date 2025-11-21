@@ -274,6 +274,84 @@ class NaturalGradientOptimizer:
                 param.data -= self.lr * natural_grad
 ```
 
+### 2.7 벨만 측지선 레이어 (Bellman Geodesic Layer, PyTorch 프로토타입)
+
+벨만-라그랑지안 해석을 “레이어 단위”로 구현한 최소 단위 블록이다.  
+핵심 아이디어는 다음과 같다.
+
+- **벨만 에러를 라그랑지안 밀도**로 해석  
+  \[
+  \mathcal{L}_{\text{Bell}}(s, s') = \tfrac{1}{2}\big(r + \gamma V(s') - V(s)\big)^2
+  \]
+- **현재 표현 \(h\)에 대한 힘**을 \(\text{force} = -\partial \mathcal{L}_{\text{Bell}} / \partial h\) 로 두고,
+- **학습된 리만 메트릭 \(g(h)\)** 로 이 힘을 스케일링하여, 한 스텝의 **측지선 보정**을 수행한다.
+
+정리하면, 한 레이어에서 하는 일은 다음 한 줄로 요약된다.
+\[
+h_{\text{geo}} = h + g(h) \odot \text{force}
+\]
+
+#### 2.7.1 레이어 구조
+
+```python
+import torch
+import torch.nn as nn
+
+
+class BellmanGeodesicLayer(nn.Module):
+    def __init__(self, hidden_dim, gamma=0.99, metric_smoothness=1e-5):
+        super().__init__()
+        self.gamma = gamma
+        self.epsilon = metric_smoothness
+
+        # 대각 메트릭 g(h)를 근사하는 선형 레이어
+        self.metric_network = nn.Linear(hidden_dim, hidden_dim, bias=False)
+
+        # 필요 시, 추가적인 connection/flow 근사를 붙일 수 있는 확장 포인트
+        self.connection_layer = nn.Linear(hidden_dim, hidden_dim)
+
+    def get_lagrangian(self, state_val, next_state_val, reward):
+        td_error = reward + self.gamma * next_state_val.detach() - state_val
+        lagrangian = 0.5 * td_error.pow(2)
+        return lagrangian, td_error
+
+    def forward(self, current_feature, next_feature=None, reward=None, value_estimation=None):
+        # 1) 상태 의존적 대각 메트릭 g(h) 계산
+        g = torch.sigmoid(self.metric_network(current_feature)) + self.epsilon
+
+        # 추론 모드: 보상/다음 상태 정보가 없으면, 메트릭에 따른 단순 투영만 수행
+        if next_feature is None or reward is None or value_estimation is None:
+            return current_feature * g
+
+        # 2) V(s), V(s') 계산 (외부 value head를 받아 사용)
+        v_curr = value_estimation(current_feature)
+        v_next = value_estimation(next_feature)
+
+        # 3) 벨만-라그랑지안 및 TD 에러
+        lagrangian, td_error = self.get_lagrangian(v_curr, v_next, reward)
+
+        # 4) 라그랑지안에 대한 기울기(힘) 계산
+        force = -torch.autograd.grad(
+            outputs=lagrangian,
+            inputs=current_feature,
+            grad_outputs=torch.ones_like(lagrangian),
+            create_graph=True,
+            retain_graph=True,
+        )[0]
+
+        # 5) 리만 메트릭으로 스케일링된 측지선 보정
+        geodesic_corrected_feature = current_feature + (force * g)
+
+        return geodesic_corrected_feature, lagrangian
+```
+
+#### 2.7.2 사용 패턴
+
+- **입력:** 백본 네트워크의 은닉 표현 `h_t`, 다음 스텝 표현 `h_{t+1}`, 보상 `r_t`, 가치 함수 헤드 `value_head`.
+- **역할:** 일반 레이어가 표현을 선형 변환하는 대신, 이 레이어는 **현재 표현이 “벨만 최소 작용” 측지선에 더 가깝도록** 한 스텝 보정한다.
+- **통합:** `BellmanLayer` / `RiemannianMetricLayer` / `LagrangianLayer` 가 시스템 레벨 구현이라면, `BellmanGeodesicLayer` 는 **단일 레이어 수준의 미세한 지오데식 보정용 블록**으로, 기존 LLM/Encoder 중간에 끼워 넣어 쓸 수 있다.
+
+
 ## 3. 통합 모델
 
 ```python

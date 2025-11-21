@@ -81,8 +81,37 @@ try:
 except Exception:
     metrikey = None  # type: ignore
 
+# Geodesic Attention (Rust) binding
+try:
+    if _has_rust_ext:
+        from ._rust import geodesic as _geodesic  # type: ignore
+        geodesic_topk_attention = _geodesic.geodesic_topk_attention
+        batched_cholesky = _geodesic.batched_cholesky_cuda
+    else:
+        geodesic_topk_attention = None  # type: ignore
+        batched_cholesky = None  # type: ignore
+except Exception:
+    geodesic_topk_attention = None  # type: ignore
+    batched_cholesky = None  # type: ignore
+
 # 모델 변환 유틸리티 추가
 from .conversion import convert_to_hyperbolic
+
+# Unified Riemannian Layer (Rust) binding
+try:
+    if _has_rust_ext:
+        from ._rust import PyUnifiedRiemannianLayer as UnifiedRiemannianLayer  # type: ignore
+        from ._rust import compute_metric, geodesic_distance, geodesic_interpolate  # type: ignore
+    else:
+        UnifiedRiemannianLayer = None  # type: ignore
+        compute_metric = None  # type: ignore
+        geodesic_distance = None  # type: ignore
+        geodesic_interpolate = None  # type: ignore
+except Exception:
+    UnifiedRiemannianLayer = None  # type: ignore
+    compute_metric = None  # type: ignore
+    geodesic_distance = None  # type: ignore
+    geodesic_interpolate = None  # type: ignore
 
 def poincare_ball_layer(u: torch.Tensor, v: torch.Tensor, c: float = None, t: float = 0.5, kappas: torch.Tensor = None, layer_idx: int = None, c_min: float = -2.0, c_max: float = -0.1) -> torch.Tensor:
     return PoincareBallLayer.apply(u, v, c, t, kappas, layer_idx, c_min, c_max)
@@ -130,4 +159,12 @@ __all__ = [
     'convert_to_hyperbolic',
     # MetriKey (Rust bindings)
     'metrikey',
+    # Geodesic Attention (Rust bindings)
+    'geodesic_topk_attention',
+    'batched_cholesky',
+    # Unified Riemannian Layer (Rust bindings)
+    'UnifiedRiemannianLayer',
+    'compute_metric',
+    'geodesic_distance',
+    'geodesic_interpolate',
 ]

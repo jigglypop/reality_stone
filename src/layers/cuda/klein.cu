@@ -6,266 +6,251 @@
 #include <device_launch_parameters.h>
 #include <cmath>
 
-#define KLEIN_EPS 1e-7f
-#define KLEIN_BOUNDARY_EPS 1e-5f
+#define KLEIN_EPS 1e-6f
+#define BOUNDARY_EPS 1e-5f
 
-namespace {
-
-    __device__ inline float dot(const float* x, const float* y, int dim) {
-        float result = 0.0f;
-        for (int i = 0; i < dim; ++i) {
-            result += x[i] * y[i];
-        }
-        return result;
+__device__ float norm_sq(const float* x, int dim) {
+    float sum = 0.0f;
+    for (int i = 0; i < dim; ++i) {
+        sum += x[i] * x[i];
     }
+    return sum;
+}
 
-    __device__ inline float norm_sq(const float* x, int dim) {
-        return dot(x, x, dim);
+__device__ float dot_product(const float* x, const float* y, int dim) {
+    float sum = 0.0f;
+    for (int i = 0; i < dim; ++i) {
+        sum += x[i] * y[i];
     }
+    return sum;
 }
 
-// Klein Distance CUDA Kernel
-// Klein distance: d_K(u,v) = (1/√c) * acosh((1 - c⟨u,v⟩) / √((1-c||u||²)(1-c||v||²)))
-__global__ void klein_distance_kernel(float* out, const float* u, const float* v, float c, int batch_size, int dim) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= batch_size) return;
-
-    const float* u_row = u + idx * dim;
-    const float* v_row = v + idx * dim;
-    
-    float u_norm_sq = norm_sq(u_row, dim);
-    float v_norm_sq = norm_sq(v_row, dim);
-    float uv_dot = dot(u_row, v_row, dim);
-
-    // 표준 Klein distance 공식
-    float numerator = 1.0f - c * uv_dot;
-    float denominator = sqrtf(fmaxf((1.0f - c * u_norm_sq) * (1.0f - c * v_norm_sq), KLEIN_EPS));
-    float arg = fmaxf(numerator / denominator, 1.0f + KLEIN_EPS);
-    
-    out[idx] = acoshf(arg) / sqrtf(c);
+__device__ float safe_acosh(float x) {
+    return acoshf(fmaxf(x, 1.0f + KLEIN_EPS));
 }
 
-// Klein Layer Forward CUDA Kernel
-__global__ void klein_layer_forward_kernel(float* out, const float* u, const float* v, float c, float t, int batch_size, int dim) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= batch_size) return;
-
-    float u_prime[1024]; // Assuming max dim 1024
-    float v_prime[1024];
-    
-    const float* u_row = u + idx * dim;
-    const float* v_row = v + idx * dim;
-    
-    // Scalar Mul for u
-    float u_norm = sqrtf(norm_sq(u_row, dim));
-    float u_norm_clamped = fmaxf(u_norm, KLEIN_EPS);
-    float u_scaled_norm = fminf(u_norm_clamped * (1.0f - t), 1.0f/sqrtf(c) - KLEIN_BOUNDARY_EPS);
-    float u_scale = u_scaled_norm / u_norm_clamped;
-    for(int i=0; i<dim; ++i) u_prime[i] = u_row[i] * u_scale;
-
-    // Scalar Mul for v
-    float v_norm = sqrtf(norm_sq(v_row, dim));
-    float v_norm_clamped = fmaxf(v_norm, KLEIN_EPS);
-    float v_scaled_norm = fminf(v_norm_clamped * t, 1.0f/sqrtf(c) - KLEIN_BOUNDARY_EPS);
-    float v_scale = v_scaled_norm / v_norm_clamped;
-    for(int i=0; i<dim; ++i) v_prime[i] = v_row[i] * v_scale;
-    
-    // Klein Add
-    float u_prime_norm_sq = norm_sq(u_prime, dim);
-    float v_prime_norm_sq = norm_sq(v_prime, dim);
-    float u_denom = sqrtf(fmaxf(1.0f - c * u_prime_norm_sq, KLEIN_EPS));
-    float v_denom = sqrtf(fmaxf(1.0f - c * v_prime_norm_sq, KLEIN_EPS));
-
-    float temp[1024];
-    for(int i=0; i<dim; ++i) temp[i] = u_prime[i] / u_denom + v_prime[i] / v_denom;
-
-    float temp_norm_sq = norm_sq(temp, dim);
-    float res_denom = 1.0f + sqrtf(1.0f + c * temp_norm_sq);
-    
-    float* out_row = out + idx * dim;
-    for(int i=0; i<dim; ++i) out_row[i] = temp[i] / fmaxf(res_denom, KLEIN_EPS);
+__device__ float safe_sqrt(float x) {
+    return sqrtf(fmaxf(x, KLEIN_EPS));
 }
 
-// Klein Layer Backward CUDA Kernel (direct translation of CPU klein_layer_backward + klein_add_vjp + klein_scalar_vjp)
-__global__ void klein_layer_backward_kernel(
-    const float* grad_output, const float* u, const float* v,
-    float* grad_u, float* grad_v,
-    float c, float t, int batch_size, int dim
+__global__ void klein_distance_kernel(
+    float* out, const float* u, const float* v, 
+    float c, long long batch_size, long long dim
 ) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= batch_size) return;
 
     const float* u_row = u + idx * dim;
     const float* v_row = v + idx * dim;
-    const float* g_row = grad_output + idx * dim;
-    float* gu_row = grad_u + idx * dim;
-    float* gv_row = grad_v + idx * dim;
+    
+    float u2 = norm_sq(u_row, dim);
+    float v2 = norm_sq(v_row, dim);
+    float uv = dot_product(u_row, v_row, dim);
+    
+    float sqrt_c = safe_sqrt(c);
+    float numerator = 1.0f - c * uv;
+    float denominator = safe_sqrt((1.0f - c * u2) * (1.0f - c * v2));
+    float arg = fmaxf(numerator / denominator, 1.0f + KLEIN_EPS);
+    
+    out[idx] = safe_acosh(arg) / sqrt_c;
+}
 
-    const int MAX_DIM = 1024;
-
-    // -------- 1) Forward Klein scalar for u and v (as in klein_scalar) --------
-    // u'
-    float u_norm_sq0 = 0.0f;
-    for (int j = 0; j < dim && j < MAX_DIM; ++j) {
-        u_norm_sq0 += u_row[j] * u_row[j];
-    }
-    float u_norm0 = sqrtf(fmaxf(u_norm_sq0, KLEIN_EPS));
-    float u_norm0_clamped = fmaxf(u_norm0, KLEIN_EPS);
-
-    // v'
-    float v_norm_sq0 = 0.0f;
-    for (int j = 0; j < dim && j < MAX_DIM; ++j) {
-        v_norm_sq0 += v_row[j] * v_row[j];
-    }
-    float v_norm0 = sqrtf(fmaxf(v_norm_sq0, KLEIN_EPS));
-    float v_norm0_clamped = fmaxf(v_norm0, KLEIN_EPS);
-
-    float radius = 1.0f / sqrtf(c) - KLEIN_BOUNDARY_EPS;
-
-    // For u: r = (1 - t)
-    float scaled_norm_u = fminf(u_norm0_clamped * (1.0f - t), radius);
-    float scale_u = scaled_norm_u / u_norm0_clamped;
-
-    // For v: r = t
-    float scaled_norm_v = fminf(v_norm0_clamped * t, radius);
-    float scale_v = scaled_norm_v / v_norm0_clamped;
-
-    float uprime[MAX_DIM];
-    float vprime[MAX_DIM];
-    for (int j = 0; j < dim && j < MAX_DIM; ++j) {
-        uprime[j] = u_row[j] * scale_u;
-        vprime[j] = v_row[j] * scale_v;
-    }
-
-    // -------- 2) klein_add_vjp on u', v' --------
-    // Norms and denominators for u', v'
-    float u2 = 0.0f, v2 = 0.0f;
-    for (int j = 0; j < dim && j < MAX_DIM; ++j) {
-        u2 += uprime[j] * uprime[j];
-        v2 += vprime[j] * vprime[j];
-    }
-    float u_denom = sqrtf(fmaxf(1.0f - c * u2, KLEIN_EPS));
-    float v_denom = sqrtf(fmaxf(1.0f - c * v2, KLEIN_EPS));
-
-    // temp = u'/u_denom + v'/v_denom
-    float temp[MAX_DIM];
-    for (int j = 0; j < dim && j < MAX_DIM; ++j) {
-        temp[j] = uprime[j] / u_denom + vprime[j] / v_denom;
-    }
-
-    // temp_norm_sq
-    float temp_norm_sq = 0.0f;
-    for (int j = 0; j < dim && j < MAX_DIM; ++j) {
-        temp_norm_sq += temp[j] * temp[j];
-    }
-
-    float result_denom_inner_sqrt = sqrtf(fmaxf(1.0f + c * temp_norm_sq, KLEIN_EPS));
-    float result_denom = 1.0f + result_denom_inner_sqrt;
-
-    // grad_temp_part1 = grad_output / result_denom
-    float gtemp_part1[MAX_DIM];
-    for (int j = 0; j < dim && j < MAX_DIM; ++j) {
-        gtemp_part1[j] = g_row[j] / result_denom;
-    }
-
-    // grad_result_denom = -sum(grad_output * temp / result_denom^2)
-    float grad_result_denom = 0.0f;
-    float denom_sq = result_denom * result_denom;
-    for (int j = 0; j < dim && j < MAX_DIM; ++j) {
-        grad_result_denom -= g_row[j] * temp[j] / denom_sq;
-    }
-
-    // grad_temp_norm_sq = grad_result_denom * c / (2 * result_denom_inner_sqrt)
-    float grad_temp_norm_sq = grad_result_denom * c / (2.0f * result_denom_inner_sqrt);
-
-    // grad_temp = grad_temp_part1 + 2 * grad_temp_norm_sq * temp
-    float gtemp[MAX_DIM];
-    for (int j = 0; j < dim && j < MAX_DIM; ++j) {
-        gtemp[j] = gtemp_part1[j] + 2.0f * grad_temp_norm_sq * temp[j];
-    }
-
-    // grad_u_from_temp = grad_temp / u_denom, grad_v_from_temp = grad_temp / v_denom
-    float grad_u_from_temp[MAX_DIM];
-    float grad_v_from_temp[MAX_DIM];
-    for (int j = 0; j < dim && j < MAX_DIM; ++j) {
-        grad_u_from_temp[j] = gtemp[j] / u_denom;
-        grad_v_from_temp[j] = gtemp[j] / v_denom;
-    }
-
-    // grad_u_denom = -(grad_temp * u' / u_denom^2).sum
-    float grad_u_denom = 0.0f;
-    float u_denom_sq = u_denom * u_denom;
-    for (int j = 0; j < dim && j < MAX_DIM; ++j) {
-        grad_u_denom -= gtemp[j] * uprime[j] / u_denom_sq;
-    }
-
-    // grad_v_denom = -(grad_temp * v' / v_denom^2).sum
-    float grad_v_denom = 0.0f;
-    float v_denom_sq = v_denom * v_denom;
-    for (int j = 0; j < dim && j < MAX_DIM; ++j) {
-        grad_v_denom -= gtemp[j] * vprime[j] / v_denom_sq;
-    }
-
-    // grad_u_norm_sq = grad_u_denom * (-c / (2*u_denom))
-    float grad_u_norm_sq = grad_u_denom * (-c / (2.0f * u_denom));
-    float grad_v_norm_sq = grad_v_denom * (-c / (2.0f * v_denom));
-
-    // grad_u_prime = grad_u_from_temp + 2 * grad_u_norm_sq * u'
-    float grad_u_prime[MAX_DIM];
-    float grad_v_prime[MAX_DIM];
-    for (int j = 0; j < dim && j < MAX_DIM; ++j) {
-        grad_u_prime[j] = grad_u_from_temp[j] + 2.0f * grad_u_norm_sq * uprime[j];
-        grad_v_prime[j] = grad_v_from_temp[j] + 2.0f * grad_v_norm_sq * vprime[j];
-    }
-
-    // -------- 3) klein_scalar_vjp for u and v --------
-    float boundary = 1.0f / sqrtf(c) - KLEIN_BOUNDARY_EPS;
-
-    // For u: r = (1 - t)
-    float rn_u = (1.0f - t) * u_norm0_clamped;
-    float dscale_dnorm_u = (rn_u < boundary) ? 0.0f : (-1.0f / fmaxf(u_norm0_clamped * u_norm0_clamped, KLEIN_EPS));
-
-    float grad_norm_comp_u = 0.0f;
-    for (int j = 0; j < dim && j < MAX_DIM; ++j) {
-        grad_norm_comp_u += grad_u_prime[j] * u_row[j];
-    }
-
-    for (int j = 0; j < dim && j < MAX_DIM; ++j) {
-        gu_row[j] = grad_u_prime[j] * scale_u
-            + (grad_norm_comp_u * dscale_dnorm_u / u_norm0_clamped) * u_row[j];
-    }
-
-    // For v: r = t
-    float rn_v = t * v_norm0_clamped;
-    float dscale_dnorm_v = (rn_v < boundary) ? 0.0f : (-1.0f / fmaxf(v_norm0_clamped * v_norm0_clamped, KLEIN_EPS));
-
-    float grad_norm_comp_v = 0.0f;
-    for (int j = 0; j < dim && j < MAX_DIM; ++j) {
-        grad_norm_comp_v += grad_v_prime[j] * v_row[j];
-    }
-
-    for (int j = 0; j < dim && j < MAX_DIM; ++j) {
-        gv_row[j] = grad_v_prime[j] * scale_v
-            + (grad_norm_comp_v * dscale_dnorm_v / v_norm0_clamped) * v_row[j];
+__device__ void klein_scalar_impl(
+    const float* x, float* out, int dim, float c, float r
+) {
+    float norm_sq_val = norm_sq(x, dim);
+    float norm_val = fmaxf(safe_sqrt(norm_sq_val), KLEIN_EPS);
+    float scaled_norm = fminf(norm_val * r, 1.0f / safe_sqrt(c) - BOUNDARY_EPS);
+    float scale = scaled_norm / norm_val;
+    
+    for (int i = 0; i < dim; ++i) {
+        out[i] = scale * x[i];
     }
 }
 
+__device__ void klein_add_impl(
+    const float* u, const float* v, float* out, int dim, float c
+) {
+    float u_norm_sq = norm_sq(u, dim);
+    float uv_dot = dot_product(u, v, dim);
+    
+    float gamma_u = 1.0f / safe_sqrt(1.0f - c * u_norm_sq);
+    float denom = fmaxf(1.0f + c * uv_dot, KLEIN_EPS);
+    float denom_inv = 1.0f / denom;
+    
+    float inv_gamma_u = 1.0f / gamma_u;
+    float coeff_u_part = (c * gamma_u * uv_dot) / (1.0f + gamma_u);
+    float coeff_u = 1.0f + coeff_u_part;
+    
+    for (int i = 0; i < dim; ++i) {
+        out[i] = denom_inv * (coeff_u * u[i] + inv_gamma_u * v[i]);
+    }
+}
+
+__global__ void klein_layer_forward_kernel(
+    float* out, const float* u, const float* v, 
+    float c, float t, long long batch_size, long long dim
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= batch_size) return;
+
+    const float* u_row = u + idx * dim;
+    const float* v_row = v + idx * dim;
+    float* out_row = out + idx * dim;
+    
+    float u_prime[256];
+    float v_prime[256];
+    
+    if (dim > 256) return;
+    
+    klein_scalar_impl(u_row, u_prime, dim, c, 1.0f - t);
+    klein_scalar_impl(v_row, v_prime, dim, c, t);
+    klein_add_impl(u_prime, v_prime, out_row, dim, c);
+}
+
+__device__ void klein_scalar_vjp_impl(
+    const float* grad_output_prime, const float* x, 
+    float c, float r, float* grad_x, int dim
+) {
+    float x_norm_sq = norm_sq(x, dim);
+    float x_norm = safe_sqrt(x_norm_sq);
+    float x_norm_clamped = fmaxf(x_norm, KLEIN_EPS);
+    
+    float boundary = 1.0f / safe_sqrt(c) - BOUNDARY_EPS;
+    float scaled_norm = fminf(r * x_norm_clamped, boundary);
+    float scale = scaled_norm / x_norm_clamped;
+    
+    float rn = r * x_norm_clamped;
+    float d_scale_d_norm = (rn < boundary) ? 0.0f : -1.0f / fmaxf(x_norm_clamped * x_norm_clamped, KLEIN_EPS);
+    
+    float grad_norm_component = 0.0f;
+    for (int i = 0; i < dim; ++i) {
+        grad_norm_component += grad_output_prime[i] * x[i];
+    }
+    
+    for (int i = 0; i < dim; ++i) {
+        grad_x[i] = grad_output_prime[i] * scale 
+                  + (grad_norm_component * d_scale_d_norm / x_norm_clamped) * x[i];
+    }
+}
+
+__device__ void klein_add_vjp_impl(
+    const float* grad_output, const float* u, const float* v,
+    float c, float* grad_u, float* grad_v, int dim
+) {
+    float u_norm_sq = norm_sq(u, dim);
+    float v_norm_sq = norm_sq(v, dim);
+    float uv = dot_product(u, v, dim);
+    
+    float gamma_u = 1.0f / safe_sqrt(1.0f - c * u_norm_sq);
+    float denom = fmaxf(1.0f + c * uv, KLEIN_EPS);
+    float denom_inv = 1.0f / denom;
+    
+    float inv_gamma_u = 1.0f / gamma_u;
+    float coeff_u_part = (c * gamma_u * uv) / (1.0f + gamma_u);
+    float coeff_u = 1.0f + coeff_u_part;
+    
+    float output_dot_grad = 0.0f;
+    for (int j = 0; j < dim; ++j) {
+        float out_j = denom_inv * (coeff_u * u[j] + inv_gamma_u * v[j]);
+        output_dot_grad += out_j * grad_output[j];
+    }
+    
+    float grad_denom = -output_dot_grad * denom_inv;
+    
+    for (int j = 0; j < dim; ++j) {
+        float grad_num_u = coeff_u * grad_output[j] * denom_inv;
+        float grad_num_v = inv_gamma_u * grad_output[j] * denom_inv;
+        
+        grad_u[j] = grad_num_u + c * grad_denom * v[j];
+        grad_v[j] = grad_num_v + c * grad_denom * u[j];
+    }
+    
+    float grad_coeff_u = 0.0f;
+    float grad_inv_gamma_u = 0.0f;
+    for (int j = 0; j < dim; ++j) {
+        grad_coeff_u += (grad_output[j] * denom_inv) * u[j];
+        grad_inv_gamma_u += (grad_output[j] * denom_inv) * v[j];
+    }
+    
+    for (int j = 0; j < dim; ++j) {
+        grad_u[j] -= u[j] * (grad_inv_gamma_u * c * gamma_u);
+    }
+    
+    float d_coeff_u_d_uv = c * gamma_u / (1.0f + gamma_u);
+    float d_coeff_u_d_gamma_u = (c * uv) / ((1.0f + gamma_u) * (1.0f + gamma_u));
+    
+    float grad_uv = grad_coeff_u * d_coeff_u_d_uv;
+    float grad_gamma_u = grad_coeff_u * d_coeff_u_d_gamma_u;
+    
+    for (int j = 0; j < dim; ++j) {
+        grad_u[j] += grad_uv * v[j] + grad_gamma_u * c * gamma_u * gamma_u * gamma_u * u[j];
+        grad_v[j] += grad_uv * u[j];
+    }
+}
+
+__global__ void klein_layer_backward_kernel(
+    const float* grad_output, const float* u, const float* v,
+    float* grad_u, float* grad_v,
+    float c, float t, long long batch_size, long long dim
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= batch_size) return;
+
+    if (dim > 256) return;
+    
+    const float* u_row = u + idx * dim;
+    const float* v_row = v + idx * dim;
+    const float* grad_out = grad_output + idx * dim;
+    float* gu = grad_u + idx * dim;
+    float* gv = grad_v + idx * dim;
+    
+    float u_prime[256];
+    float v_prime[256];
+    float grad_u_prime[256];
+    float grad_v_prime[256];
+    
+    klein_scalar_impl(u_row, u_prime, dim, c, 1.0f - t);
+    klein_scalar_impl(v_row, v_prime, dim, c, t);
+    
+    klein_add_vjp_impl(grad_out, u_prime, v_prime, c, grad_u_prime, grad_v_prime, dim);
+    
+    klein_scalar_vjp_impl(grad_u_prime, u_row, c, 1.0f - t, gu, dim);
+    klein_scalar_vjp_impl(grad_v_prime, v_row, c, t, gv, dim);
+}
+
 extern "C" {
-    void klein_distance_cuda(float* out, const float* u, const float* v, float c, int batch_size, int dim) {
+    void klein_distance_cuda(
+        float* out, const float* u, const float* v, 
+        float c, long long batch_size, long long dim
+    ) {
         int threads = 256;
         int blocks = (batch_size + threads - 1) / threads;
         klein_distance_kernel<<<blocks, threads>>>(out, u, v, c, batch_size, dim);
+        cudaDeviceSynchronize();
     }
-
-    void klein_layer_forward_cuda(float* out, const float* u, const float* v, float c, float t, int batch_size, int dim) {
+    
+    void klein_layer_forward_cuda(
+        float* out, const float* u, const float* v, 
+        float c, float t, long long batch_size, long long dim
+    ) {
         int threads = 256;
         int blocks = (batch_size + threads - 1) / threads;
         klein_layer_forward_kernel<<<blocks, threads>>>(out, u, v, c, t, batch_size, dim);
+        cudaDeviceSynchronize();
     }
-
-    void klein_layer_backward_cuda(const float* grad_output, const float* u, const float* v, float* grad_u, float* grad_v, float c, float t, int batch_size, int dim) {
+    
+    void klein_layer_backward_cuda(
+        const float* grad_output, const float* u, const float* v,
+        float* grad_u, float* grad_v,
+        float c, float t, long long batch_size, long long dim
+    ) {
         int threads = 256;
         int blocks = (batch_size + threads - 1) / threads;
-        klein_layer_backward_kernel<<<blocks, threads>>>(grad_output, u, v, grad_u, grad_v, c, t, batch_size, dim);
+        klein_layer_backward_kernel<<<blocks, threads>>>(
+            grad_output, u, v, grad_u, grad_v, c, t, batch_size, dim
+        );
+        cudaDeviceSynchronize();
     }
-} 
+}
+

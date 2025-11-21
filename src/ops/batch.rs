@@ -1,6 +1,6 @@
 use ndarray::{Array1, ArrayView2, Axis};
 
-pub const EPS: f32 = 1e-7;
+pub const EPS: f32 = 1e-6;
 pub const EPS64: f64 = 1e-12;
 
 pub fn norm_sq_batched(x: &ArrayView2<f32>) -> Array1<f32> {

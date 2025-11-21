@@ -396,29 +396,6 @@ pub fn lorentz_scalar_backward(
     grad_input
 }
 
-pub fn lorentz_to_poincare(x: &ArrayView2<f32>, c: f32) -> Array2<f32> {
-    let batch_size = x.nrows();
-    let dim = x.ncols() - 1;
-    let mut result = Array2::zeros((batch_size, dim));
-
-    result
-        .axis_iter_mut(Axis(0))
-        .into_par_iter()
-        .enumerate()
-        .for_each(|(i, mut row)| {
-            let x_row = x.row(i);
-            let sqrtc = c.sqrt();
-            let x0 = x_row[0] * sqrtc;
-            let denom = (x0 + 1.0).max(EPS);
-
-            for j in 0..dim {
-                row[j] = (x_row[j + 1] * sqrtc) / denom;
-            }
-        });
-
-    result
-}
-
 pub fn lorentz_to_klein(x: &ArrayView2<f32>, _: f32) -> Array2<f32> {
     let batch_size = x.nrows();
     let dim = x.ncols() - 1;
@@ -438,6 +415,11 @@ pub fn lorentz_to_klein(x: &ArrayView2<f32>, _: f32) -> Array2<f32> {
         });
 
     result
+}
+
+pub fn lorentz_to_poincare(x: &ArrayView2<f32>, c: f32) -> Array2<f32> {
+    let klein = lorentz_to_klein(x, c);
+    crate::layers::klein::klein_to_poincare(&klein.view(), c)
 }
 
 /// Lorentz 스칼라 곱의 VJP를 계산합니다. (근사치)

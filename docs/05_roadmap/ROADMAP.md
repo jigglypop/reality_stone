@@ -280,8 +280,9 @@ Month 2:
 Month 3:
 - 3D 데이터 처리
   - Point cloud 인코더
-  - 3D shape 생성
-  - Geometry-aware attention
+  - 3D shape 생성 (리만 메트릭 기반)
+  - Lagrangian 3D Gaussian Splatting 기반 3D 생성 물리 엔진 프로토타입
+  - Geometry-aware attention (가우시안 공분산 ↔ 메트릭 $g_{ij}$ 매핑 포함)
 ```
 
 **산출물**:
@@ -330,6 +331,29 @@ Month 2:
 
 **산출물**:
 - `python/reality_stone/models/environment.py`
+
+#### 3.4 특화 응용 엔진 (Specialized Engines)
+
+**목표**: 기하학적 이점을 극대화하는 킬러 애플리케이션
+
+**작업**:
+```
+Month 1-2:
+- 3D 생성 물리 엔진 (L-3DGS)
+  - Rust 기반 미분 가능한 물리 시뮬레이터
+  - Lagrangian Gaussian Splatting 렌더링 파이프라인 (wgpu)
+  - 벨만-라그랑지안 구조 최적화 (Generative Physics)
+
+Month 3-4:
+- 지능형 문서 처리 (Geometric IDP)
+  - 리치 흐름(Ricci Flow) 기반 왜곡 보정 엔진
+  - 벨만 포텐셜 기반 레이아웃 분석기 (Reading Order)
+  - 운동 역학 기반 손글씨 복원
+```
+
+**산출물**:
+- `python/reality_stone/applications/physics_engine/`
+- `python/reality_stone/applications/idp/`
 
 ### Phase 4: AGI 완성 (4-6개월)
 

@@ -62,6 +62,7 @@ __pycache__/
 *.dll
 *.dylib
 python/reality_stone/_rust*.so
+python/reality_stone/_rust*.pyd
 
 # Local outputs
 metrikey_spec.json

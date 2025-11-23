@@ -39,13 +39,26 @@ pub fn _rust(_py: Python, m: &PyModule) -> PyResult<()> {
     // rbe::init_module(_py, m)?;
     // MetriKey Module
     metrikey::init_module(_py, m)?;
+    {
+        use crate::bindings::poincare as pc;
+        m.add_function(wrap_pyfunction!(pc::poincare_to_lorentz_cpu, m)?)?;
+        m.add_function(wrap_pyfunction!(pc::poincare_to_klein_cpu, m)?)?;
+    }
     // Root-level CUDA symbol re-exports expected by tests
     #[cfg(feature = "cuda")]
     {
-        use crate::bindings::poincare as pc;
+        use crate::bindings::{klein as kl, lorentz as lo, mobius as mb, poincare as pc};
+        m.add_function(wrap_pyfunction!(mb::mobius_add_cuda, m)?)?;
+        m.add_function(wrap_pyfunction!(mb::mobius_scalar_cuda, m)?)?;
         m.add_function(wrap_pyfunction!(pc::poincare_distance_cuda, m)?)?;
         m.add_function(wrap_pyfunction!(pc::poincare_ball_layer_cuda, m)?)?;
         m.add_function(wrap_pyfunction!(pc::poincare_ball_layer_backward_cuda, m)?)?;
+        m.add_function(wrap_pyfunction!(lo::lorentz_distance_cuda, m)?)?;
+        m.add_function(wrap_pyfunction!(lo::lorentz_layer_forward_cuda, m)?)?;
+        m.add_function(wrap_pyfunction!(lo::lorentz_ball_layer_backward_cuda, m)?)?;
+        m.add_function(wrap_pyfunction!(kl::klein_distance_cuda, m)?)?;
+        m.add_function(wrap_pyfunction!(kl::klein_layer_forward_cuda, m)?)?;
+        m.add_function(wrap_pyfunction!(kl::klein_ball_layer_backward_cuda, m)?)?;
     }
     // Geodesic Attention (CUDA)
     geodesic_attention::register(m)?;

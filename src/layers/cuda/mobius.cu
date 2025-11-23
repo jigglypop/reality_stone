@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <cmath>
 
+#include "mobius_common.cuh"
+
 #define MIN_DENOMINATOR 1e-6f
 #define EPS 1e-7f
 #define BOUNDARY_EPS 1e-5f
@@ -18,29 +20,7 @@ __global__ void mobius_add_kernel(float* out, const float* u, const float* v, fl
         const float* u_row = u + i * dim;
         const float* v_row = v + i * dim;
         float* out_row = out + i * dim;
-
-        float u2 = 0.0f;
-        float v2 = 0.0f;
-        float uv = 0.0f;
-
-        for (int j = 0; j < dim; ++j) {
-            u2 += u_row[j] * u_row[j];
-            v2 += v_row[j] * v_row[j];
-            uv += u_row[j] * v_row[j];
-        }
-
-        float c2 = c * c;
-        float denominator = 1.0f + 2.0f * c * uv + c2 * u2 * v2;
-        if (denominator < MIN_DENOMINATOR) {
-            denominator = MIN_DENOMINATOR;
-        }
-
-        float coeff_u = (1.0f + 2.0f * c * uv + c * v2) / denominator;
-        float coeff_v = (1.0f - c * u2) / denominator;
-
-        for (int j = 0; j < dim; ++j) {
-            out_row[j] = coeff_u * u_row[j] + coeff_v * v_row[j];
-        }
+        mobius_add_point(u_row, v_row, out_row, dim, c, MIN_DENOMINATOR);
     }
 }
 
@@ -60,50 +40,7 @@ __global__ void mobius_scalar_kernel(float* out, const float* u, float c, float 
     if (i < batch_size) {
         const float* u_row = u + i * dim;
         float* out_row = out + i * dim;
-
-        float norm_sq = 0.0f;
-        for (int j = 0; j < dim; ++j) {
-            norm_sq += u_row[j] * u_row[j];
-        }
-        
-        if (norm_sq < EPS * EPS) {
-            // For very small vectors, fall back to simple scaling to keep gradients stable
-            for (int j = 0; j < dim; ++j) {
-                out_row[j] = r * u_row[j];
-            }
-            return;
-        }
-
-        float norm = sqrtf(norm_sq);
-        
-        if (fabsf(c) < EPS) {
-            // c = 0: Euclidean case
-            for (int j = 0; j < dim; ++j) {
-                out_row[j] = r * u_row[j];
-            }
-            return;
-        }
-        
-        float scale;
-        if (c > 0.0f) {
-            // Positive curvature
-            float sqrt_c = sqrtf(c);
-            float scn = fminf(sqrt_c * norm, 1.0f - BOUNDARY_EPS);
-            float alpha = atanhf(scn);
-            float beta = tanhf(r * alpha);
-            scale = beta / (sqrt_c * norm);
-        } else {
-            // Negative curvature (compute with real-valued formula)
-            float sqrt_abs_c = sqrtf(-c);
-            float scn = sqrt_abs_c * norm;
-            float alpha = atanf(scn);
-            float beta = tanf(r * alpha);
-            scale = beta / (sqrt_abs_c * norm);
-        }
-
-        for (int j = 0; j < dim; ++j) {
-            out_row[j] = scale * u_row[j];
-        }
+        mobius_scalar_point(u_row, out_row, dim, c, r, EPS, BOUNDARY_EPS);
     }
 }
 

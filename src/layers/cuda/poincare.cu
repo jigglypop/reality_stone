@@ -6,58 +6,7 @@
 #include <device_launch_parameters.h>
 #include <cmath>
 
-__device__ void mobius_scalar_kernel_impl(const float* x, float* out, int dim, float c, float r, float eps) {
-    float x_norm_sq = 0;
-    for (int i = 0; i < dim; ++i) {
-        x_norm_sq += x[i] * x[i];
-    }
-    float x_norm = fmaxf(sqrtf(x_norm_sq), eps);
-    
-    if (fabsf(c) < eps) {
-        // c = 0: Euclidean case
-        for (int i = 0; i < dim; ++i) {
-            out[i] = r * x[i];
-        }
-        return;
-    }
-    
-    float scale;
-    if (c > 0.0f) {
-        // Positive curvature
-        float sqrt_c = sqrtf(c);
-        float scn = fminf(sqrt_c * x_norm, 1.0f - eps);
-        float alpha = atanhf(scn);
-        float beta = tanhf(r * alpha);
-        scale = beta / (sqrt_c * x_norm);
-    } else {
-        // Negative curvature
-        float sqrt_abs_c = sqrtf(-c);
-        float scn = sqrt_abs_c * x_norm;
-        float alpha = atanf(scn);
-        float beta = tanf(r * alpha);
-        scale = beta / (sqrt_abs_c * x_norm);
-    }
-
-    for (int i = 0; i < dim; ++i) {
-        out[i] = scale * x[i];
-    }
-}
-
-__device__ void mobius_add_kernel_impl(const float* x, const float* y, float* out, int dim, float c, float eps) {
-    float x2 = 0, y2 = 0, xy = 0;
-    for (int i = 0; i < dim; ++i) {
-        x2 += x[i] * x[i];
-        y2 += y[i] * y[i];
-        xy += x[i] * y[i];
-    }
-    float den = 1.0f + 2.0f * c * xy + c * c * x2 * y2;
-    den = fmaxf(den, eps);
-    float factor_x = (1.0f + 2.0f * c * xy + c * y2);
-    float factor_y = (1.0f - c * x2);
-    for (int i = 0; i < dim; ++i) {
-        out[i] = (factor_x * x[i] + factor_y * y[i]) / den;
-    }
-}
+#include "mobius_common.cuh"
 
 __global__ void poincare_ball_layer_forward_kernel(const float* u, const float* v, float* out, float c, float t, long long batch_size, long long dim) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -70,9 +19,9 @@ __global__ void poincare_ball_layer_forward_kernel(const float* u, const float* 
     float u_prime[256]; // Max dim 256
     float v_prime[256];
     
-    mobius_scalar_kernel_impl(u_i, u_prime, dim, c, 1.0f - t, POINCARE_EPS);
-    mobius_scalar_kernel_impl(v_i, v_prime, dim, c, t, POINCARE_EPS);
-    mobius_add_kernel_impl(u_prime, v_prime, out_i, dim, c, POINCARE_EPS);
+    mobius_scalar_point(u_i, u_prime, dim, c, 1.0f - t, POINCARE_EPS, POINCARE_EPS);
+    mobius_scalar_point(v_i, v_prime, dim, c, t, POINCARE_EPS, POINCARE_EPS);
+    mobius_add_point(u_prime, v_prime, out_i, dim, c, POINCARE_EPS);
 }
 
 // Helper device function for mobius_scalar_vjp

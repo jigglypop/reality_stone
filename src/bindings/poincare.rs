@@ -181,7 +181,7 @@ pub fn mobius_add_vjp_cpu<'py>(
     c: f32,
 ) -> (&'py PyArray2<f32>, &'py PyArray2<f32>) {
     let (grad_x, grad_y) =
-        poincare::mobius_add_vjp(&grad_output.as_array(), &x.as_array(), &y.as_array(), c);
+        crate::ops::mobius::mobius_add_vjp(&grad_output.as_array(), &x.as_array(), &y.as_array(), c);
     (grad_x.into_pyarray(py), grad_y.into_pyarray(py))
 }
 
@@ -193,7 +193,7 @@ pub fn mobius_scalar_vjp_cpu<'py>(
     c: f32,
     r: f32,
 ) -> &'py PyArray2<f32> {
-    poincare::mobius_scalar_vjp(&grad_output.as_array(), &x.as_array(), c, r).into_pyarray(py)
+    crate::ops::mobius::mobius_scalar_vjp(&grad_output.as_array(), &x.as_array(), c, r).into_pyarray(py)
 }
 
 #[pyfunction]

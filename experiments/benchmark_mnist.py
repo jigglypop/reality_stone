@@ -17,6 +17,7 @@ from reality_stone import (
     poincare_ball_layer,
     poincare_distance,
 )
+from reality_stone.layers.poincare import log_map_zero
 
 
 def project_to_ball(x: torch.Tensor, c: float = 1.0, epsilon: float = 1e-5) -> torch.Tensor:
@@ -40,31 +41,27 @@ class MnistLinear(nn.Module):
 
 
 class PoincareMLP(nn.Module):
-    def __init__(self, in_dim=784, hid=128, out_dim=10, c=1e-3, t=0.7):
+    def __init__(self, in_dim=784, hid=128, out_dim=10, c=1e-2, t=0.5):
         super().__init__()
         self.c = c
         self.t = t
-        self.weights1 = nn.Parameter(torch.randn(in_dim, hid) * 0.01)
-        self.bias1 = nn.Parameter(torch.zeros(hid))
-        self.weights2 = nn.Parameter(torch.randn(hid, hid) * 0.01)
-        self.bias2 = nn.Parameter(torch.zeros(hid))
-        self.out_weights = nn.Parameter(torch.randn(hid, out_dim) * 0.01)
-        self.out_bias = nn.Parameter(torch.zeros(out_dim))
+        self.fc1 = nn.Linear(in_dim, hid)
+        self.fc2 = nn.Linear(hid, hid)
+        self.out = nn.Linear(hid, out_dim)
 
     def forward(self, x):
         x = x.view(x.size(0), -1)
-        h = x @ self.weights1 + self.bias1
-        h = torch.tanh(h)
-        h = project_to_ball(h)
-        u = h @ self.weights2 + self.bias2
-        u = torch.tanh(u)
-        u = project_to_ball(u)
+        h = self.fc1(x)
+        h = torch.relu(h)
+        h = project_to_ball(h, c=self.c)
+        u = self.fc2(h)
+        u = torch.relu(u)
+        u = project_to_ball(u, c=self.c)
 
         z = poincare_ball_layer(h, u, c=self.c, t=self.t)
         if torch.isnan(z).any():
             z = h
-        output = z @ self.out_weights + self.out_bias
-        return output
+        return self.out(z)
 
 
 class LorentzMLP(nn.Module):
@@ -83,10 +80,11 @@ class LorentzMLP(nn.Module):
         x = x.view(x.size(0), -1)
         h = x @ self.weights1 + self.bias1
         h = torch.relu(h)
-        h = project_to_ball(h)
+        # Lorentz model can handle unbounded spatial coordinates
+        # h = project_to_ball(h) 
         u = h @ self.weights2 + self.bias2
         u = torch.relu(u)
-        u = project_to_ball(u)
+        # u = project_to_ball(u)
 
         def to_lorentz_coords(sp: torch.Tensor, c: float) -> torch.Tensor:
             x2 = (sp * sp).sum(dim=1, keepdim=True)
@@ -191,12 +189,11 @@ class MnistHyperbolic(nn.Module):
             # Distance
             h_exp = h.unsqueeze(1).expand(B, 10, self.hidden_dim)
             p_exp = self.project_poincare(self.prototypes).unsqueeze(0).expand(B, 10, self.hidden_dim)
-            dist_sq = poincare_distance(
+            dist = poincare_distance(
                 h_exp.reshape(-1, self.hidden_dim), 
                 p_exp.reshape(-1, self.hidden_dim), 
                 c=self.c
             ).reshape(B, 10)
-            dist = torch.sqrt(dist_sq.clamp(min=1e-8))
             
         elif self.model_type == 'lorentz':
             h = torch.tanh(h)
@@ -256,7 +253,8 @@ def run_benchmark():
     
     for name, model in models.items():
         print(f"\nTraining {name}...")
-        opt = optim.Adam(model.parameters(), lr=0.001)
+        opt = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5)
+        scheduler = optim.lr_scheduler.StepLR(opt, step_size=2, gamma=0.5)
         crit = nn.CrossEntropyLoss()
         best_acc = 0.0
         
@@ -278,6 +276,7 @@ def run_benchmark():
                 total_samples += bsz
             
             avg_loss = total_loss / max(1, total_samples)
+            scheduler.step()
             
             model.eval()
             correct = 0

@@ -5,8 +5,6 @@ from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 import time
 from tqdm import tqdm
-import numpy as np
-import math
 
 class BioGeometricEncoder(nn.Module):
     """Fixed Biological Encoder (Same as before)"""

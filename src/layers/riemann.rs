@@ -23,7 +23,7 @@ pub fn riemann_lowrank_forward(
 
     // 2) v = Log_0(x_proj)
     let zeros = zeros_like(&x.view());
-    let v = poincare_log_at(&zeros.view(), &x_proj.view(), c);
+    let v = poincare_log_at(&zeros.view(), &x_proj.view(), c, epsilon);
 
     // 3) low-rank linear in tangent
     // z1 = v @ P  [B, r]
@@ -41,6 +41,6 @@ pub fn riemann_lowrank_forward(
 
     // 4) y = Exp_0(y_tan)
     let zeros_out = Array2::<f32>::zeros((y_tan.nrows(), y_tan.ncols()));
-    let y = poincare_exp_at(&zeros_out.view(), &y_tan.view(), c);
+    let y = poincare_exp_at(&zeros_out.view(), &y_tan.view(), c, epsilon);
     y
 }

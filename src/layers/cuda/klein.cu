@@ -9,7 +9,7 @@
 #define KLEIN_EPS 1e-6f
 #define BOUNDARY_EPS 1e-5f
 
-__device__ float norm_sq(const float* x, int dim) {
+__device__ static float norm_sq(const float* x, int dim) {
     float sum = 0.0f;
     for (int i = 0; i < dim; ++i) {
         sum += x[i] * x[i];
@@ -17,7 +17,7 @@ __device__ float norm_sq(const float* x, int dim) {
     return sum;
 }
 
-__device__ float dot_product(const float* x, const float* y, int dim) {
+__device__ static float dot_product(const float* x, const float* y, int dim) {
     float sum = 0.0f;
     for (int i = 0; i < dim; ++i) {
         sum += x[i] * y[i];
@@ -25,11 +25,11 @@ __device__ float dot_product(const float* x, const float* y, int dim) {
     return sum;
 }
 
-__device__ float safe_acosh(float x) {
+__device__ static float klein_safe_acosh(float x) {
     return acoshf(fmaxf(x, 1.0f + KLEIN_EPS));
 }
 
-__device__ float safe_sqrt(float x) {
+__device__ static float klein_safe_sqrt(float x) {
     return sqrtf(fmaxf(x, KLEIN_EPS));
 }
 
@@ -47,20 +47,20 @@ __global__ void klein_distance_kernel(
     float v2 = norm_sq(v_row, dim);
     float uv = dot_product(u_row, v_row, dim);
     
-    float sqrt_c = safe_sqrt(c);
+    float sqrt_c = klein_safe_sqrt(c);
     float numerator = 1.0f - c * uv;
-    float denominator = safe_sqrt((1.0f - c * u2) * (1.0f - c * v2));
+    float denominator = klein_safe_sqrt((1.0f - c * u2) * (1.0f - c * v2));
     float arg = fmaxf(numerator / denominator, 1.0f + KLEIN_EPS);
     
-    out[idx] = safe_acosh(arg) / sqrt_c;
+    out[idx] = klein_safe_acosh(arg) / sqrt_c;
 }
 
 __device__ void klein_scalar_impl(
     const float* x, float* out, int dim, float c, float r
 ) {
     float norm_sq_val = norm_sq(x, dim);
-    float norm_val = fmaxf(safe_sqrt(norm_sq_val), KLEIN_EPS);
-    float scaled_norm = fminf(norm_val * r, 1.0f / safe_sqrt(c) - BOUNDARY_EPS);
+    float norm_val = fmaxf(klein_safe_sqrt(norm_sq_val), KLEIN_EPS);
+    float scaled_norm = fminf(norm_val * r, 1.0f / klein_safe_sqrt(c) - BOUNDARY_EPS);
     float scale = scaled_norm / norm_val;
     
     for (int i = 0; i < dim; ++i) {
@@ -74,7 +74,7 @@ __device__ void klein_add_impl(
     float u_norm_sq = norm_sq(u, dim);
     float uv_dot = dot_product(u, v, dim);
     
-    float gamma_u = 1.0f / safe_sqrt(1.0f - c * u_norm_sq);
+    float gamma_u = 1.0f / klein_safe_sqrt(1.0f - c * u_norm_sq);
     float denom = fmaxf(1.0f + c * uv_dot, KLEIN_EPS);
     float denom_inv = 1.0f / denom;
     
@@ -113,10 +113,10 @@ __device__ void klein_scalar_vjp_impl(
     float c, float r, float* grad_x, int dim
 ) {
     float x_norm_sq = norm_sq(x, dim);
-    float x_norm = safe_sqrt(x_norm_sq);
+    float x_norm = klein_safe_sqrt(x_norm_sq);
     float x_norm_clamped = fmaxf(x_norm, KLEIN_EPS);
     
-    float boundary = 1.0f / safe_sqrt(c) - BOUNDARY_EPS;
+    float boundary = 1.0f / klein_safe_sqrt(c) - BOUNDARY_EPS;
     float scaled_norm = fminf(r * x_norm_clamped, boundary);
     float scale = scaled_norm / x_norm_clamped;
     
@@ -142,7 +142,7 @@ __device__ void klein_add_vjp_impl(
     float v_norm_sq = norm_sq(v, dim);
     float uv = dot_product(u, v, dim);
     
-    float gamma_u = 1.0f / safe_sqrt(1.0f - c * u_norm_sq);
+    float gamma_u = 1.0f / klein_safe_sqrt(1.0f - c * u_norm_sq);
     float denom = fmaxf(1.0f + c * uv, KLEIN_EPS);
     float denom_inv = 1.0f / denom;
     

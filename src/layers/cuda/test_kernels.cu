@@ -27,7 +27,6 @@
         return false; \
     }
 
-// Forward declarations
 extern "C" {
     void poincare_distance_cuda(float* out, const float* x, const float* y, float c, long long batch_size, long long dim);
     void poincare_ball_layer_cuda(float* out, const float* u, const float* v, float c, float t, long long batch_size, long long dim);
@@ -40,6 +39,19 @@ extern "C" {
     
     void mobius_add_cuda(float* out, const float* u, const float* v, float c, int64_t batch_size, int64_t dim);
     void mobius_scalar_cuda(float* out, const float* u, float c, float r, int64_t batch_size, int64_t dim);
+    void poincare_riemannian_adam_cuda(
+        float* x,
+        const float* grad,
+        float* m,
+        float* v,
+        float c,
+        float lr,
+        float beta1,
+        float beta2,
+        float eps,
+        long long batch_size,
+        long long dim,
+        long long step);
 }
 
 // Helper: allocate and copy to GPU
@@ -505,6 +517,82 @@ bool test_mobius_scalar_euclidean_limit() {
     return true;
 }
 
+bool test_poincare_riemannian_adam_euclidean_limit() {
+    printf("Poincare Riemannian Adam: c=0 Euclidean limit ... ");
+
+    const int batch_size = 1;
+    const int dim = 2;
+    float x_host[batch_size * dim] = {0.5f, -0.3f};
+    float g_host[batch_size * dim] = {0.5f, -0.3f};
+    float m_host[batch_size * dim] = {0.0f, 0.0f};
+    float v_host[batch_size * dim] = {0.0f, 0.0f};
+
+    float lr = 0.1f;
+    float beta1 = 0.9f;
+    float beta2 = 0.999f;
+    float eps = 1e-8f;
+    long long step = 1;
+    float c = 0.0f;
+
+    float* d_x = to_gpu(x_host, batch_size * dim);
+    float* d_g = to_gpu(g_host, batch_size * dim);
+    float* d_m = to_gpu(m_host, batch_size * dim);
+    float* d_v = to_gpu(v_host, batch_size * dim);
+
+    poincare_riemannian_adam_cuda(
+        d_x,
+        d_g,
+        d_m,
+        d_v,
+        c,
+        lr,
+        beta1,
+        beta2,
+        eps,
+        batch_size,
+        dim,
+        step);
+
+    float x_new[batch_size * dim];
+    float m_new[batch_size * dim];
+    float v_new[batch_size * dim];
+    from_gpu(x_new, d_x, batch_size * dim);
+    from_gpu(m_new, d_m, batch_size * dim);
+    from_gpu(v_new, d_v, batch_size * dim);
+
+    cudaFree(d_x);
+    cudaFree(d_g);
+    cudaFree(d_m);
+    cudaFree(d_v);
+
+    float m_ref[batch_size * dim];
+    float v_ref[batch_size * dim];
+    for (int i = 0; i < batch_size * dim; ++i) {
+        float g = g_host[i];
+        m_ref[i] = beta1 * m_host[i] + (1.0f - beta1) * g;
+        v_ref[i] = beta2 * v_host[i] + (1.0f - beta2) * g * g;
+    }
+    float bias_c1 = 1.0f - powf(beta1, (float)step);
+    float bias_c2 = 1.0f - powf(beta2, (float)step);
+    float u[batch_size * dim];
+    for (int i = 0; i < batch_size * dim; ++i) {
+        float m_hat = m_ref[i] / bias_c1;
+        float v_hat = v_ref[i] / bias_c2;
+        u[i] = -lr * m_hat / (sqrtf(v_hat) + eps);
+    }
+    float x_ref[batch_size * dim];
+    for (int i = 0; i < batch_size * dim; ++i) {
+        x_ref[i] = x_host[i] + u[i];
+    }
+
+    for (int i = 0; i < batch_size * dim; ++i) {
+        TEST_ASSERT_NEAR(x_new[i], x_ref[i], 1e-6f, "Poincare Riemannian Adam c=0 mismatch");
+    }
+
+    printf("PASS\n");
+    return true;
+}
+
 // ============================================================================
 // Main Test Runner
 // ============================================================================
@@ -540,6 +628,7 @@ int main() {
     total++; if (test_mobius_scalar_identity()) passed++;
     total++; if (test_mobius_add_inside_ball()) passed++;
     total++; if (test_mobius_scalar_euclidean_limit()) passed++;
+    total++; if (test_poincare_riemannian_adam_euclidean_limit()) passed++;
     
     printf("\n=======================================================\n");
     printf("Result: %d/%d tests passed", passed, total);

@@ -85,7 +85,7 @@ def verify_bindings(sample_x):
     z = np.zeros_like(x, dtype=np.float32)
     _ = _rust.poincare.poincare_exp_at_cpu(z, x, float(C))
     _ = _rust.poincare.poincare_log_at_cpu(z, x, float(C))
-    d = _rust.poincare.poincare_distance_cpu(x, x, float(C))
+    d = _rust.poincare.poincare_distance_cpu(x, x, float(C), 1e-5)
     assert d.shape[0] == x.shape[0]
 
 with torch.no_grad():

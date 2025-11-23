@@ -68,21 +68,13 @@ fn main() {
 
             // Use cc::Build for compiling CUDA files
             let mut build = cc::Build::new();
+            
             build
                 .cuda(true)
                 .flag(&format!("-arch={}", arch))
                 .include(format!("{}/include", cuda_path));
 
-            // On Windows, explicitly add Windows SDK include paths so that
-            // corecrt.h and related headers are found even if INCLUDE is empty.
-            if cfg!(target_os = "windows") {
-                for inc in &windows_sdk_includes {
-                    build.include(inc);
-                }
-            }
-
             // On Windows, force the *host* compiler to treat sources as UTF-8
-            // (use -Xcompiler so nvcc does not treat this as an extra input file).
             if cfg!(target_os = "windows") {
                 build.flag("-Xcompiler=/utf-8");
             }

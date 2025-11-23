@@ -97,6 +97,9 @@ except Exception:
 # 모델 변환 유틸리티 추가
 from .conversion import convert_to_hyperbolic
 
+# Optimizers
+from . import optim
+
 # Unified Riemannian Layer (Rust) binding
 try:
     if _has_rust_ext:
@@ -157,6 +160,8 @@ __all__ = [
 
     'SplineLinear',
     'convert_to_hyperbolic',
+    # Optimizers
+    'optim',
     # MetriKey (Rust bindings)
     'metrikey',
     # Geodesic Attention (Rust bindings)

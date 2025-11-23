@@ -175,7 +175,7 @@ impl MetricTensor for PoincareMetric {
     }
     
     fn distance(&self, x: &ArrayView2<f32>, y: &ArrayView2<f32>) -> Array1<f32> {
-        crate::layers::poincare::poincare_distance(x, y, self.curvature)
+        crate::layers::poincare::poincare_distance(x, y, self.curvature, 1e-5)
     }
     
     fn determinant(&self, x: &ArrayView2<f32>) -> Array1<f32> {

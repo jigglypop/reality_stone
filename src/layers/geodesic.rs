@@ -19,7 +19,7 @@ pub fn exponential_map(
 ) -> Array2<f32> {
     match metric {
         MetricType::Poincare(m) => {
-            crate::layers::poincare::poincare_exp_at(x, v, m.curvature)
+            crate::layers::poincare::poincare_exp_at(x, v, m.curvature, 1e-5)
         }
         MetricType::Lorentz(m) => {
             // Lorentz exp_0: v (tangent) → hyperboloid
@@ -50,7 +50,7 @@ pub fn logarithmic_map(
 ) -> Array2<f32> {
     match metric {
         MetricType::Poincare(m) => {
-            crate::layers::poincare::poincare_log_at(x, y, m.curvature)
+            crate::layers::poincare::poincare_log_at(x, y, m.curvature, 1e-5)
         }
         MetricType::Lorentz(m) => {
             if is_at_origin(x) {

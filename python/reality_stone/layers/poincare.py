@@ -7,7 +7,7 @@ from .. import _rust, _has_cuda
 from ..core.mobius import MobiusAdd, MobiusScalarMul
 import math
 
-def project_to_ball(x: Tensor, epsilon: float = 1e-5) -> Tensor:
+def project_to_ball(x: Tensor, epsilon: float = 1e-7) -> Tensor:
     """텐서를 푸앵카레 공으로 투영합니다. 모든 차원을 지원합니다."""
     # 순수 PyTorch 구현으로 대체 (Rust 바인딩이 2D만 지원하므로)
     norm = torch.norm(x, p=2, dim=-1, keepdim=True)
@@ -143,10 +143,14 @@ def poincare_add(
 def poincare_scalar_mul(x: Tensor, r: float, c: float) -> Tensor:
     return MobiusScalarMul.apply(x, r, c)
 
-def poincare_distance(x: Tensor, y: Tensor, c: float) -> Tensor:
-    eps = 1e-6
-    if abs(c) < eps:
-        return torch.norm(x - y, dim=1)
+def poincare_distance(x: Tensor, y: Tensor, c: float | Tensor, eps: float = 1e-7) -> Tensor:
+    if isinstance(c, (float, int)):
+        if abs(c) < eps:
+            return torch.norm(x - y, dim=1)
+    elif isinstance(c, Tensor):
+        if c.abs() < eps:
+            return torch.norm(x - y, dim=1)
+            
     x2 = (x * x).sum(dim=1)
     y2 = (y * y).sum(dim=1)
     diff2 = ((x - y) * (x - y)).sum(dim=1).clamp_min(0.0)
@@ -154,8 +158,16 @@ def poincare_distance(x: Tensor, y: Tensor, c: float) -> Tensor:
     den = den.clamp_min(eps)
     frac = (c * diff2) / den
     frac = frac.clamp_min(0.0)
-    sqrtc = torch.tensor(c, dtype=x.dtype, device=x.device).sqrt()
-    arg = frac.sqrt().clamp_max(1.0 - eps)
+    
+    # Correct formula: d = (2/sqrt(c)) * atanh(sqrt(frac / (1 + frac)))
+    # This corresponds to d = (1/sqrt(c)) * arccosh(1 + 2*frac)
+    # Current incorrect implementation was: d = (2/sqrt(c)) * atanh(sqrt(frac))
+    
+    arg = (frac / (1.0 + frac)).sqrt().clamp_max(1.0 - eps)
+    if isinstance(c, Tensor):
+        sqrtc = c.sqrt()
+    else:
+        sqrtc = torch.tensor(c, dtype=x.dtype, device=x.device).sqrt()
     return (2.0 / sqrtc) * torch.atanh(arg)
 
 def poincare_to_lorentz(x: Tensor, c: float) -> Tensor:
@@ -168,7 +180,7 @@ def poincare_to_klein(x: Tensor, c: float) -> Tensor:
 
 # --- HyperbolicLinear 및 관련 함수 ---
 
-def exp_map_zero(v: Tensor, c: float, eps: float = 1e-5) -> Tensor:
+def exp_map_zero(v: Tensor, c: float, eps: float = 1e-7) -> Tensor:
     """원점에서의 지수 맵 (접선 공간 -> 푸앵카레 공)
 
     NOTE: c 텐서를 항상 v 와 같은 device/dtype 으로 올려서
@@ -188,7 +200,7 @@ def exp_map_zero(v: Tensor, c: float, eps: float = 1e-5) -> Tensor:
     return result
 
 
-def log_map_zero(y: Tensor, c: float, eps: float = 1e-5) -> Tensor:
+def log_map_zero(y: Tensor, c: float, eps: float = 1e-7) -> Tensor:
     """원점에서의 로그 맵 (푸앵카레 공 -> 접선 공간)
 
     NOTE: c 텐서를 항상 y 와 같은 device/dtype 으로 올려서
@@ -264,17 +276,17 @@ class HyperbolicLinear(nn.Module):
 
         if self.mode == 'tangent':
             # 기존 방식: 접선 공간에서 변환
-            x_proj = project_to_ball(x, epsilon=1e-5)
-            tangent_x = log_map_zero(x_proj, c=self.c)
+            x_proj = project_to_ball(x, epsilon=1e-7)
+            tangent_x = log_map_zero(x_proj, c=self.c, eps=1e-7)
             tangent_y = F.linear(tangent_x, self.weight, self.bias)
-            hyperbolic_y = exp_map_zero(tangent_y, c=self.c)
+            hyperbolic_y = exp_map_zero(tangent_y, c=self.c, eps=1e-7)
             
         elif self.mode == 'mobius':
             # 개선된 방식: Mobius 연산 직접 사용
-            x_proj = project_to_ball(x, epsilon=1e-5)
+            x_proj = project_to_ball(x, epsilon=1e-7)
             
             # 가중치 행렬의 각 행을 푸앵카레 공으로 투영
-            weight_proj = project_to_ball(self.weight, epsilon=1e-5)
+            weight_proj = project_to_ball(self.weight, epsilon=1e-7)
             
             # Mobius 행렬-벡터 곱셈
             # y_i = sum_j (w_ij ⊗_c x_j)
@@ -295,7 +307,7 @@ class HyperbolicLinear(nn.Module):
             
             # 편향 추가 (Mobius 덧셈)
             if self.bias is not None:
-                bias_proj = project_to_ball(self.bias.unsqueeze(0), epsilon=1e-5)
+                bias_proj = project_to_ball(self.bias.unsqueeze(0), epsilon=1e-7)
                 hyperbolic_y = poincare_add(hyperbolic_y, bias_proj.expand_as(hyperbolic_y), self.c)
         
         else:
@@ -393,16 +405,16 @@ class GeodesicLinear(nn.Module):
             
         # 입력을 푸앵카레 공으로 투영 (더 작은 스케일)
         x_scaled = x * 0.1  # 입력 스케일 감소
-        x_proj = project_to_ball(x_scaled, epsilon=1e-5)
+        x_proj = project_to_ball(x_scaled, epsilon=1e-7)
         
         # 접선 공간으로 변환
-        tangent_x = log_map_zero(x_proj, c=self.c)
+        tangent_x = log_map_zero(x_proj, c=self.c, eps=1e-7)
         
         # 선형 변환 (가중치도 작게 스케일링)
         tangent_y = F.linear(tangent_x, self.weight * 0.1, self.bias)
         
         # 다시 푸앵카레 공으로 변환
-        hyperbolic_y = exp_map_zero(tangent_y, c=self.c)
+        hyperbolic_y = exp_map_zero(tangent_y, c=self.c, eps=1e-7)
         
         # 원래 shape으로 복원
         if len(original_shape) > 2:

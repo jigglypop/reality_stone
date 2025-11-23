@@ -8,7 +8,7 @@
 
 #define LORENTZ_EPS 1e-6f
 
-__device__ float lorentz_inner_product(const float* u, const float* v, int dim) {
+__device__ static float lorentz_inner_product(const float* u, const float* v, int dim) {
     float inner = u[0] * v[0];
     for (int i = 1; i < dim; ++i) {
         inner -= u[i] * v[i];
@@ -16,11 +16,11 @@ __device__ float lorentz_inner_product(const float* u, const float* v, int dim) 
     return inner;
 }
 
-__device__ float safe_acosh(float x) {
+__device__ static float lorentz_safe_acosh(float x) {
     return acoshf(fmaxf(x, 1.0f + LORENTZ_EPS));
 }
 
-__device__ float safe_sqrt(float x) {
+__device__ static float lorentz_safe_sqrt(float x) {
     return sqrtf(fmaxf(x, LORENTZ_EPS));
 }
 
@@ -35,8 +35,8 @@ __global__ void lorentz_distance_kernel(
     const float* v_row = v + idx * dim;
     
     float inner = lorentz_inner_product(u_row, v_row, dim);
-    float sqrt_c = safe_sqrt(c);
-    out[idx] = safe_acosh(fmaxf(c * inner, 1.0f + LORENTZ_EPS)) / sqrt_c;
+    float sqrt_c = lorentz_safe_sqrt(c);
+    out[idx] = lorentz_safe_acosh(fmaxf(c * inner, 1.0f + LORENTZ_EPS)) / sqrt_c;
 }
 
 __global__ void lorentz_layer_forward_kernel(
@@ -51,7 +51,7 @@ __global__ void lorentz_layer_forward_kernel(
     float* result = out + idx * dim;
     
     float inner = lorentz_inner_product(p, q, dim);
-    float theta = safe_acosh(fmaxf(c * inner, 1.0f + LORENTZ_EPS));
+    float theta = lorentz_safe_acosh(fmaxf(c * inner, 1.0f + LORENTZ_EPS));
     float sinh_theta = fmaxf(sinhf(theta), LORENTZ_EPS);
     
     float w1, w2;

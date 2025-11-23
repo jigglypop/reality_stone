@@ -7,7 +7,7 @@ use pyo3::prelude::*;
 create_binding!(
     poincare_distance_cpu,
     poincare::poincare_distance,
-    [u, v, c],
+    [u, v, c, eps],
     PyArray1
 );
 create_binding!(
@@ -45,10 +45,11 @@ pub fn poincare_exp_at_cpu<'py>(
     x: PyReadonlyArray2<f32>,
     v: PyReadonlyArray2<f32>,
     c: f32,
+    eps: f32,
 ) -> &'py PyArray2<f32> {
     let x_arr = x.as_array();
     let v_arr = v.as_array();
-    poincare::poincare_exp_at(&x_arr, &v_arr, c).into_pyarray(py)
+    poincare::poincare_exp_at(&x_arr, &v_arr, c, eps).into_pyarray(py)
 }
 
 /// Logarithmic map on the Poincaré ball at point x for point y.
@@ -58,10 +59,11 @@ pub fn poincare_log_at_cpu<'py>(
     x: PyReadonlyArray2<f32>,
     y: PyReadonlyArray2<f32>,
     c: f32,
+    eps: f32,
 ) -> &'py PyArray2<f32> {
     let x_arr = x.as_array();
     let y_arr = y.as_array();
-    poincare::poincare_log_at(&x_arr, &y_arr, c).into_pyarray(py)
+    poincare::poincare_log_at(&x_arr, &y_arr, c, eps).into_pyarray(py)
 }
 
 #[pyfunction]
@@ -205,6 +207,45 @@ pub fn project_to_ball_cpu<'py>(
     project::project_to_ball(&x.as_array(), epsilon).into_pyarray(py)
 }
 
+#[pyfunction]
+pub fn poincare_riemannian_adam_step_cpu<'py>(
+    py: Python<'py>,
+    x: PyReadonlyArray2<'py, f32>,
+    grad: PyReadonlyArray2<'py, f32>,
+    m: PyReadonlyArray2<'py, f32>,
+    v: PyReadonlyArray2<'py, f32>,
+    step: u64,
+    c: f32,
+    lr: f32,
+    beta1: f32,
+    beta2: f32,
+    eps: f32,
+    max_norm_eps: f32,
+) -> (&'py PyArray2<f32>, &'py PyArray2<f32>, &'py PyArray2<f32>) {
+    let x_arr = x.as_array();
+    let grad_arr = grad.as_array();
+    let mut m_arr = m.as_array().to_owned();
+    let mut v_arr = v.as_array().to_owned();
+    let x_new = poincare::poincare_riemannian_adam_step(
+        &x_arr,
+        &grad_arr,
+        &mut m_arr,
+        &mut v_arr,
+        step,
+        c,
+        lr,
+        beta1,
+        beta2,
+        eps,
+        max_norm_eps,
+    );
+    (
+        x_new.into_pyarray(py),
+        m_arr.into_pyarray(py),
+        v_arr.into_pyarray(py),
+    )
+}
+
 // --- CUDA bindings ---
 
 #[cfg(feature = "cuda")]
@@ -214,6 +255,7 @@ pub fn poincare_distance_cuda(
     u: usize,
     v: usize,
     c: f32,
+    boundary_eps: f32,
     batch_size: i64,
     dim: i64,
 ) -> PyResult<()> {
@@ -222,6 +264,7 @@ pub fn poincare_distance_cuda(
         u as *const f32,
         v as *const f32,
         c,
+        boundary_eps,
         batch_size,
         dim,
     );
@@ -292,6 +335,7 @@ pub fn register(m: &PyModule) -> PyResult<()> {
     sub.add_function(wrap_pyfunction!(mobius_add_vjp_cpu, sub)?)?;
     sub.add_function(wrap_pyfunction!(mobius_scalar_vjp_cpu, sub)?)?;
     sub.add_function(wrap_pyfunction!(project_to_ball_cpu, sub)?)?;
+    sub.add_function(wrap_pyfunction!(poincare_riemannian_adam_step_cpu, sub)?)?;
 
     // Dynamic / Layerwise
     sub.add_function(wrap_pyfunction!(poincare_ball_layer_dynamic_cpu, sub)?)?;

@@ -81,7 +81,7 @@ fn poincare_euclidean_limit_matches() {
 fn poincare_distance_same_point() {
     let c = 1.0_f32;
     let x = arr2(&[[0.1_f32, 0.2_f32]]);
-    let d = poincare::poincare_distance(&x.view(), &x.view(), c);
+    let d = poincare::poincare_distance(&x.view(), &x.view(), c, 1e-5);
     assert!(
         d[0].abs() < 1e-5,
         "Poincaré 거리 자기 자신 검증 실패: d(x,x)={} (허용 1e-5)",
@@ -94,8 +94,8 @@ fn poincare_distance_symmetry() {
     let c = 1.0_f32;
     let x = arr2(&[[0.1_f32, 0.2_f32]]);
     let y = arr2(&[[0.3_f32, -0.1_f32]]);
-    let d_xy = poincare::poincare_distance(&x.view(), &y.view(), c)[0];
-    let d_yx = poincare::poincare_distance(&y.view(), &x.view(), c)[0];
+    let d_xy = poincare::poincare_distance(&x.view(), &y.view(), c, 1e-5)[0];
+    let d_yx = poincare::poincare_distance(&y.view(), &x.view(), c, 1e-5)[0];
     let diff = (d_xy - d_yx).abs();
     assert!(
         diff < 1e-6,
@@ -112,9 +112,9 @@ fn poincare_triangle_inequality_small() {
     let x = arr2(&[[0.0_f32, 0.0_f32]]);
     let y = arr2(&[[0.1_f32, 0.1_f32]]);
     let z = arr2(&[[0.2_f32, -0.05_f32]]);
-    let d_xy = poincare::poincare_distance(&x.view(), &y.view(), c)[0];
-    let d_yz = poincare::poincare_distance(&y.view(), &z.view(), c)[0];
-    let d_xz = poincare::poincare_distance(&x.view(), &z.view(), c)[0];
+    let d_xy = poincare::poincare_distance(&x.view(), &y.view(), c, 1e-5)[0];
+    let d_yz = poincare::poincare_distance(&y.view(), &z.view(), c, 1e-5)[0];
+    let d_xz = poincare::poincare_distance(&x.view(), &z.view(), c, 1e-5)[0];
     assert!(
         d_xz <= d_xy + d_yz + 1e-4,
         "Poincaré 삼각부등식 실패: d_xz={} d_xy+d_yz+eps={} (eps=1e-4)",
@@ -225,7 +225,7 @@ fn poincare_lorentz_distance_consistency() {
     let c = 1.0_f32;
     let x = arr2(&[[0.1_f32, 0.2_f32]]);
     let y = arr2(&[[0.2_f32, -0.1_f32]]);
-    let d_p = poincare::poincare_distance(&x.view(), &y.view(), c)[0];
+    let d_p = poincare::poincare_distance(&x.view(), &y.view(), c, 1e-5)[0];
     let lx = poincare::poincare_to_lorentz(&x.view(), c);
     let ly = poincare::poincare_to_lorentz(&y.view(), c);
     let d_l = lorentz::lorentz_distance(&lx.view(), &ly.view(), c)[0];
@@ -440,7 +440,7 @@ fn poincare_distance_binding_matches_rust() {
     let c = 1.0_f32;
     let x = arr2(&[[0.1_f32, 0.2_f32]]);
     let y = arr2(&[[0.2_f32, -0.1_f32]]);
-    let d_rust = poincare::poincare_distance(&x.view(), &y.view(), c)[0];
+    let d_rust = poincare::poincare_distance(&x.view(), &y.view(), c, 1e-5)[0];
 
     pyo3::prepare_freethreaded_python();
     let numpy_available = pyo3::Python::with_gil(|py| py.import("numpy").is_ok());
@@ -452,7 +452,7 @@ fn poincare_distance_binding_matches_rust() {
         use numpy::ToPyArray;
         let x_py = x.to_pyarray(py).readonly();
         let y_py = y.to_pyarray(py).readonly();
-        let out = bindings::poincare::poincare_distance_cpu(py, x_py, y_py, c);
+        let out = bindings::poincare::poincare_distance_cpu(py, x_py, y_py, c, 1e-5);
         let d_py = unsafe { out.as_array() };
         let diff = (d_rust - d_py[0]).abs();
         assert!(

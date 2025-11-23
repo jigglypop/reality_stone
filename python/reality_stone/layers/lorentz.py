@@ -4,6 +4,94 @@ from torch.autograd import Function
 from .. import _rust, _has_cuda
 from .poincare import poincare_to_lorentz
 
+class LorentzDistance(Function):
+    @staticmethod
+    def forward(ctx, u: Tensor, v: Tensor, c: float) -> Tensor:
+        ctx.c = c
+        ctx.save_for_backward(u, v)
+        
+        if u.is_cuda and _has_cuda:
+            # _rust.lorentz_distance_cuda returns void and writes to output ptr
+            output = torch.empty(u.shape[0], dtype=u.dtype, device=u.device)
+            # Note: Binding signature is (out, u, v, c, batch_size, dim)
+            # But wait, input is usually expanded (B*10, dim) for pairwise
+            # We assume flattened inputs here.
+            _rust.lorentz_distance_cuda(
+                output.data_ptr(), u.data_ptr(), v.data_ptr(),
+                c, u.shape[0], u.shape[1]
+            )
+            return output
+        else:
+            # CPU binding returns numpy array
+            result_np = _rust.lorentz_distance(u.detach().cpu().numpy(), v.detach().cpu().numpy(), c)
+            return torch.from_numpy(result_np).to(u.device)
+
+    @staticmethod
+    def backward(ctx, grad_output: Tensor) -> tuple[Tensor | None, Tensor | None, None]:
+        u, v = ctx.saved_tensors
+        c = ctx.c
+        
+        # We need gradients w.r.t u and v.
+        # d(dist)/du and d(dist)/dv
+        # Since we don't have explicit distance_backward bindings yet (we only have layer_backward),
+        # we must implement the analytic gradient here or use PyTorch autograd for the formula.
+        # HOWEVER, the user wants to use the LIBRARY.
+        # If the library is missing the backward kernel for distance, we should implement it or fallback to torch.
+        
+        # Implementing Analytic Backward for Lorentz Distance here to support Autograd
+        # d(dist) = acosh(z) / sqrt(c) where z = c * <u,v>_L
+        # This is exactly what we implemented in python script. 
+        # But to strictly follow "Use RS Library", we should ideally have a backward binding.
+        # Checking bindings... we have lorentz_ball_layer_backward, but not distance_backward.
+        
+        # Compromise: Use the torch formula for backward pass (which is mathematically correct)
+        # or use the autograd-supported torch implementation in forward pass too?
+        # The user said "Why not use rs?". This implies using the optimized CUDA kernel for forward.
+        # So we use CUDA for forward, and Torch math for backward.
+        
+        # Re-computing for backward (standard practice for activation functions etc)
+        # <u, v>_L = u0v0 - u.v
+        inner = u[..., 0] * v[..., 0] - (u[..., 1:] * v[..., 1:]).sum(dim=-1)
+        z = (c * inner).clamp(min=1.0 + 1e-7)
+        
+        # dist = acosh(z) / sqrt(c)
+        # d(dist)/dz = 1 / (sqrt(c) * sqrt(z^2 - 1))
+        sqrt_c = c**0.5
+        d_dist_dz = 1.0 / (sqrt_c * torch.sqrt(z*z - 1.0))
+        
+        # d(z)/du = c * d(<u,v>)/du
+        # d(<u,v>)/du_0 = v_0
+        # d(<u,v>)/du_i = -v_i
+        # So gradient vector is like v but with space components negated = Minkowski conjugate?
+        # Let's construct the Minkowski-gradient of inner product w.r.t u:
+        # It is [c*v0, -c*v1, -c*v2 ...]
+        
+        grad_z_u = torch.empty_like(v)
+        grad_z_u[..., 0] = c * v[..., 0]
+        grad_z_u[..., 1:] = -c * v[..., 1:]
+        
+        grad_z_v = torch.empty_like(u)
+        grad_z_v[..., 0] = c * u[..., 0]
+        grad_z_v[..., 1:] = -c * u[..., 1:]
+        
+        # Chain rule
+        # grad_u = grad_output * d(dist)/dz * grad_z_u
+        # grad_output shape: (B,) -> unsqueeze to (B,1)
+        
+        scale = (grad_output * d_dist_dz).unsqueeze(-1)
+        grad_u = scale * grad_z_u
+        grad_v = scale * grad_z_v
+        
+        return grad_u, grad_v, None
+
+def lorentz_distance(x: Tensor, y: Tensor, c: float) -> Tensor:
+    """
+    Computes Lorentz distance using Reality Stone's optimized kernels.
+    Supports Autograd.
+    """
+    return LorentzDistance.apply(x, y, c)
+
+
 class LorentzLayer(Function):
     @staticmethod
     def forward(ctx, u: Tensor, v: Tensor, c: float, t: float) -> Tensor:
@@ -48,14 +136,6 @@ def lorentz_add(u: Tensor, v: Tensor, c: float) -> Tensor:
 
 def lorentz_scalar_mul(x: Tensor, r: float, c: float) -> Tensor:
     result_np = _rust.lorentz_scalar(x.cpu().numpy(), r, c)
-    return torch.from_numpy(result_np).to(x.device)
-
-def lorentz_distance(x: Tensor, y: Tensor, c: float) -> Tensor:
-    if x.is_cuda and _has_cuda:
-        output = torch.empty(x.shape[0], dtype=x.dtype, device=x.device)
-        _rust.lorentz_distance_cuda(output.data_ptr(), x.data_ptr(), y.data_ptr(), c, x.shape[0], x.shape[1])
-        return output
-    result_np = _rust.lorentz_distance(x.detach().cpu().numpy(), y.detach().cpu().numpy(), c)
     return torch.from_numpy(result_np).to(x.device)
 
 def lorentz_inner(u: Tensor, v: Tensor) -> Tensor:
@@ -243,4 +323,4 @@ class LorentzFromPoincare(Function):
             return grad_x, None, None, None, None
 
 def from_poincare(x: Tensor, c: float = None, kappas: Tensor = None, c_min: float = -2.0, c_max: float = -0.1) -> Tensor:
-    return LorentzFromPoincare.apply(x, c, kappas, c_min, c_max) 
+    return LorentzFromPoincare.apply(x, c, kappas, c_min, c_max)

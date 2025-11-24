@@ -5,9 +5,61 @@ from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 import time
 from tqdm import tqdm
+import numpy as np
+import reality_stone as rs  # Reality Stone Bindings
+
+# CUDA Check
+if torch.cuda.is_available():
+    DEVICE = "cuda"
+    print(f"CUDA Available: {torch.cuda.get_device_name(0)}")
+else:
+    DEVICE = "cpu"
+    print("CUDA Not Available, using CPU")
+
+# === Reality Stone Integration ===
+# Custom Autograd Function to bridge PyTorch and Rust with Zero-Copy
+class RiemannianDiffusionStep(torch.autograd.Function):
+    """
+    PyTorch Autograd wrapper for Reality Stone's Riemannian Diffusion.
+    Forward: Uses CUDA-optimized kernel via Rust binding (Zero-Copy).
+    Backward: Uses analytical Euclidean approximation for gradients.
+    """
+    @staticmethod
+    def forward(ctx, h, flow, diffusion_engine):
+        # Ensure contiguous tensors for raw pointer access
+        h = h.contiguous()
+        flow = flow.contiguous()
+        
+        # Pre-allocate output tensor on GPU
+        h_next = torch.empty_like(h)
+        
+        # Call Rust-CUDA Kernel directly passing pointers
+        # No numpy conversion, no CPU copy!
+        batch_size, dim = h.shape
+        diffusion_engine.step_cuda(
+            h.data_ptr(),
+            flow.data_ptr(),
+            h_next.data_ptr(),
+            batch_size,
+            dim
+        )
+        
+        ctx.save_for_backward(h, flow)
+        return h_next
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        # h, flow = ctx.saved_tensors
+        # Gradient approximation same as before
+        alpha = 0.9 
+        
+        grad_h = grad_output * alpha
+        grad_flow = grad_output * (1.0 - alpha)
+        
+        return grad_h, grad_flow, None
 
 class BioGeometricEncoder(nn.Module):
-    """Fixed Biological Encoder (Same as before)"""
+    """Fixed Biological Encoder"""
     def __init__(self, in_channels=1, out_dim=2048):
         super().__init__()
         self.proj = nn.Linear(28*28, out_dim, bias=False)
@@ -22,61 +74,54 @@ class BioGeometricEncoder(nn.Module):
         return x
 
 class ManifoldDiffusionModel(nn.Module):
-    def __init__(self, hidden_dim=2048, num_classes=10, steps=5):
+    def __init__(self, hidden_dim=2048, num_classes=10, steps=5, alpha=0.9, dt=0.1):
         super().__init__()
-        self.steps = steps # Time steps for diffusion
+        self.steps = steps
         self.hidden_dim = hidden_dim
         self.num_classes = num_classes
+        self.alpha_val = alpha
         
         # Encoder (Fixed)
         self.encoder = BioGeometricEncoder(out_dim=hidden_dim)
         
-        # === Structure Learning ===
-        # Learnable Adjacency / Conductivity Matrix
-        # Instead of full matrix (2048x2048 is too big), we learn connections 
-        # from hidden nodes to class nodes directly, plus internal recurrent connections.
-        # This simulates "Synaptic Weights" governing energy flow.
-        
-        # 1. Internal recurrent connections (Self-diffusion within hidden layer)
-        # Diagonal-heavy initialization to preserve signal
+        # === Learnable Structure ===
+        # We interpret these weights as defining the "Potential Energy Landscape"
         self.W_hidden = nn.Parameter(torch.eye(hidden_dim) * 0.9 + torch.randn(hidden_dim, hidden_dim) * 0.01)
-        
-        # 2. Hidden to Class connections (Readout)
         self.W_out = nn.Parameter(torch.randn(hidden_dim, num_classes) * 0.01)
         
-        # Energy dampening factor (Leakage)
-        self.alpha = nn.Parameter(torch.tensor(0.9))
+        # === Reality Stone Engine ===
+        # Rust-based Riemannian Diffusion Engine
+        print(f"Initializing Reality Stone Rust Engine (Dim={hidden_dim}, Alpha={alpha}, dt={dt})...")
+        self.rs_engine = rs.PyRiemannianDiffusion(hidden_dim, alpha, dt)
 
     def forward(self, x):
-        # 1. Input Injection
+        # 1. Input Injection (Initial State)
         with torch.no_grad():
-            h = self.encoder(x) # (B, 2048) - Initial Energy State
+            h = self.encoder(x) # (B, 2048)
             
-        # 2. Diffusion Process (Time Evolution)
-        # Energy flows through the network for T steps
-        # h(t+1) = alpha * h(t) + (1-alpha) * tanh(W_h * h(t))
-        # This is a simple dynamical system.
-        
+        # 2. Riemannian Diffusion Process
         for t in range(self.steps):
-            # Normalize adjacency to ensure stability (Graph Laplacian style)
-            # W_h = self.W_hidden / self.W_hidden.norm(dim=1, keepdim=True).clamp(min=1e-6)
+            # Calculate Flow (PyTorch does this fast on GPU)
+            flow = torch.tanh(h @ self.W_hidden)
             
-            # Flow
-            flow = h @ self.W_hidden
+            # Apply Riemannian Step (Rust+CUDA does this fast on GPU)
+            # h(t+1) = Exp_h( -grad_E * dt )
+            if DEVICE == "cuda" and rs._has_cuda:
+                 h = RiemannianDiffusionStep.apply(h, flow, self.rs_engine)
+            else:
+                # Fallback if not CUDA (should not happen in this experiment setup)
+                h_np = h.detach().cpu().numpy()
+                flow_np = flow.detach().cpu().numpy()
+                h_next_np = self.rs_engine.step_cpu(h_np, flow_np)
+                h = torch.from_numpy(h_next_np).to(h.device)
             
-            # Update state (Leaky Integrator)
-            h = self.alpha * h + (1 - self.alpha) * torch.tanh(flow)
-            
-        # 3. Energy Readout
-        # Which class node accumulated the most energy/signal?
+        # 3. Readout
         out = h @ self.W_out
         return out
 
 def run_diffusion_experiment():
-    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"\n=== Running Experiment: Manifold Diffusion (Energy Flow) ===")
-    print(f"Structure: Input -> Fixed Encoder -> Dynamical System (T=5) -> Readout")
-    print(f"Learning: Synaptic Conductivity (Weights) of the graph")
+    print(f"\n=== Running Experiment: Riemannian Lagrangian Diffusion (Rust+CUDA Backend) ===")
+    print(f"Backend: {DEVICE.upper()}")
     
     transform = transforms.Compose([
         transforms.ToTensor(), 
@@ -88,11 +133,8 @@ def run_diffusion_experiment():
     test_loader = DataLoader(test_dataset, batch_size=1000, shuffle=False)
 
     # Initialize model
-    # T=5 steps of diffusion
-    model = ManifoldDiffusionModel(steps=5).to(DEVICE)
+    model = ManifoldDiffusionModel(steps=5, alpha=0.9).to(DEVICE)
     crit = nn.CrossEntropyLoss()
-    
-    # We use standard Adam here to learn the graph structure (weights)
     opt = optim.Adam(model.parameters(), lr=0.001)
 
     epochs = 5
@@ -104,7 +146,7 @@ def run_diffusion_experiment():
         total_loss = 0.0
         total_samples = 0
 
-        for x, y in tqdm(train_loader, desc=f"Diffusion Ep {epoch}", leave=False):
+        for x, y in tqdm(train_loader, desc=f"Riemann Ep {epoch}", leave=False):
             x, y = x.to(DEVICE), y.to(DEVICE)
             
             opt.zero_grad()
@@ -118,7 +160,9 @@ def run_diffusion_experiment():
             total_samples += bsz
 
         avg_loss = total_loss / max(1, total_samples)
+        elapsed = time.time() - start
         
+        # Evaluation
         model.eval()
         correct = 0
         with torch.no_grad():
@@ -128,12 +172,10 @@ def run_diffusion_experiment():
                 correct += pred.eq(y).sum().item()
         acc = correct / len(test_dataset)
         best_acc = max(best_acc, acc)
-        elapsed = time.time() - start
         
         print(f"  Loss: {avg_loss:.4f} Acc: {acc:.4f} Best: {best_acc:.4f} Time: {elapsed:.2f}s")
 
-    print(f"Result Diffusion: Best Acc {best_acc:.4f}")
+    print(f"Result Riemannian Diffusion: Best Acc {best_acc:.4f}")
 
 if __name__ == "__main__":
     run_diffusion_experiment()
-

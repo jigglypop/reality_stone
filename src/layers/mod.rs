@@ -18,6 +18,7 @@ pub mod utils;
 pub mod metric;
 pub mod geodesic;
 pub mod bellman_lagrangian;
+pub mod diffusion; // Added diffusion
 pub mod unified_riemannian;
 
 pub use self::poincare::{
@@ -34,4 +35,4 @@ pub use self::bellman_lagrangian::{
     ValueFunction, LagrangianParams, EnergyComponents,
     bellman_potential, kinetic_energy, representation_flow,
 };
-
+pub use self::diffusion::RiemannianDiffusion; // Export diffusion

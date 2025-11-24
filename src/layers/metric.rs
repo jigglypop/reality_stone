@@ -30,6 +30,7 @@ pub trait MetricTensor: Send + Sync {
 
 /// 대각 메트릭 (구현 효율성을 위한 근사)
 /// g_ij(x) = w_i(x) δ_ij
+#[derive(Clone)]
 pub struct DiagonalMetric {
     /// 각 차원의 가중치를 계산하는 함수 파라미터
     pub weights: Array1<f32>,  // learnable parameters
@@ -109,6 +110,7 @@ impl MetricTensor for DiagonalMetric {
 
 /// 푸앵카레 메트릭
 /// g_ij(x) = (2/(1-c||x||²))² δ_ij
+#[derive(Clone)]
 pub struct PoincareMetric {
     pub curvature: f32,
 }
@@ -191,6 +193,7 @@ impl MetricTensor for PoincareMetric {
 
 /// 로렌츠 (Hyperboloid) 메트릭
 /// Minkowski inner product: ⟨u,v⟩ = u₀v₀ - Σᵢ uᵢvᵢ
+#[derive(Clone)]
 pub struct LorentzMetric {
     pub curvature: f32,
 }
@@ -243,6 +246,7 @@ impl MetricTensor for LorentzMetric {
 }
 
 /// Klein 메트릭 (projective model)
+#[derive(Clone)]
 pub struct KleinMetric {
     pub curvature: f32,
 }

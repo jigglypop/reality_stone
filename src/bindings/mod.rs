@@ -8,6 +8,7 @@ mod spline;
 mod suppression;
 pub mod geodesic_attention;
 pub mod unified_riemannian;
+pub mod diffusion; // Added module
 
 #[macro_use]
 mod macros;
@@ -39,6 +40,9 @@ pub fn _rust(_py: Python, m: &PyModule) -> PyResult<()> {
     // rbe::init_module(_py, m)?;
     // MetriKey Module
     metrikey::init_module(_py, m)?;
+    // Riemannian Diffusion
+    diffusion::register(m)?; // Register diffusion module
+
     {
         use crate::bindings::poincare as pc;
         m.add_function(wrap_pyfunction!(pc::poincare_to_lorentz_cpu, m)?)?;
@@ -64,4 +68,3 @@ pub fn _rust(_py: Python, m: &PyModule) -> PyResult<()> {
     geodesic_attention::register(m)?;
     Ok(())
 }
-

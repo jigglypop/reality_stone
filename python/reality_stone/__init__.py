@@ -116,6 +116,15 @@ except Exception:
     geodesic_distance = None  # type: ignore
     geodesic_interpolate = None  # type: ignore
 
+# Riemannian Diffusion (Rust) binding
+try:
+    if _has_rust_ext:
+        from ._rust import PyRiemannianDiffusion  # type: ignore
+    else:
+        PyRiemannianDiffusion = None  # type: ignore
+except Exception:
+    PyRiemannianDiffusion = None  # type: ignore
+
 def poincare_ball_layer(u: torch.Tensor, v: torch.Tensor, c: float = None, t: float = 0.5, kappas: torch.Tensor = None, layer_idx: int = None, c_min: float = -2.0, c_max: float = -0.1) -> torch.Tensor:
     return PoincareBallLayer.apply(u, v, c, t, kappas, layer_idx, c_min, c_max)
 
@@ -172,4 +181,5 @@ __all__ = [
     'compute_metric',
     'geodesic_distance',
     'geodesic_interpolate',
+    'PyRiemannianDiffusion',
 ]

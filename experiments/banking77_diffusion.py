@@ -6,8 +6,7 @@ from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModel
 from tqdm import tqdm
 import numpy as np
-import time
-import reality_stone as rs
+import math
 from reality_stone.layers.lorentz import lorentz_distance
 
 # Reality Stone Philosophy Restored:
@@ -129,18 +128,18 @@ def run_banking77_experiment():
         {'params': model.parameters(), 'lr': 1e-4, 'weight_decay': 0.01}
     ])
     
-    # Fix scheduler bug (total steps calculation)
-    total_steps = len(train_data)//32 * 10
-    scheduler = optim.lr_scheduler.OneCycleLR(
-        optimizer, 
-        max_lr=[5e-5, 5e-4], 
-        total_steps=total_steps + 100 # Buffer
-    )
-    
     criterion = nn.CrossEntropyLoss()
-    
     batch_size = 32
-    epochs = 10
+    epochs = 20
+    steps_per_epoch = math.ceil(len(train_data) / batch_size)
+    cycle_epochs = min(10, epochs)
+    scheduler_one = optim.lr_scheduler.OneCycleLR(
+        optimizer,
+        max_lr=[5e-5, 5e-4],
+        steps_per_epoch=steps_per_epoch,
+        epochs=cycle_epochs
+    )
+    scheduler_two = None
     best_acc = 0.0
     
     print(f"Start Training...")
@@ -168,7 +167,16 @@ def run_banking77_experiment():
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             
             optimizer.step()
-            scheduler.step()
+            if epoch <= cycle_epochs:
+                scheduler_one.step()
+            else:
+                if scheduler_two is None:
+                    scheduler_two = optim.lr_scheduler.CosineAnnealingLR(
+                        optimizer,
+                        T_max=(epochs - cycle_epochs) * steps_per_epoch,
+                        eta_min=1e-6
+                    )
+                scheduler_two.step()
             
             total_loss += loss.item()
             pbar.set_postfix({'loss': f"{loss.item():.4f}"})

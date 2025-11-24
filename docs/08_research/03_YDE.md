@@ -14,10 +14,12 @@
 라그랑지안 $\boldsymbol{L}$은 **운동 에너지 T**와 **잠재 에너지 V**의 차이로 정의됩니다. 리만 다양체 위에서 운동 에너지는 **메트릭 텐서 g_{\mu\nu}**를 사용하여 정의됩니다.
 3단계: 오일러-라그랑주 방정식의 각 항 계산
 A. 첫 번째 항 유도: 
+
 $$
 \frac{d}{dt}\left(\frac{\partial \boldsymbol{L}}{\partial \dot{q}^\sigma}\right)
 $$
-- \frac{\partial \boldsymbol{L}}{\partial \dot{q}^\sigma} 계산:
+
+- $ \frac{\partial \boldsymbol{L}}{\partial \dot{q}^\sigma} $ 계산:
 - 시간 미분 \frac{d}{dt} 적용 (연쇄 법칙 사용):
 여기서 \dot{g}*{\sigma\nu} = \frac{\partial g*{\sigma\nu}}{\partial q^\mu} \dot{q}^\mu 이므로:
 B. 두 번째 항 유도: \frac{\partial \boldsymbol{L}}{\partial q^\sigma}

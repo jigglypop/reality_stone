@@ -24,12 +24,13 @@ def run_train_qa(
     checkpoint_dir: str = "checkpoints",
     lambda_consistency_schedule: str = "decay",
     lambda_diversity_schedule: str = "grow",
+    teacher_model_name: str = "",
+    kd_weight: float = 0.0,
 ):
     """
     CLI 플래그 없이 바로 호출할 수 있는 학습 + 데모 + QA 헬퍼.
     (이 파일의 main 로직을 함수 형태로 감싼 버전)
     """
-    # 디바이스 자동 선택
     if device == "auto":
         device_resolved = "cuda" if torch.cuda.is_available() else "cpu"
     else:
@@ -37,7 +38,6 @@ def run_train_qa(
 
     print(f"Using device: {device_resolved}")
 
-    # 설정
     cfg = HierarchicalLLMConfig(
         vocab_size=vocab_size,
         freeze_decoder=False,
@@ -54,7 +54,28 @@ def run_train_qa(
         max_lm_seq_len=128,
     )
 
-    # 학습
+    teacher_model = None
+    teacher_tokenizer = None
+    kd_proj = None
+    if teacher_model_name and kd_weight > 0.0:
+        try:
+            from transformers import AutoTokenizer, AutoModel
+            teacher_tokenizer = AutoTokenizer.from_pretrained(teacher_model_name)
+            teacher_model = AutoModel.from_pretrained(teacher_model_name)
+            teacher_model.to(device_resolved)
+            teacher_model.eval()
+            for p in teacher_model.parameters():
+                p.requires_grad = False
+            hidden_size = int(getattr(teacher_model.config, "hidden_size", cfg.d_model))
+            kd_proj = torch.nn.Linear(hidden_size, cfg.d_model)
+            kd_proj.to(device_resolved)
+        except Exception as e:
+            print(f"Teacher model init failed: {e}")
+            teacher_model = None
+            teacher_tokenizer = None
+            kd_proj = None
+            kd_weight = 0.0
+
     print("=== 학습 시작 ===")
     model, info = train_hierarchical_llm_from_text(
         data,
@@ -63,6 +84,10 @@ def run_train_qa(
         batch_size=batch_size,
         max_paragraphs=max_paragraphs,
         device=device_resolved,
+        teacher_model=teacher_model,
+        teacher_tokenizer=teacher_tokenizer,
+        kd_proj=kd_proj,
+        kd_weight=kd_weight,
     )
 
     print("\n=== 학습 완료 ===")
@@ -174,6 +199,18 @@ def main() -> None:
         choices=["constant", "decay", "warmup", "grow"],
         help="Diversity loss 스케줄 (grow: 초기 낮음→후기 높음)",
     )
+    parser.add_argument(
+        "--teacher_model",
+        type=str,
+        default="",
+        help="지식 증류에 사용할 teacher 모델 이름 (HuggingFace)",
+    )
+    parser.add_argument(
+        "--kd_weight",
+        type=float,
+        default=0.0,
+        help="KD 손실 가중치 (0이면 비활성화)",
+    )
     args = parser.parse_args()
 
     run_train_qa(
@@ -188,6 +225,8 @@ def main() -> None:
         checkpoint_dir=args.checkpoint_dir,
         lambda_consistency_schedule=args.lambda_consistency_schedule,
         lambda_diversity_schedule=args.lambda_diversity_schedule,
+        teacher_model_name=args.teacher_model,
+        kd_weight=args.kd_weight,
     )
 
 

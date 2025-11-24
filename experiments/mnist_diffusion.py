@@ -21,42 +21,70 @@ else:
 class RiemannianDiffusionStep(torch.autograd.Function):
     """
     PyTorch Autograd wrapper for Reality Stone's Riemannian Diffusion.
-    Forward: Uses CUDA-optimized kernel via Rust binding (Zero-Copy).
-    Backward: Uses analytical Euclidean approximation for gradients.
+
+    Forward:
+        - Uses CUDA-optimized kernel via Rust binding (Zero-Copy).
+        - Kernel implements (per element):
+              v = (1 - alpha) * (flow - h)
+              h_next = h + v * dt
+          (plus clipping as a retraction to the manifold).
+
+    Backward:
+        - Uses the exact Jacobian of the above affine map (clipping 무시한 근사):
+              h_next = a * h + b * flow
+          where
+              a = 1 - (1 - alpha) * dt
+              b = (1 - alpha) * dt
+        - ∂h_next/∂h   = a
+        - ∂h_next/∂flow = b
     """
+
     @staticmethod
-    def forward(ctx, h, flow, diffusion_engine):
+    def forward(ctx, h, flow, diffusion_engine, alpha, dt):
         # Ensure contiguous tensors for raw pointer access
         h = h.contiguous()
         flow = flow.contiguous()
-        
+
         # Pre-allocate output tensor on GPU
         h_next = torch.empty_like(h)
-        
-        # Call Rust-CUDA Kernel directly passing pointers
-        # No numpy conversion, no CPU copy!
+
         batch_size, dim = h.shape
-        diffusion_engine.step_cuda(
-            h.data_ptr(),
-            flow.data_ptr(),
-            h_next.data_ptr(),
-            batch_size,
-            dim
-        )
-        
+
+        # CUDA path (zero-copy) or CPU fallback
+        if h.is_cuda and getattr(rs, "_has_cuda", False):
+            diffusion_engine.step_cuda(
+                h.data_ptr(),
+                flow.data_ptr(),
+                h_next.data_ptr(),
+                batch_size,
+                dim,
+            )
+        else:
+            h_np = h.detach().cpu().numpy().astype("float32")
+            flow_np = flow.detach().cpu().numpy().astype("float32")
+            h_next_np = diffusion_engine.step_cpu(h_np, flow_np)
+            h_next = torch.from_numpy(h_next_np).to(h.device)
+
         ctx.save_for_backward(h, flow)
+        ctx.alpha = float(alpha)
+        ctx.dt = float(dt)
         return h_next
 
     @staticmethod
     def backward(ctx, grad_output):
-        # h, flow = ctx.saved_tensors
-        # Gradient approximation same as before
-        alpha = 0.9 
-        
-        grad_h = grad_output * alpha
-        grad_flow = grad_output * (1.0 - alpha)
-        
-        return grad_h, grad_flow, None
+        # Exact Jacobian for the affine part of the CUDA kernel:
+        #   h_next = h + (1 - alpha) * (flow - h) * dt
+        #         = (1 - (1 - alpha) * dt) * h + ((1 - alpha) * dt) * flow
+        alpha = ctx.alpha
+        dt = ctx.dt
+        a = 1.0 - (1.0 - alpha) * dt  # d h_next / d h
+        b = (1.0 - alpha) * dt        # d h_next / d flow
+
+        grad_h = grad_output * a
+        grad_flow = grad_output * b
+
+        # diffusion_engine, alpha, dt have no gradients
+        return grad_h, grad_flow, None, None, None
 
 class BioGeometricEncoder(nn.Module):
     """Fixed Biological Encoder"""
@@ -80,6 +108,7 @@ class ManifoldDiffusionModel(nn.Module):
         self.hidden_dim = hidden_dim
         self.num_classes = num_classes
         self.alpha_val = alpha
+        self.dt = dt
         
         # Encoder (Fixed)
         self.encoder = BioGeometricEncoder(out_dim=hidden_dim)
@@ -106,14 +135,13 @@ class ManifoldDiffusionModel(nn.Module):
             
             # Apply Riemannian Step (Rust+CUDA does this fast on GPU)
             # h(t+1) = Exp_h( -grad_E * dt )
-            if DEVICE == "cuda" and rs._has_cuda:
-                 h = RiemannianDiffusionStep.apply(h, flow, self.rs_engine)
-            else:
-                # Fallback if not CUDA (should not happen in this experiment setup)
-                h_np = h.detach().cpu().numpy()
-                flow_np = flow.detach().cpu().numpy()
-                h_next_np = self.rs_engine.step_cpu(h_np, flow_np)
-                h = torch.from_numpy(h_next_np).to(h.device)
+            h = RiemannianDiffusionStep.apply(
+                h,
+                flow,
+                self.rs_engine,
+                self.alpha_val,
+                self.dt,
+            )
             
         # 3. Readout
         out = h @ self.W_out

@@ -1259,9 +1259,10 @@ class HierarchicalSentenceTopicLLM(nn.Module):
             for sent_idx, sent_node in enumerate(sentence_nodes):
                 if sent_idx >= T:
                     break
-                token_embs = self.token_embed(tokens[b, sent_idx].clamp(0, self.config.vocab_size - 1))
-                if isinstance(token_embs, torch.Tensor) and token_embs.dim() == 2:
-                    token_embs = token_embs.unsqueeze(0)
+                tok_ids = tokens[b, sent_idx].clamp(0, self.config.vocab_size - 1)
+                if tok_ids.dim() == 1:
+                    tok_ids = tok_ids.unsqueeze(0)
+                token_embs = self.token_embed(tok_ids)
                 
                 if metric_ctx is not None:
                     sent_metric = metric_ctx[b, sent_idx].unsqueeze(0)
@@ -1519,6 +1520,7 @@ class HierarchicalSentenceTopicLLM(nn.Module):
             "metric_keys": metric_keys,
         }
         info_str["length_logits"] = length_logits
+        info_str["paragraph_embedding"] = paragraph_embedding
 
         has_lm_target = True
 
@@ -1697,6 +1699,10 @@ def train_hierarchical_llm_from_text(
     batch_size: int = 4,
     max_paragraphs: int = 1000,
     device: Optional[str] = None,
+    teacher_model=None,
+    teacher_tokenizer=None,
+    kd_proj: Optional[nn.Module] = None,
+    kd_weight: float = 0.0,
 ) -> Tuple[HierarchicalSentenceTopicLLM, Dict[str, object]]:
     if config is None:
         config = HierarchicalLLMConfig()
@@ -1710,6 +1716,8 @@ def train_hierarchical_llm_from_text(
             "SentenceTopicDataset/ collate_batch 가 로드되지 않았습니다. "
             "reality_stone.data 모듈이 제대로 설치되었는지 확인하세요."
         )
+
+    use_kd = teacher_model is not None and teacher_tokenizer is not None and kd_proj is not None and kd_weight > 0.0
 
     # 모델 초기화
     model = HierarchicalSentenceTopicLLM(config).to(device_t)
@@ -1747,6 +1755,8 @@ def train_hierarchical_llm_from_text(
         if param.requires_grad and not ("metric" in name.lower() or "spd" in name.lower()):
             backbone_params.append(param)
     backbone_params.extend(model.decoder.parameters())
+    if use_kd:
+        backbone_params.extend(list(kd_proj.parameters()))
     
     # Filter only trainable
     metric_params = [p for p in metric_params if p.requires_grad]
@@ -1800,13 +1810,26 @@ def train_hierarchical_llm_from_text(
                 logits, info = model(batch, compute_loss=True)
                 loss = info["loss"]  # type: ignore[index]
                 assert isinstance(loss, torch.Tensor)
+                if use_kd:
+                    paragraphs = batch.get("paragraphs", None)
+                    paragraph_emb = info.get("paragraph_embedding", None)
+                    if paragraphs is not None and isinstance(paragraphs, list) and isinstance(paragraph_emb, torch.Tensor):
+                        enc = teacher_tokenizer(paragraphs, padding=True, truncation=True, max_length=512, return_tensors="pt")
+                        for k in enc:
+                            enc[k] = enc[k].to(device_t)
+                        with torch.no_grad():
+                            teacher_out = teacher_model(**enc)
+                            if hasattr(teacher_out, "last_hidden_state"):
+                                teacher_hidden = teacher_out.last_hidden_state[:, 0, :]
+                            else:
+                                teacher_hidden = teacher_out[0][:, 0, :]
+                        teacher_proj = kd_proj(teacher_hidden)
+                        teacher_proj = teacher_proj.to(paragraph_emb.dtype)
+                        loss_kd = F.mse_loss(paragraph_emb, teacher_proj)
+                        loss = loss + kd_weight * loss_kd
                 loss.backward()
-                
-                # Gradient clipping (균형 조정)
-                # 논문 Section 7.1: 메트릭과 백본 동일한 범위로 클리핑
                 torch.nn.utils.clip_grad_norm_(metric_params, config.grad_clip_norm)
                 torch.nn.utils.clip_grad_norm_(backbone_params, config.grad_clip_norm)
-                
                 optimizer.step()
                 epoch_loss += float(loss.item())
                 pbar.set_postfix(

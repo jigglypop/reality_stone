@@ -100,6 +100,12 @@ from .conversion import convert_to_hyperbolic
 # Optimizers
 from . import optim
 
+# Data
+try:
+    from . import data
+except ImportError:
+    pass
+
 # Unified Riemannian Layer (Rust) binding
 try:
     if _has_rust_ext:
@@ -171,6 +177,8 @@ __all__ = [
     'convert_to_hyperbolic',
     # Optimizers
     'optim',
+    # Data
+    'data',
     # MetriKey (Rust bindings)
     'metrikey',
     # Geodesic Attention (Rust bindings)

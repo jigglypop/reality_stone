@@ -4,6 +4,7 @@ from typing import Dict, List, Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import reality_stone as rs
 
 from .riemannian_aggregation import RiemannianAggregation
 from reality_stone.layers.metric_attention import MetricAttention
@@ -88,6 +89,10 @@ class HierarchicalLLMConfig:
     suppression_hyp: float = 0.1
     suppression_scale: float = 1.0
     enable_variable_suppression: bool = True
+    diffusion_steps: int = 0
+    use_diffusion_hidden: bool = False
+    diffusion_alpha: float = 0.9
+    diffusion_dt: float = 0.1
 
 
 class EditOperationHead(nn.Module):
@@ -357,6 +362,41 @@ def compute_dynamic_lambda(
             return base_lambda
     
     return base_lambda
+
+
+class RiemannianDiffusionStep(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, h: torch.Tensor, flow: torch.Tensor, diffusion_engine, alpha: float, dt: float) -> torch.Tensor:
+        h = h.contiguous()
+        flow = flow.contiguous()
+        h_next = torch.empty_like(h)
+        batch_size, dim = h.shape
+        if h.is_cuda and getattr(rs, "_has_cuda", False) and diffusion_engine is not None:
+            diffusion_engine.step_cuda(
+                h.data_ptr(),
+                flow.data_ptr(),
+                h_next.data_ptr(),
+                batch_size,
+                dim,
+            )
+        else:
+            h_np = h.detach().cpu().numpy().astype("float32")
+            flow_np = flow.detach().cpu().numpy().astype("float32")
+            h_next_np = diffusion_engine.step_cpu(h_np, flow_np)
+            h_next = torch.from_numpy(h_next_np).to(h.device)
+        ctx.alpha = float(alpha)
+        ctx.dt = float(dt)
+        return h_next
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        alpha = ctx.alpha
+        dt = ctx.dt
+        a = 1.0 - (1.0 - alpha) * dt
+        b = (1.0 - alpha) * dt
+        grad_h = grad_output * a
+        grad_flow = grad_output * b
+        return grad_h, grad_flow, None, None, None
 
 
 class SentenceTopicHead(nn.Module):
@@ -1046,6 +1086,15 @@ class HierarchicalSentenceTopicLLM(nn.Module):
             manifold="lorentz",
             c_lorentz=config.c_lorentz,
         )
+        engine = None
+        if getattr(config, "use_diffusion_hidden", False) and getattr(config, "diffusion_steps", 0) > 0:
+            engine_cls = getattr(rs, "PyRiemannianDiffusion", None)
+            if engine_cls is not None:
+                try:
+                    engine = engine_cls(config.d_model, config.diffusion_alpha, config.diffusion_dt)
+                except Exception:
+                    engine = None
+        self.diffusion_engine = engine
         
         # Decoder와 Embedding 공유 + Weight Tying
         self.decoder.token_embed = self.token_embed
@@ -1502,6 +1551,20 @@ class HierarchicalSentenceTopicLLM(nn.Module):
             metric_ctx=metric_ctx_flat,
             topo_idx=topo_idx_flat,
         )
+        if getattr(self.config, "use_diffusion_hidden", False) and getattr(self.config, "diffusion_steps", 0) > 0 and getattr(self, "diffusion_engine", None) is not None:
+            B_hidden, S_hidden, D_hidden = hidden.shape
+            h_flat = hidden.reshape(B_hidden * S_hidden, D_hidden)
+            for _ in range(self.config.diffusion_steps):
+                flow = torch.tanh(h_flat)
+                h_flat = RiemannianDiffusionStep.apply(
+                    h_flat,
+                    flow,
+                    self.diffusion_engine,
+                    self.config.diffusion_alpha,
+                    self.config.diffusion_dt,
+                )
+            hidden = h_flat.view(B_hidden, S_hidden, D_hidden)
+            logits = self.decoder.lm_head(hidden)
         logits = torch.where(torch.isfinite(logits), logits, torch.zeros_like(logits))
         logits = torch.clamp(logits, min=-self.config.logit_clip_value, max=self.config.logit_clip_value)
         edit_logits = self.edit_head(hidden)
@@ -2224,10 +2287,17 @@ def answer_question_with_llm(
     )
     support = qa_ret.get("support", [])
     if not support:
-        prompt_text = f"질문: {question}\n\n답변:"
+        prompt_text = (
+            f"질문: {question}\n\n"
+            f"답변: (한국어로, 가능한 한 자세하고 쉽게 설명해 주세요.)"
+        )
     else:
         context = "\n\n".join(support)
-        prompt_text = f"{context}\n\n질문: {question}\n\n답변:"
+        prompt_text = (
+            f"{context}\n\n"
+            f"질문: {question}\n\n"
+            f"답변: (위 컨텍스트를 참고하여, 한국어로 자세하고 쉽게 설명해 주세요.)"
+        )
 
     # 2) 계층적 LLM을 이용한 디코딩 (문단 단위 편집 + autoregressive 확장)
     infer_out = infer_hierarchical_llm_on_text(
@@ -2247,6 +2317,13 @@ def answer_question_with_llm(
         tail = generated_text[idx + len(marker) :].strip()
         if tail:
             answer_text = tail
+
+    if isinstance(answer_text, str):
+        total_len = len(answer_text)
+        if total_len > 0:
+            digit_like = sum(ch.isdigit() or ch in '",:{}[] \n\t' for ch in answer_text)
+            ratio = digit_like / float(total_len)
+
 
     return {
         "question": question,

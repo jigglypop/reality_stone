@@ -53,6 +53,10 @@ def run_train_qa(
         n_head_decoder=4,
         max_lm_seq_len=128,
     )
+    cfg.use_diffusion_hidden = True
+    cfg.diffusion_steps = 3
+    cfg.diffusion_alpha = 0.9
+    cfg.diffusion_dt = 0.1
 
     teacher_model = None
     teacher_tokenizer = None
@@ -148,7 +152,10 @@ def run_train_qa(
             top_k=3,
             max_new_tokens=32,
         )
-        print(f"  [LLM answer] {direct['answer']}")
+        ans = direct.get("answer", "")
+        if isinstance(ans, str) and len(ans) > 500:
+            ans = ans[:500] + " ...[truncated]"
+        print(f"  [LLM answer] {ans}")
 
     # 재사용을 위해 반환
     return model, info, cfg

@@ -139,49 +139,18 @@ def generate_and_save(
                     **inputs,
                     max_new_tokens=max_new_tokens,
                     return_dict_in_generate=True,
-                    output_attentions=True,
                     pad_token_id=tokenizer.pad_token_id
                 )
             
             generated_ids = outputs.sequences[0]
             text = tokenizer.decode(generated_ids, skip_special_tokens=True)
-            
-            # Extract attentions
-            # outputs.attentions is a tuple (one per step) of tuples (one per layer)
-            # We need to aggregate them into a full matrix or just take the last step's full view if available.
-            # For 'generate', it returns attentions for generated tokens step-by-step.
-            # But 'forward' pass on the full sequence gives the full causal mask attention.
-            # To get the full graph for the *completed* sentence, we should run one forward pass.
-            
-            # Re-run forward to get full attention matrix
-            with torch.no_grad():
-                full_out = model(
-                    generated_ids.unsqueeze(0), 
-                    output_attentions=True, 
-                    return_dict=True
-                )
-            
-            if full_out.attentions is None:
-                print("Warning: No attentions returned. Skipping this sample.")
-                continue
 
-            # full_out.attentions: tuple of [batch, n_heads, seq_len, seq_len]
-            topo_idx = extract_attention_graph(
-                full_out.attentions, 
-                k_neighbors=k_neighbors
-            )
-            
-            # Token IDs list
-            tokens_list = generated_ids.tolist()
-            
-            # Save entry
             entry = {
                 "paragraph": text,
-                "tokens": [tokens_list], # Batch size 1 format for Dataset
-                "topo_idx": [topo_idx],  # Batch size 1 format
-                "sentences": [text],     # Simplified: treat whole generation as one sentence/doc
+                "sentences": [text],
                 "model": model_name,
-                "prompt": prompt
+                "prompt": prompt,
+                "lang": "ko"
             }
             
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -196,7 +165,12 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    prompts = [f"Explain {topic} in detail." for topic in args.topics]
+    prompts = [
+        f"당신은 친절한 한국어 선생님입니다. 개념 '{topic}'에 대해 한국어로 3~4문장으로 설명해 주세요. "
+        f"첫 문장은 정의, 두 번째는 직관적인 설명, 세 번째는 간단한 예시를 포함해 주세요. "
+        f"문장은 마침표로 끝내 주세요."
+        for topic in args.topics
+    ]
     
     generate_and_save(
         model_name=args.model,

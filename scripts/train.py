@@ -11,25 +11,22 @@ import torch
 import argparse
 from reality_stone.models.hierarchical_sentence_topic_llm import (
     train_hierarchical_llm_from_text,
-    HierarchicalLLMConfig
+    HierarchicalLLMConfig,
 )
 
 def main(args):
-    # GPU Check
     if torch.cuda.is_available():
         device = "cuda"
     else:
         device = "cpu"
     print(f"Using device: {device}")
 
-    # Quick mode adjustment
     if args.quick:
         args.epochs = min(args.epochs, 2)
         args.max_paragraphs = min(args.max_paragraphs, 200)
         args.batch_size = min(args.batch_size, 4)
         print(f"[Quick mode] epochs={args.epochs}, max_paragraphs={args.max_paragraphs}")
 
-    # Config Configuration
     config = HierarchicalLLMConfig(
         vocab_size=args.vocab_size,
         d_model=args.d_model,
@@ -40,36 +37,51 @@ def main(args):
         n_head_decoder=args.num_heads,
         lambda_consistency=args.lambda_consistency,
         lambda_diversity=args.lambda_diversity,
-        # Explicitly use PretrainedBackbone if vocab_size is small or user requests
-        # Here we default to True if no explicit disable logic
         use_pretrained_embeddings=True,
-        pretrained_tokenizer="klue/bert-base" # Default
+        pretrained_tokenizer="klue/bert-base",
     )
-    
-    # If vocab_size is large (50000), it might mean we want scratch training.
-    # But our inference script failed because it expected keys from PretrainedBackbone.
-    # Let's ensure we align with what we want: High quality -> Pretrained backbone is good.
-    # But wait, if we use PretrainedBackbone, vocab_size is determined by it (32000 for BERT).
-    
+
     print(f"Starting training with config: {config}")
-    
+
+    teacher_model = None
+    teacher_tokenizer = None
+    kd_proj = None
+
+    if args.teacher_model and args.kd_weight > 0.0:
+        try:
+            from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore
+
+            print(f"[KD] Loading teacher model: {args.teacher_model}")
+            teacher_tokenizer = AutoTokenizer.from_pretrained(args.teacher_model)
+            teacher_model = AutoModelForCausalLM.from_pretrained(
+                args.teacher_model,
+                torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+            ).to(device)
+            teacher_model.eval()
+            hidden_size = getattr(teacher_model.config, "hidden_size", config.d_model)
+            kd_proj = torch.nn.Linear(hidden_size, config.d_model).to(device)
+        except Exception as e:
+            print(f"[KD] Disabled (error loading teacher): {e}")
+            teacher_model = None
+            teacher_tokenizer = None
+            kd_proj = None
+
     model, info = train_hierarchical_llm_from_text(
         data_path=args.data_path,
         config=config,
         epochs=args.epochs,
         batch_size=args.batch_size,
         max_paragraphs=args.max_paragraphs,
-        device=device
+        device=device,
+        teacher_model=teacher_model,
+        teacher_tokenizer=teacher_tokenizer,
+        kd_proj=kd_proj,
+        kd_weight=args.kd_weight,
     )
-    
-    # Save Checkpoint matching inference.py expectations
-    # inference.py expects: { "config": dict, "topic_head": state_dict, "decoder": state_dict }
-    # model has .topic_head and .decoder
     
     checkpoint_path = Path(args.checkpoint_dir) / "joint_final.pt"
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    # We need to save the config dict slightly differently because Config object is not dict
+
     config_dict = {
         "vocab_size": config.vocab_size,
         "d_model": config.d_model,
@@ -78,17 +90,17 @@ def main(args):
         "num_heads": config.num_heads_topic,
         "n_layer": config.n_layer_decoder,
         "n_head": config.n_head_decoder,
-        "use_pretrained_embeddings": config.use_pretrained_embeddings
+        "use_pretrained_embeddings": config.use_pretrained_embeddings,
     }
-    
+
     ckpt = {
         "config": config_dict,
         "topic_head": model.topic_head.state_dict(),
         "decoder": model.decoder.state_dict(),
         "epoch": args.epochs,
-        "loss": info.get("final_loss", 0.0)
+        "loss": info.get("final_loss", 0.0),
     }
-    
+
     torch.save(ckpt, checkpoint_path)
     print(f"\nTraining complete! Final model saved to {checkpoint_path}")
     
@@ -121,6 +133,8 @@ if __name__ == "__main__":
     parser.add_argument("--lambda_diversity", type=float, default=0.1)
     parser.add_argument("--quick", action="store_true")
     parser.add_argument("--demo_text", type=str, default=None)
+    parser.add_argument("--teacher_model", type=str, default=None)
+    parser.add_argument("--kd_weight", type=float, default=0.0)
     
     args = parser.parse_args()
     main(args)

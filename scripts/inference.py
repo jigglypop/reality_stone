@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
 from reality_stone.models.hierarchical_sentence_topic_llm import (
     HierarchicalSentenceTopicLLM,
     HierarchicalLLMConfig,
-    answer_question_with_llm
+    answer_question_with_llm,
 )
 
 def load_model(checkpoint_path: str, device: str):
@@ -73,11 +73,17 @@ def main():
     
     print("\n[Retrieval Results (Evidence)]")
     for i, ans in enumerate(result["retrieval"]["answers"]):
-        dist = ans['distance']
-        # Distance in hyperbolic space can be small; invert/scale for "score" visual
+        dist = ans["distance"]
         score = 1.0 / (1.0 + dist)
-        print(f"{i+1}. [Score: {score:.4f}] {ans['paragraph'][:100]}...")
-        print(f"   -> Sentence: {ans['sentence']}")
+        sent = ans.get("sentence", "")
+        para = ans.get("paragraph", "")
+        if isinstance(para, dict):
+            para_text = str(para.get("paragraph", ""))[:80]
+        else:
+            para_text = str(para)[:80]
+        print(f"{i+1}. [Score: {score:.4f}] {para_text}")
+        if sent:
+            print(f"   -> Sentence: {sent}")
     
     print("\n[Generated Answer]")
     print(result["answer"])

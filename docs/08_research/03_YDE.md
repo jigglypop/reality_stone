@@ -19,7 +19,7 @@ $$
 \frac{d}{dt}\left(\frac{\partial \boldsymbol{L}}{\partial \dot{q}^\sigma}\right)
 $$
 
-- $ \frac{\partial \boldsymbol{L}}{\partial \dot{q}^\sigma} $ 계산:
+- $\frac{\partial \boldsymbol{L}}{\partial \dot{q}^\sigma}$ 계산:
 - 시간 미분 \frac{d}{dt} 적용 (연쇄 법칙 사용):
 여기서 \dot{g}*{\sigma\nu} = \frac{\partial g*{\sigma\nu}}{\partial q^\mu} \dot{q}^\mu 이므로:
 B. 두 번째 항 유도: \frac{\partial \boldsymbol{L}}{\partial q^\sigma}

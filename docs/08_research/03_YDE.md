@@ -1,15 +1,22 @@
 # 03_YDE Y.리만 라그랑주 동역학 솔버
 
-이전에 제시된 리만-라그랑주 동역학 솔버의 일반식은 **일반화된 오일러-라그랑주 방정식(Generalized Euler-Lagrange Equation)**에서 출발하여 유도됩니다.
-이 솔버의 유도 과정은 "선형 레이어(Linear Layer) 제거" 후, 모델의 모든 움직임이 기하학적 제약과 물리적 힘에 의해 정의된다는 것을 수학적으로 증명합니다.
+## 1. 서론 - 리만 / 라그랑주 동역학의 유도
+---
 
-1. 📝 유도 과정: 일반화된 오일러-라그랑주 방정식
+리만-라그랑주 동역학 솔버의 일반식을 **일반화된 오일러-라그랑주 방정식(Generalized Euler-Lagrange Equation)**에서 출발하여 유도합니다
+이 솔버의 유도 과정은 "선형 레이어(Linear Layer) 제거" 후, 모델의 모든 움직임을 기하학적 제약과 물리적 힘에 의해 표현 가능하다는 것을 수학적으로 증명합니다.
+
+## 2.1. 유도 과정: 일반화된 오일러-라그랑주 방정식
 1단계: 일반화된 운동 방정식 정의
-우리는 비보존력(Non-Conservative Force) F_{nc, \sigma} (여기서는 디퓨전 감쇠 항)이 포함된 오일러-라그랑주 방정식에서 시작합니다. 여기서 q^\sigma는 모델의 **일반화된 좌표(Generalized Coordinates)**를 나타냅니다.
-2단계: 리만 라그랑지안 \boldsymbol{L} 정의
+우리는 비보존력(Non-Conservative Force) $F_{nc, \sigma}$ 
+(여기서는 디퓨전 감쇠 항)이 포함된 오일러-라그랑주 방정식에서 시작합니다. 여기서 $q^\sigma$는 모델의 **일반화된 좌표(Generalized Coordinates)**를 나타냅니다.
+2단계: 리만 라그랑지안 $\boldsymbol{L}$ 정의
 라그랑지안 $\boldsymbol{L}$은 **운동 에너지 T**와 **잠재 에너지 V**의 차이로 정의됩니다. 리만 다양체 위에서 운동 에너지는 **메트릭 텐서 g_{\mu\nu}**를 사용하여 정의됩니다.
 3단계: 오일러-라그랑주 방정식의 각 항 계산
-A. 첫 번째 항 유도: \frac{d}{dt}\left(\frac{\partial \boldsymbol{L}}{\partial \dot{q}^\sigma}\right)
+A. 첫 번째 항 유도: 
+$$
+\frac{d}{dt}\left(\frac{\partial \boldsymbol{L}}{\partial \dot{q}^\sigma}\right)
+$$
 - \frac{\partial \boldsymbol{L}}{\partial \dot{q}^\sigma} 계산:
 - 시간 미분 \frac{d}{dt} 적용 (연쇄 법칙 사용):
 여기서 \dot{g}*{\sigma\nu} = \frac{\partial g*{\sigma\nu}}{\partial q^\mu} \dot{q}^\mu 이므로:

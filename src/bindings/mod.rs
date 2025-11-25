@@ -8,7 +8,8 @@ mod spline;
 mod suppression;
 pub mod geodesic_attention;
 pub mod unified_riemannian;
-pub mod diffusion; // Added module
+pub mod diffusion;
+mod extraction;
 
 #[macro_use]
 mod macros;
@@ -41,7 +42,9 @@ pub fn _rust(_py: Python, m: &PyModule) -> PyResult<()> {
     // MetriKey Module
     metrikey::init_module(_py, m)?;
     // Riemannian Diffusion
-    diffusion::register(m)?; // Register diffusion module
+    diffusion::register(m)?;
+    // Riemannian Metric Extraction (CUDA)
+    extraction::register(m)?;
 
     {
         use crate::bindings::poincare as pc;

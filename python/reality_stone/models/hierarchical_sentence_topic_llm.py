@@ -38,12 +38,12 @@ class HierarchicalLLMConfig:
     pretrained_tokenizer: Optional[str] = None
     use_pretrained_embeddings: bool = True
     
-    lambda_consistency: float = 1.0
+    lambda_consistency: float = 0.5
     lambda_diversity: float = 0.1
     lambda_consistency_schedule: str = "constant"
     lambda_diversity_schedule: str = "constant"
-    lambda_topic_supervision: float = 0.0
-    lambda_metric: float = 0.0
+    lambda_topic_supervision: float = 0.5
+    lambda_metric: float = 0.1
     lambda_curvature: float = 0.0
     curvature_target_poincare: float = 1e-3
     curvature_target_lorentz: float = -1.0
@@ -56,10 +56,10 @@ class HierarchicalLLMConfig:
     gamma_self: float = 0.5
     gamma_down: float = 0.2
     
-    max_answer_sentences: int = 5
-    lambda_length: float = 0.05
-    lambda_semantic: float = 0.0
-    max_lm_seq_len: int = 256
+    max_answer_sentences: int = 20
+    lambda_length: float = 0.2
+    lambda_semantic: float = 0.3
+    max_lm_seq_len: int = 1024
     
     freeze_decoder: bool = False
     freeze_topic_head_backbone: bool = False
@@ -1999,6 +1999,9 @@ def infer_hierarchical_llm_on_text(
     k_neighbors: int = 3,
     max_new_tokens: int = 20,
     use_top_down: bool = True,
+    temperature: float = 0.8,
+    top_p: float = 0.9,
+    use_sampling: bool = True,
 ) -> Dict[str, object]:
     """
     PreSegmenter 를 사용해 단일 문단 텍스트에 대해
@@ -2045,6 +2048,9 @@ def infer_hierarchical_llm_on_text(
     original_sentences: List[str] = seg_output["sentences"]
     tokenizer = segmenter.tokenizer
     pad_id = getattr(tokenizer, "pad_token_id", 0) if tokenizer is not None else 0
+    
+    # T, L 변수 미리 정의 (inference에서 사용)
+    B, T, L = tokens.shape
 
     if use_top_down and tree is not None:
         tokens_seq = _apply_top_down_decoding(
@@ -2068,7 +2074,26 @@ def infer_hierarchical_llm_on_text(
             input_ids_flat = input_ids_flat[:, :S_actual]
             mask_flat = mask_flat[:, :S_actual]
         
-        pred_ids_flat = torch.argmax(logits, dim=-1)
+        if use_sampling and temperature > 0:
+            V = logits.size(-1)
+            logits_scaled = logits / temperature
+            probs = F.softmax(logits_scaled, dim=-1)
+            
+            if top_p < 1.0:
+                sorted_probs, sorted_indices = torch.sort(probs, descending=True, dim=-1)
+                cumsum_probs = torch.cumsum(sorted_probs, dim=-1)
+                mask_p = cumsum_probs > top_p
+                mask_p[..., 0] = False
+                sorted_probs = sorted_probs.clone()
+                sorted_probs[mask_p] = 0.0
+                sorted_probs = sorted_probs / (sorted_probs.sum(dim=-1, keepdim=True) + 1e-10)
+                sampled_sorted_idx = torch.multinomial(sorted_probs.view(-1, V), num_samples=1).view(probs.shape[:-1], 1)
+                pred_ids_flat = sorted_indices.gather(-1, sampled_sorted_idx).squeeze(-1)
+            else:
+                pred_ids_flat = torch.multinomial(probs.view(-1, V), num_samples=1).view(probs.shape[:-1])
+        else:
+            pred_ids_flat = torch.argmax(logits, dim=-1)
+        
         edited_flat = torch.where(mask_flat.bool(), pred_ids_flat, input_ids_flat)
         tokens_seq = edited_flat
 
@@ -2088,42 +2113,54 @@ def infer_hierarchical_llm_on_text(
     if tokenizer is not None:
         try:
             if getattr(model.config, "enable_structural_edit", False):
-                token_ids_no_pad = [tid for tid in final_ids_flat if tid != pad_id]
+                token_ids_no_pad = [tid for tid in final_ids_flat if tid != pad_id and tid > 0]
                 if token_ids_no_pad:
                     generated_text = tokenizer.decode(token_ids_no_pad, skip_special_tokens=True)
                 else:
-                    generated_text = text
+                    generated_text = ""
             else:
                 generated_sentences: List[str] = []
                 for sent_idx in range(T):
                     start_idx = sent_idx * L
                     end_idx = min(start_idx + L, len(final_ids_flat))
                     sent_token_ids = final_ids_flat[start_idx:end_idx]
-                    sent_token_ids_no_pad = [tid for tid in sent_token_ids if tid != pad_id]
+                    sent_token_ids_no_pad = [tid for tid in sent_token_ids if tid != pad_id and tid > 0]
                     if sent_token_ids_no_pad:
                         sent_text = tokenizer.decode(sent_token_ids_no_pad, skip_special_tokens=True)
-                        generated_sentences.append(sent_text)
-                generated_text = " ".join(generated_sentences)
-        except Exception:
-            generated_text = text
+                        if sent_text.strip():
+                            generated_sentences.append(sent_text)
+                if generated_sentences:
+                    generated_text = " ".join(generated_sentences)
+                else:
+                    generated_text = ""
+        except Exception as e:
+            import traceback
+            print(f"[WARNING] Tokenizer decode failed: {e}")
+            print(traceback.format_exc())
+            generated_text = ""
     else:
+        generated_text = ""
+    
+    if not generated_text or generated_text == text:
         generated_text = text
 
     # 문단 레벨 컨트롤러가 예측한 문장 수에 맞게, 문장을 잘라서 상위 레벨에서 발화 길이를 제어
     length_logits_tensor = info.get("length_logits")
-    if isinstance(length_logits_tensor, torch.Tensor):
-        length_probs = torch.softmax(length_logits_tensor, dim=-1)  # [B, max_answer_sentences]
-        pred_sentences = int(length_probs[0].argmax().item()) + 1   # 1..max_answer_sentences
-
+    if isinstance(length_logits_tensor, torch.Tensor) and len(generated_text) > 0:
+        length_probs = torch.softmax(length_logits_tensor, dim=-1)
+        pred_sentences = int(length_probs[0].argmax().item()) + 1
+        pred_sentences = min(pred_sentences, model.config.max_answer_sentences)
+        
         seg_generated = segmenter(generated_text)
         gen_sents = seg_generated.get("sentences", [])
-        if gen_sents:
+        if gen_sents and len(gen_sents) > pred_sentences:
             order_scores = info.get("sentence_order_scores")
             if isinstance(order_scores, torch.Tensor) and not getattr(model.config, "enable_structural_edit", False):
                 scores_np = order_scores[0, : len(gen_sents)].detach().cpu()
                 indices = list(range(len(gen_sents)))
                 indices.sort(key=lambda i: float(scores_np[i].item()), reverse=True)
                 indices = indices[:pred_sentences]
+                indices.sort()
                 selected = [gen_sents[i] for i in indices]
                 generated_text = " ".join(selected)
             else:
@@ -2276,7 +2313,9 @@ def answer_question_with_llm(
     data_path: str,
     max_paragraphs: int = 1000,
     top_k: int = 3,
-    max_new_tokens: int = 32,
+    max_new_tokens: int = 256,
+    temperature: float = 0.8,
+    top_p: float = 0.9,
 ) -> Dict[str, object]:
     qa_ret = answer_question_from_corpus(
         model=model,
@@ -2303,26 +2342,26 @@ def answer_question_with_llm(
     infer_out = infer_hierarchical_llm_on_text(
         model=model,
         text=prompt_text,
-        max_length=128,
+        max_length=256,
         k_neighbors=3,
         max_new_tokens=max_new_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        use_sampling=True,
     )
-    generated_text = infer_out.get("generated_text", prompt_text)
+    generated_text = infer_out.get("generated_text", "")
 
-    # "답변:" 마커 기준으로 최종 answer 부분만 최대한 잘라낸다.
     answer_text = generated_text
     marker = "답변:"
     if marker in generated_text:
-        idx = generated_text.rfind(marker)
-        tail = generated_text[idx + len(marker) :].strip()
-        if tail:
-            answer_text = tail
-
-    if isinstance(answer_text, str):
-        total_len = len(answer_text)
-        if total_len > 0:
-            digit_like = sum(ch.isdigit() or ch in '",:{}[] \n\t' for ch in answer_text)
-            ratio = digit_like / float(total_len)
+        parts = generated_text.split(marker)
+        if len(parts) > 1:
+            tail = parts[-1].strip()
+            if tail and len(tail) > 3:
+                answer_text = tail
+    
+    if not answer_text or answer_text == prompt_text:
+        answer_text = "죄송합니다. 답변을 생성할 수 없습니다."
 
 
     return {

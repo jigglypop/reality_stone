@@ -95,7 +95,7 @@ except Exception:
     batched_cholesky = None  # type: ignore
 
 # 모델 변환 유틸리티 추가
-from .conversion import convert_to_hyperbolic
+from .conversion import convert_to_full_riemannian, convert_to_hyperbolic
 
 # Optimizers
 from . import optim

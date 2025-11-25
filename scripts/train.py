@@ -39,6 +39,7 @@ def main(args):
         lambda_diversity=args.lambda_diversity,
         use_pretrained_embeddings=True,
         pretrained_tokenizer="klue/bert-base",
+        max_lm_seq_len=512,
     )
 
     print(f"Starting training with config: {config}")
@@ -53,10 +54,22 @@ def main(args):
 
             print(f"[KD] Loading teacher model: {args.teacher_model}")
             teacher_tokenizer = AutoTokenizer.from_pretrained(args.teacher_model)
+            # Ensure pad token exists for padding
+            if getattr(teacher_tokenizer, "pad_token", None) is None:
+                if getattr(teacher_tokenizer, "eos_token", None) is not None:
+                    teacher_tokenizer.pad_token = teacher_tokenizer.eos_token
+                else:
+                    teacher_tokenizer.add_special_tokens({'pad_token': '[PAD]'})
             teacher_model = AutoModelForCausalLM.from_pretrained(
                 args.teacher_model,
                 torch_dtype=torch.float16 if device == "cuda" else torch.float32,
             ).to(device)
+            # If we added a new special token, resize embeddings
+            if hasattr(teacher_tokenizer, "vocab") and hasattr(teacher_model, "resize_token_embeddings"):
+                try:
+                    teacher_model.resize_token_embeddings(len(teacher_tokenizer))
+                except Exception:
+                    pass
             teacher_model.eval()
             hidden_size = getattr(teacher_model.config, "hidden_size", config.d_model)
             kd_proj = torch.nn.Linear(hidden_size, config.d_model).to(device)

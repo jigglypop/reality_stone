@@ -6,4 +6,4 @@ export TRANSFORMERS_CACHE="$HF_HOME/transformers"
 export HUGGINGFACE_HUB_CACHE="$HF_HOME/hub"
 
 mkdir -p "$TRANSFORMERS_CACHE" "$HUGGINGFACE_HUB_CACHE"
-source .venv/bin/activate
+source ./.venv/Scripts/activate

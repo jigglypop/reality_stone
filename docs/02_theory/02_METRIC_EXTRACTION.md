@@ -1,0 +1,41 @@
+# 리만 메트릭 추출: 94% 압축의 비밀 (Riemannian Metric Extraction)
+
+## 1. 가설 (The Hypothesis)
+거대 언어 모델(LLM)은 엄청나게 과매개변수화(Over-parameterized)되어 있습니다. $3072 \times 768$ 크기의 가중치 행렬은 $2.3 \times 10^6$개의 독립적인 사실을 담고 있는 것이 아닙니다. 이는 고차원 공간에 임베딩된 **저차원 다양체(Low-dimensional Manifold)**를 표현할 뿐입니다.
+
+우리의 가설은 거대한 행렬 $W$를 버리고, 다음 두 가지만 저장해도 충분하다는 것입니다:
+1. **기저 벡터 집합 (Basis Vectors)**: 좌표계의 축.
+2. **메트릭 텐서 $G$ (Metric Tensor)**: 좌표 축 사이의 공간이 어떻게 휘어져 있는지를 나타내는 곡률 정보.
+
+## 2. 수학적 유도 (Mathematical Derivation)
+
+### 특이값 분해 (SVD) - 출발점
+모든 행렬 $W$는 다음과 같이 분해될 수 있습니다:
+$$ W = U \Sigma V^T $$
+- $U \in \mathbb{R}^{m \times k}$: 출력 기저 (Output Basis)
+- $V \in \mathbb{R}^{n \times k}$: 입력 기저 (Input Basis)
+- $\Sigma \in \mathbb{R}^{k \times k}$: 대각 스케일링 인자 (Euclidean Scaling)
+
+### 리만 일반화 (Riemannian Generalization)
+Reality Stone에서는 $\Sigma$ (유클리드 스케일링)를 완전한 **리만 메트릭 텐서 $G$** (곡률 인코딩)로 일반화합니다.
+
+$$ W_{eff} \approx \text{Basis}_{out} \cdot G \cdot \text{Basis}_{in}^T $$
+
+여기서 $G$는 $k \times k$ 크기의 학습 가능한 행렬로, 입력 기저 개념과 출력 기저 개념 사이의 **측지선 거리(Geodesic Distances)**를 인코딩합니다. $G$는 대각 행렬일 필요가 없으며, 비대각 성분은 개념 간의 '기하학적 얽힘(Entanglement)'을 나타냅니다.
+
+## 3. 압축 메커니즘 (Compression Mechanism)
+
+예시: $3072 \times 768$ 크기의 레이어 $W$
+- **원본 파라미터 수**: $2,359,296$
+- **추출 후 (랭크 $k=32$)**:
+  - 입력 기저 ($768 \times 32$): $24,576$
+  - 출력 기저 ($3072 \times 32$): $98,304$
+  - **메트릭 텐서 $G$ ($32 \times 32$)**: $1,024$ (핵심 정보는 여기에 다 있음!)
+  - **합계**: $123,904$
+  - **감축률**: **94.7%**
+
+## 4. 지능의 부활 (Intelligence Recovery)
+단순 SVD 추출은 '평평한' 근사치이므로 초기에는 모델의 지능이 붕괴됩니다 (엔트로피 붕괴).
+하지만, **오직 메트릭 $G$와 기저만 미세 조정(Fine-Tuning)**하면, 모델은 이 저차원 공간을 고차원 데이터 다양체에 맞게 "휘게 만드는 법"을 학습합니다.
+
+실험 결과, 단 6%의 파라미터만으로도 짧은 학습 후 모델은 문법, 구문, 추론 능력을 완전히 회복합니다. 이는 지식이 가중치의 '크기'가 아니라 '구조(위상)'에 있음을 증명합니다.

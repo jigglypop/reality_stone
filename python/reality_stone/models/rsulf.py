@@ -11,8 +11,34 @@ def extract_metric(WQ: torch.Tensor, WK: torch.Tensor) -> torch.Tensor:
     """
     Extracts metric g from Query and Key weights.
     g = WQ^T @ WK
+    
+    Handles GQA (Grouped Query Attention) where WK may be smaller than WQ.
     """
-    return torch.matmul(WQ.t(), WK)
+    d_q_out, d_model = WQ.shape
+    d_k_out, d_model_k = WK.shape
+    
+    assert d_model == d_model_k, f"Hidden dimension mismatch: {d_model} vs {d_model_k}"
+    
+    if d_q_out == d_k_out:
+        # Standard attention: Q and K have same dimension
+        return torch.matmul(WQ.t(), WK)
+    
+    elif d_q_out > d_k_out:
+        # GQA: K is smaller, repeat K to match Q dimension
+        num_groups = d_q_out // d_k_out
+        assert d_q_out % d_k_out == 0, f"Q dim {d_q_out} not divisible by K dim {d_k_out}"
+        
+        # Repeat K weights: [d_k_out, d_model] -> [d_q_out, d_model]
+        WK_expanded = WK.repeat(num_groups, 1)
+        
+        # Now compute metric
+        return torch.matmul(WQ.t(), WK_expanded)
+    
+    else:
+        # MQA or other cases: K is larger than Q (rare)
+        # Use Q dimension
+        WK_reduced = WK[:d_q_out, :]
+        return torch.matmul(WQ.t(), WK_reduced)
 
 def stabilize_metric(g: torch.Tensor, strategy: str = "diagonal", eps: float = 1e-6) -> torch.Tensor:
     """

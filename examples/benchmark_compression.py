@@ -7,7 +7,7 @@ def benchmark_compression():
     print("=== Reality Stone: Riemannian Compression Benchmark ===")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
-    model_id = "gpt2"
+    model_id = "microsoft/phi-2"
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     
     # 1. 압축 모델 생성 (30% 압축 시뮬레이션)

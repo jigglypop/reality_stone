@@ -10,7 +10,7 @@ def benchmark_pruning():
     print(f"Device: {device}")
     
     # 1. 모델 준비
-    model_id = "gpt2"
+    model_id = "microsoft/phi-2"
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     
     # 2. 베이스라인 (Original) 측정

@@ -6,7 +6,7 @@ import time
 def dreaming_demo():
     print("=== Reality Stone: Brain OS Demo (Zero-Shot Context Switching) ===")
     
-    model_id = "gpt2"
+    model_id = "microsoft/phi-2"
     model = AutoModelForCausalLM.from_pretrained(model_id)
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     device = "cuda" if torch.cuda.is_available() else "cpu"

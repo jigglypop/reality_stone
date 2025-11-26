@@ -7,7 +7,7 @@ def test_full_conversion():
     print("=== Deep Manifold Injection Test ===")
     
     # 1. 모델 로드
-    model_id = "gpt2"
+    model_id = "microsoft/phi-2"
     print(f"Loading {model_id}...")
     model = AutoModelForCausalLM.from_pretrained(model_id)
     tokenizer = AutoTokenizer.from_pretrained(model_id)
@@ -41,12 +41,6 @@ def test_full_conversion():
     
     # 5. 레이어 확인
     print("\nChecking internal layer structure (Transformer Block 0 MLP):")
-    # GPT2의 경우 h[0].mlp.c_fc 가 Conv1D인데, nn.Linear만 교체하도록 했으므로
-    # 확인을 위해 c_proj (Linear인 경우가 많음) 등을 체크하거나
-    # Llama 같은 최신 모델 구조에서는 모든게 Linear라 더 확실함.
-    # GPT2에서 nn.Linear를 사용하는 부분을 찾아서 출력
-    
-    # Check if any module is RiemannianLinear
     found = False
     for name, module in model.named_modules():
         if "RiemannianLinear" in str(type(module)):

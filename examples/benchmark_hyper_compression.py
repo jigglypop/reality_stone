@@ -6,7 +6,7 @@ from reality_stone.hyper_compression import apply_hyper_compression
 def benchmark_hyper_compression():
     print("=== Reality Stone: Hyper-Compression Benchmark ===")
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model_id = "gpt2"
+    model_id = "microsoft/phi-2"
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     
     # 1. 원본 모델

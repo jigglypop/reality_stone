@@ -12,3 +12,15 @@ target
 text.txt
 data
 data/*
+checkpoints/
+checkpoints/*
+.hf_cache/
+.hf_cache/*
+.cache/
+.cache/*
+.pytest_cache/
+.pytest_cache/*
+.mypy_cache/
+.mypy_cache/*
+.ruff_cache/
+.ruff_cache/*

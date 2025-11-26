@@ -8,7 +8,7 @@ def train_full_model():
     print("=== Reality Stone: Deep Manifold Fine-Tuning ===")
     
     # 1. 모델 및 토크나이저 로드
-    model_id = "gpt2"
+    model_id = "microsoft/phi-2"
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     tokenizer.pad_token = tokenizer.eos_token
     

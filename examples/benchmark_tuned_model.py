@@ -5,7 +5,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from reality_stone.conversion import convert_to_full_riemannian
 
 def benchmark_model():
-    model_path = "./reality-stone-gpt2-tuned"
+    model_path = "./reality-stone-phi2-tuned"
     print(f"=== Benchmarking Model: {model_path} ===")
 
     # 1. File Size Check
@@ -44,9 +44,9 @@ def benchmark_model():
         tokenizer = AutoTokenizer.from_pretrained(model_path)
     except Exception as e:
         print(f"Standard load failed: {e}")
-        print("Loading base GPT2 and applying surgery, then loading weights...")
-        model = AutoModelForCausalLM.from_pretrained("gpt2")
-        tokenizer = AutoTokenizer.from_pretrained("gpt2")
+        print("Loading base Phi-2 and applying surgery, then loading weights...")
+        model = AutoModelForCausalLM.from_pretrained("microsoft/phi-2")
+        tokenizer = AutoTokenizer.from_pretrained("microsoft/phi-2")
         # Apply surgery
         model = convert_to_full_riemannian(model, curvature=1e-5) # Use same curvature as training
         # Load weights

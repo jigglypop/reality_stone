@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple, Union
+from pathlib import Path
 from dataclasses import dataclass
 
 try:
@@ -11,6 +12,7 @@ except ImportError:
 
 import reality_stone as rs
 from reality_stone.layers.poincare import project_to_ball
+from reality_stone.models.rsulf import RSULF, RSULFStack
 
 
 @dataclass
@@ -156,6 +158,313 @@ class LagrangianAdapter(nn.Module):
         T = self.kinetic_energy(velocity, metric)
         V = self.potential_energy(value)
         return T - V
+
+
+
+
+
+def _get_transformer_layers(model: nn.Module):
+    if hasattr(model, "model") and hasattr(model.model, "layers"):
+        return model.model.layers
+    if hasattr(model, "transformer") and hasattr(model.transformer, "h"):
+        return model.transformer.h
+    raise ValueError("Unsupported transformer architecture for RSULF conversion")
+
+
+def _extract_gpt2_weights(layer: nn.Module) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    attn = getattr(layer, "attn", None)
+    mlp = getattr(layer, "mlp", None)
+    if attn is None or mlp is None:
+        # Try another common naming (e.g. older GPT-2 implementations might vary, but HF usually consistent)
+        # Some implementations use self_attn / mlp
+        attn = getattr(layer, "self_attn", None) if attn is None else attn
+        # GPT-2 block has 'attn' and 'mlp' usually.
+        if attn is None or mlp is None:
+            raise ValueError("Layer does not have expected attn/mlp structure for GPT-2")
+
+    # Attention weights (c_attn is Conv1D)
+    # Conv1D weights are (in_features, out_features)
+    # c_attn combines Q, K, V
+    c_attn = getattr(attn, "c_attn")
+    weight = c_attn.weight # (d, 3*d)
+    
+    d = weight.shape[0]
+    # Split Q, K, V
+    # HF GPT2 implementation: split(3, dim=1)
+    # But weight is (d, 3d), so split dim 1
+    wq, wk, wv = torch.split(weight, d, dim=1)
+    
+    # MLP weights
+    # c_fc: (d, 4d) -> W1 (up projection)
+    # c_proj: (4d, d) -> W2 (down projection)
+    # Note: Conv1D weights are (in, out)
+    # So W1: (d, 4d) -> x @ W1
+    # W2: (4d, d) -> h @ W2
+    # But RSULF expects:
+    # W1 for F.linear(x, W1) -> W1 should be (out, in) = (4d, d)
+    # W2 for F.linear(h, W2) -> W2 should be (out, in) = (d, 4d)
+    # Conv1D weights are stored as (in, out), so we need to transpose them for F.linear
+    
+    w1_weight = getattr(mlp, "c_fc").weight   # (d, 4d)
+    w2_weight = getattr(mlp, "c_proj").weight # (4d, d)
+    
+    # Transpose for F.linear usage in RSULF
+    W1 = w1_weight.t() # (4d, d)
+    W2 = w2_weight.t() # (d, 4d)
+    
+    # For Q, K
+    # Attention in GPT-2: x @ c_attn -> split
+    # So Q = x @ wq. In RSULF we use g = WQ.t() @ WK ??
+    # Wait, extract_metric(WQ, WK) uses WQ.t() @ WK
+    # If we assume standard attention: score = (xWq)(xWk)^T = x Wq Wk^T x^T
+    # g represents the "metric" in the space.
+    # If we follow Mistral logic: WQ, WK are linear layer weights (out, in)
+    # GPT-2 Conv1D weights are (in, out).
+    # So we should transpose them to match Linear(in, out) weight shape (out, in).
+    
+    WQ = wq.t()
+    WK = wk.t()
+    
+    return WQ, WK, W1, W2
+
+
+
+def _extract_mistral_like_weights(layer: nn.Module) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    attn = getattr(layer, "self_attn", None)
+    mlp = getattr(layer, "mlp", None)
+    if attn is None or mlp is None:
+        raise ValueError("Layer does not have expected self_attn/mlp structure")
+
+    WQ = getattr(attn, "q_proj").weight
+    WK = getattr(attn, "k_proj").weight
+    gate = getattr(mlp, "gate_proj", None)
+    up = getattr(mlp, "up_proj", None)
+    down = getattr(mlp, "down_proj", None)
+    if gate is None or down is None:
+        raise ValueError("MLP does not have expected gate_proj/down_proj structure")
+    if up is not None:
+        W1 = 0.5 * (gate.weight + up.weight)
+    else:
+        W1 = gate.weight
+    W2 = down.weight
+    return WQ, WK, W1, W2
+
+
+def _extract_weights_auto(layer: nn.Module) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    # Try Mistral/Llama style
+    try:
+        return _extract_mistral_like_weights(layer)
+    except ValueError:
+        pass
+        
+    # Try GPT-2 style
+    try:
+        return _extract_gpt2_weights(layer)
+    except ValueError:
+        pass
+        
+    # Try Bert style (if needed in future) or others
+    
+    raise ValueError(f"Could not extract weights from layer type: {type(layer)}")
+
+
+def convert_transformer_to_rsulf_layers(
+    model: nn.Module,
+    laplacian: torch.Tensor,
+    lr: float = 0.02,
+    alpha: float = 0.04,
+    beta: float = 0.01,
+    gamma: float = 0.98,
+) -> nn.ModuleList:
+    layers = _get_transformer_layers(model)
+    rs_layers: List[RSULF] = []
+
+    for idx, layer in enumerate(layers):
+        try:
+            WQ, WK, W1, W2 = _extract_weights_auto(layer)
+        except Exception as e:
+            # print(f"Skipping layer {idx} due to extraction error: {e}")
+            continue
+
+        rs_layer = RSULF(
+            d_model=WQ.shape[1],
+            WQ=WQ,
+            WK=WK,
+            W1=W1,
+            W2=W2,
+            L_matrix=laplacian,
+            lr=lr,
+            alpha=alpha,
+            beta=beta,
+            gamma=gamma,
+        )
+        rs_layers.append(rs_layer)
+
+    return nn.ModuleList(rs_layers)
+
+
+def build_mistral7b_rsulf(
+    model_name: str = "mistralai/Mistral-7B-v0.1",
+    device: str = "cuda",
+    lr: float = 0.02,
+    alpha: float = 0.04,
+    beta: float = 0.01,
+    gamma: float = 0.98,
+) -> Tuple[nn.Module, nn.ModuleList]:
+    if not _HAS_TRANSFORMERS:
+        raise ImportError("transformers required")
+    base = AutoModelForCausalLM.from_pretrained(model_name)
+    base = base.to(device)
+    d = int(base.config.hidden_size)
+    L = torch.eye(d, device=device)
+    rs_layers = convert_transformer_to_rsulf_layers(
+        base,
+        L,
+        lr=lr,
+        alpha=alpha,
+        beta=beta,
+        gamma=gamma,
+    )
+    rs_stack = RSULFStack(rs_layers)
+    rs_stack = rs_stack.to(device)
+    return base, rs_stack
+
+
+class MistralRSULFAdapter(nn.Module):
+    def __init__(
+        self,
+        model_name: str = "mistralai/Mistral-7B-v0.1",
+        device: str = "cuda",
+        lr: float = 0.02,
+        alpha: float = 0.04,
+        beta: float = 0.01,
+        gamma: float = 0.98,
+    ):
+        super().__init__()
+        self.model_name = model_name
+        self.device = device
+        self.lr = lr
+        self.alpha = alpha
+        self.beta = beta
+        self.gamma = gamma
+        base, rs_stack = build_mistral7b_rsulf(
+            model_name=model_name,
+            device=device,
+            lr=lr,
+            alpha=alpha,
+            beta=beta,
+            gamma=gamma,
+        )
+        self.base = base
+        self.rsulf_stack = rs_stack
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        rsulf_cache: Optional[List[Optional[torch.Tensor]]] = None,
+        **kwargs: Any,
+    ):
+        outputs = self.base(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            output_hidden_states=True,
+            return_dict=True,
+            **kwargs,
+        )
+        hidden_states = list(outputs.hidden_states)
+        rs_layers = list(self.rsulf_stack.layers)
+        if rsulf_cache is None or len(rsulf_cache) != len(rs_layers):
+            rsulf_cache = [None] * len(rs_layers)
+        rs_cache_next: List[Optional[torch.Tensor]] = []
+        h_rs: Optional[torch.Tensor] = None
+        for idx, (layer, V_prev) in enumerate(zip(rs_layers, rsulf_cache)):
+            # hidden_states[0] = embeddings, hidden_states[1] = first block 출력
+            if idx + 1 >= len(hidden_states):
+                break
+            h_in = hidden_states[idx + 1]
+            h_out, V_next = layer(h_in, V_prev)
+            rs_cache_next.append(V_next)
+            h_rs = h_out
+        rsulf_logits = None
+        if h_rs is not None and hasattr(self.base, "lm_head"):
+            rsulf_logits = self.base.lm_head(h_rs)
+        return {
+            "logits": outputs.logits,
+            "rsulf_logits": rsulf_logits,
+            "hidden_states": outputs.hidden_states,
+            "rsulf_hidden": h_rs,
+            "rsulf_cache": rs_cache_next,
+        }
+
+    def generate(
+        self,
+        prompt: str,
+        max_length: int = 64,
+        temperature: float = 1.0,
+        **kwargs: Any,
+    ):
+        self.base.eval()
+        device = self.device
+        inputs = self.tokenizer(prompt, return_tensors="pt")
+        input_ids = inputs["input_ids"].to(device)
+        attention_mask = inputs.get("attention_mask")
+        if attention_mask is not None:
+            attention_mask = attention_mask.to(device)
+        outputs = self.base.generate(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            max_length=max_length,
+            temperature=temperature,
+            **kwargs,
+        )
+        return self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+    def save_pretrained(self, save_dir: Union[str, Path]):
+        save_path = Path(save_dir)
+        save_path.mkdir(parents=True, exist_ok=True)
+        self.base.save_pretrained(str(save_path))
+        self.tokenizer.save_pretrained(str(save_path))
+        payload = {
+            "state_dict": self.rsulf_stack.state_dict(),
+            "config": {
+                "model_name": self.model_name,
+                "lr": self.lr,
+                "alpha": self.alpha,
+                "beta": self.beta,
+                "gamma": self.gamma,
+            },
+        }
+        torch.save(payload, save_path / "rsulf.pt")
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        save_dir: Union[str, Path],
+        device: Optional[str] = None,
+    ) -> "MistralRSULFAdapter":
+        save_path = Path(save_dir)
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        payload = torch.load(save_path / "rsulf.pt", map_location="cpu")
+        cfg = payload.get("config", {})
+        model_name = str(save_path)
+        lr = float(cfg.get("lr", 0.02))
+        alpha = float(cfg.get("alpha", 0.04))
+        beta = float(cfg.get("beta", 0.01))
+        gamma = float(cfg.get("gamma", 0.98))
+        obj = cls(
+            model_name=model_name,
+            device=device,
+            lr=lr,
+            alpha=alpha,
+            beta=beta,
+            gamma=gamma,
+        )
+        state_dict = payload.get("state_dict", payload)
+        obj.rsulf_stack.load_state_dict(state_dict, strict=False)
+        return obj
 
 
 class RealityStoneLLMAdapter(nn.Module):

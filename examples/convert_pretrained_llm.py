@@ -14,13 +14,13 @@ from reality_stone.models.llm_adapter import (
 
 def example_1_basic_conversion():
     print("=" * 60)
-    print("Example 1: Basic Conversion - GPT-2 to Reality Stone")
+    print("Example 1: Basic Conversion - Phi-2 to Reality Stone")
     print("=" * 60)
     
     config = LLMAdapterConfig(
-        pretrained_model_name="gpt2",
+        pretrained_model_name="microsoft/phi-2",
         use_causal_lm=True,
-        hidden_dim=768,
+        hidden_dim=2560,
         num_hyperbolic_layers=4,
         use_bellman_coordinates=True,
         use_riemannian_metric=True,
@@ -32,7 +32,7 @@ def example_1_basic_conversion():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
     
-    model = convert_pretrained_llm_to_reality_stone("gpt2", config, device)
+    model = convert_pretrained_llm_to_reality_stone("microsoft/phi-2", config, device)
     
     print("\nModel architecture:")
     print(f"- Pretrained LLM: {config.pretrained_model_name}")
@@ -106,9 +106,9 @@ def example_3_selective_layer_insertion():
     print("=" * 60)
     
     config = LLMAdapterConfig(
-        pretrained_model_name="gpt2",
+        pretrained_model_name="microsoft/phi-2",
         use_causal_lm=True,
-        hidden_dim=768,
+        hidden_dim=2560,
         num_hyperbolic_layers=3,
         hyperbolic_insertion_positions=[2, 6, 10],
         use_bellman_coordinates=True,
@@ -118,7 +118,7 @@ def example_3_selective_layer_insertion():
     )
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = convert_pretrained_llm_to_reality_stone("gpt2", config, device)
+    model = convert_pretrained_llm_to_reality_stone("microsoft/phi-2", config, device)
     
     print(f"\nHyperbolic layers inserted at positions: {config.hyperbolic_insertion_positions}")
     print(f"Total transformer layers: {len(model.pretrained_llm.transformer.h)}")
@@ -141,9 +141,9 @@ def example_4_compute_loss():
     print("=" * 60)
     
     config = LLMAdapterConfig(
-        pretrained_model_name="gpt2",
+        pretrained_model_name="microsoft/phi-2",
         use_causal_lm=True,
-        hidden_dim=768,
+        hidden_dim=2560,
         num_hyperbolic_layers=2,
         use_lagrangian=True,
         lagrangian_weight=0.1,
@@ -152,7 +152,7 @@ def example_4_compute_loss():
     )
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = convert_pretrained_llm_to_reality_stone("gpt2", config, device)
+    model = convert_pretrained_llm_to_reality_stone("microsoft/phi-2", config, device)
     
     test_input = "The Reality Stone integrates Riemannian geometry"
     input_ids = model.tokenizer.encode(test_input, return_tensors="pt").to(device)
@@ -175,14 +175,14 @@ def example_5_parameter_analysis():
     print("=" * 60)
     
     config = LLMAdapterConfig(
-        pretrained_model_name="gpt2",
-        hidden_dim=768,
+        pretrained_model_name="microsoft/phi-2",
+        hidden_dim=2560,
         num_hyperbolic_layers=4,
         freeze_pretrained=True,
     )
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = convert_pretrained_llm_to_reality_stone("gpt2", config, device)
+    model = convert_pretrained_llm_to_reality_stone("microsoft/phi-2", config, device)
     
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)

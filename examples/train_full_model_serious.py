@@ -8,7 +8,7 @@ def train_full_model_serious():
     print("=== Reality Stone: Serious Training ===")
     
     # 1. 모델 및 토크나이저 로드
-    model_id = "gpt2"
+    model_id = "microsoft/phi-2"
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     tokenizer.pad_token = tokenizer.eos_token
     
@@ -63,8 +63,8 @@ def train_full_model_serious():
     # 7. 저장
     print("Saving trained model...")
     try:
-        model.save_pretrained("./reality-stone-gpt2-tuned", safe_serialization=False)
-        tokenizer.save_pretrained("./reality-stone-gpt2-tuned")
+        model.save_pretrained("./reality-stone-phi2-tuned", safe_serialization=False)
+        tokenizer.save_pretrained("./reality-stone-phi2-tuned")
     except Exception as e:
         print(f"Save warning: {e}")
 

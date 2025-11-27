@@ -10,6 +10,8 @@ pub mod geodesic_attention;
 pub mod unified_riemannian;
 pub mod diffusion;
 mod extraction;
+mod rsulf;
+mod bellman;
 
 #[macro_use]
 mod macros;
@@ -45,6 +47,10 @@ pub fn _rust(_py: Python, m: &PyModule) -> PyResult<()> {
     diffusion::register(m)?;
     // Riemannian Metric Extraction (CUDA)
     extraction::register(m)?;
+    // RS-ULF Layer
+    rsulf::register(m)?;
+    // Bellman Geodesic
+    bellman::register(m)?;
 
     {
         use crate::bindings::poincare as pc;

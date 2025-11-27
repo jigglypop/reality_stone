@@ -228,16 +228,85 @@ $$
 
 ---
 
-## 6. Mistral / Qwen 특이점 메모
+## 6. 성능 벤치마크 (압축률 / 속도 / 정확도)
 
-### 6.1 Mistral 계열
+RS‑ULF 변환은 “수식 정합성”뿐 아니라 **압축률·속도·정확도 목표**까지 동시에 만족해야 한다.  
+이 절에서는 그 목표를 실제 테스트 스크립트와 연결해 둔다.
+
+### 6.1 측정 항목
+
+- **압축률 (Compression)**  
+  - 기준: 원본 Transformer 전체 파라미터 수 $P_\text{TF}$, RS‑ULF 파라미터 $P_\text{RS}$  
+  - 지표:  
+    - 파라미터 압축률 $P_\text{TF} / P_\text{RS}$  
+    - 메모리 감소율 $1 - \text{Mem}_\text{RS} / \text{Mem}_\text{TF}$
+- **속도 (Speed)**  
+  - 기준: 시퀀스 길이 $n$, 폭 $d$에 대한 이론 복잡도  
+  - 지표:  
+    - 어텐션 FLOPs: $O(n^2 d)$  
+    - RS‑ULF FLOPs: $O(nd)$  
+    - 이론적 speedup $\approx n$ (긴 시퀀스일수록 유리)
+- **정확도 / 정합도 (Accuracy / Consistency)**  
+  - 레이어 수준: 이 문서 5장의 Test 1~5 (inner product, gradient, update, geodesic, 출력 일치)  
+  - 모델 수준: perplexity / loss / 간단한 텍스트 생성 비교
+
+### 6.2 테스트 스크립트와 연결
+
+- **`scripts/convert_step_by_step.py`**  
+  - 레이어 단위 변환 파이프라인  
+  - 역할:
+    - Step 3: metric SVD 추출 + 수치 안정성 체크
+    - Step 4: potential / gradient 검증
+    - Step 5: graph / Laplacian 검증
+    - Step 6: 단일 RS‑ULF 레이어 forward 검증 (NaN/Inf, 메모리 $V_t$ 안정성)
+- **`scripts/benchmark_conversion.py`**  
+  - 전체 모델 기준 벤치마크  
+  - 역할:
+    - 압축률: 원본 vs RS‑ULF 파라미터/메모리 비교  
+    - 속도: 여러 시퀀스 길이에 대해 이론적 speedup 출력  
+    - 정합성: metric inner product cosine similarity  
+    - 간단 inference: 짧은 프롬프트에 대한 Transformer vs RS‑ULF 출력 비교
+
+실행 예:
+
+```bash
+uv run python scripts/benchmark_conversion.py \
+  --model_name mistralai/Mistral-7B-Instruct-v0.2 \
+  --device cuda --cache_dir E:/hf-cache \
+  --fold_ratio 4 --skip_inference
+```
+
+### 6.3 성능 목표 (하드 타깃)
+
+- **압축률**
+  - 전체 모델 파라미터 기준 **≥ 200× 압축** (global basis + per-layer scale, KV-cache 제거 포함)  
+  - 레이어 단위로는 global basis 기준에서 **수십~백 배 수준**의 효과적인 축소를 목표
+- **속도**
+  - 이론 복잡도: Transformer $O(n^2 d)$ → RS‑ULF **정확히 $O(nd)$**  
+  - 실측 기준: 동일 하드웨어, 긴 시퀀스($n \ge 512$)에서  
+    - RS‑ULF 4‑layer 블록이 full attention 대비 **≥ 2×** 이상 빠를 것
+- **정확도**
+  - 레이어 정합성(Test 1~5):
+    - cosine similarity / norm ratio를 이 문서 5장 기준 내로 유지  
+  - 모델 수준 eval:
+    - RS‑ULF perplexity / loss / 다운스트림 점수가 Transformer 대비 **손실 ≤ 5%**  
+    - 이를 넘으면 fold rank, global basis, 오차‑곡률 보정, η/α/β/γ 등을 재튜닝
+
+이 섹션의 목표 값들은 “실제 벤치마크에서 달성해야 할 가이드라인”이며,  
+`scripts/benchmark_conversion.py` 및 개별 정합성 테스트를 통해 **수치적으로 확인**하는 것을 전제로 한다.
+
+---
+
+## 7. Mistral / Qwen 특이점 메모
+
+### 7.1 Mistral 계열
 
 - Sliding‑Window Attention(SWA) 사용
   - RS‑ULF에서는 $\beta L x$  항을 **local diffusion**에 가깝게 튜닝
 - ALiBi positional encoding
   - 위치 의존성을 곡률 또는 diffusion 계수에 통합 가능
 
-### 6.2 Qwen 계열
+### 7.2 Qwen 계열
 
 - RoPE 사용
   - 회전 위치 encoding을 metric/curvature 파트로 해석 가능
@@ -249,7 +318,7 @@ RS‑ULF 스펙 자체는 동일하게 유지된다.
 
 ---
 
-## 7. 이 문서의 역할
+## 8. 이 문서의 역할
 
 - `02_METRIC_AND_POTENTIAL.md`, `03_GRAPH_DIFFUSION_AND_DP_MEMORY.md`가  
   RS‑ULF의 내부 모듈을 정의했다면,

@@ -18,8 +18,9 @@ pub mod utils;
 pub mod metric;
 pub mod geodesic;
 pub mod bellman_lagrangian;
-pub mod diffusion; // Added diffusion
+pub mod diffusion;
 pub mod unified_riemannian;
+pub mod rsulf;
 
 pub use self::poincare::{
     poincare_ball_layer, poincare_ball_layer_backward, poincare_distance, poincare_exp_at,

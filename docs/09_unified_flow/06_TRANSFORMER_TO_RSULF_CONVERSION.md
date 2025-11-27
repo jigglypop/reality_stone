@@ -64,7 +64,9 @@ $$
 
 즉, **RS-ULF는 Transformer의 일반화**이며, 곡률=0일 때 Transformer와 동등.
 
-### 1.3 복잡도 분석
+### 1.3 복잡도 및 압축률 분석 (Global Basis 관점)
+
+시퀀스 길이 $n$ 에 대한 이론 복잡도는 다음과 같다.
 
 | 구성요소 | Transformer | RS-ULF | 개선비 |
 |---------|------------|--------|-------|
@@ -73,7 +75,21 @@ $$
 | Potential | O(d²) | O(d²) | 1× |
 | Diffusion | - | O(Ed) | - |
 | Memory | O(n²) | O(d) | O(n²/d) |
-| **총합** | **O(n²d)** | **O(nd)** | **O(n)** |
+| **총합** | **O(n²d)** | **O((n+E)d)** | **O(n)** |
+
+압축률은 **전 레이어를 하나의 global basis로 묶는지 여부**에 크게 의존한다.
+
+- 원본 Transformer (레이어 수 $L$, 폭 $d$, FFN 폭 $d_\text{ff}$):
+  - 레이어당 $O(d^2 + d d_\text{ff})$
+  - 전체 $O(L (d^2 + d d_\text{ff}))$
+- RS-ULF (global basis 사용 시):
+  - 공통 basis: $O(d r_\* + d_\text{ff} r_\*)$ (한 번만)
+  - 레이어별 스케일/곡률: $O(L r_\text{small})$
+
+적절한 $r_\*, r_\text{small} \ll d, d_\text{ff}$ 를 택하면,
+
+- **레이어당 압축률 ≥ 8–10×**, 전체 모델 기준 **≥ 6–8×** 를 목표로 할 수 있다.  
+  (정확한 수치는 `benchmark_conversion.py` 결과와 함께 최종 결정)
 
 ---
 
@@ -158,44 +174,52 @@ def extract_layer_weights(model, layer_idx):
 
 ---
 
-## 3. Step 1: Metric 추출
+## 3. Step 1: Metric 추출 (Global Basis)
 
-### 3.1 수학적 정의
+### 3.1 수학적 정의 (Global)
 
-Transformer의 Q, K projection은 내적 공간을 정의:
-
-$$
-\text{similarity}(x_i, x_j) = (W_Q x_i)^T (W_K x_j)
-$$
-
-이를 Riemannian metric으로 lift:
+Transformer의 모든 레이어에 대해 Q, K projection을 모아,
 
 $$
-g(x) = W_Q^T W_K
+M_Q = 
+\begin{bmatrix}
+W_Q^{(1)} \\
+W_Q^{(2)} \\
+\vdots \\
+W_Q^{(L)}
+\end{bmatrix},
+\quad
+M_K = 
+\begin{bmatrix}
+W_K^{(1)} \\
+\vdots \\
+W_K^{(L)}
+\end{bmatrix}
 $$
 
-### 3.2 구현
+을 구성한 뒤, Randomized SVD 등으로
+
+$$
+M_Q^\top M_K \approx U_\* \Sigma_\* V_\*^\top
+$$
+
+형태의 **global metric basis**를 추출한다.
+
+### 3.2 구현 스케치 (Global)
 
 ```python
-import torch
-import torch.nn as nn
-
-def extract_metric(WQ: torch.Tensor, WK: torch.Tensor) -> torch.Tensor:
-    """
-    Metric g = WQ^T @ WK 추출
+def build_global_metric_basis(WQ_list, WK_list, target_rank):
+    # WQ_list, WK_list: 리스트 (레이어 수 L)
+    M_Q = torch.cat(WQ_list, dim=0)  # (L * d_q, d)
+    M_K = torch.cat(WK_list, dim=0)  # (L * d_k, d)
+    G = M_Q.t() @ M_K                # (d, d)
     
-    Args:
-        WQ: Query projection weight (d_model, d_model)
-        WK: Key projection weight (d_model, d_model)
-    
-    Returns:
-        g: Metric tensor (d_model, d_model)
-    """
-    g = torch.matmul(WQ.t(), WK)
-    return g
+    # Randomized SVD로 상위 r 성분만 추출
+    U_star, S_star, V_star = randomized_svd(G, target_rank)
+    return U_star, S_star, V_star
 ```
 
-### 3.3 Metric 안정화
+### 3.3 Metric 안정화 및 오차‑곡률 보정
 
 추출된 metric은 positive definite(PD)가 아닐 수 있음. 안정화 필수:
 
@@ -230,29 +254,17 @@ def stabilize_metric_symmetric(g: torch.Tensor, eps: float = 1e-6) -> torch.Tens
     return g_stable
 ```
 
-#### Strategy C: Low-Rank Approximation
+#### Strategy C: Low-Rank Approximation + Error Curvature
 
-```python
-def stabilize_metric_lowrank(g: torch.Tensor, rank: int = 128) -> torch.Tensor:
-    """Low-rank 근사 (압축 + 안정화)"""
-    try:
-        U, S, Vh = torch.linalg.svd(g, full_matrices=False)
-    except:
-        # Fallback
-        return stabilize_metric_diagonal(g)
-    
-    # Top-k singular values
-    k = min(rank, S.size(0))
-    S_k = S[:k]
-    U_k = U[:, :k]
-    V_k = Vh[:k, :]
-    
-    # Reconstruct
-    g_lr = U_k @ torch.diag(S_k) @ V_k
-    
-    # PD 보장
-    return stabilize_metric_symmetric(g_lr)
-```
+Global SVD에서 잘려 나간 singular value 집합 $\{\sigma_{r+1},\dots\}$ 에 대해
+
+$$
+K_\text{error}
+ := \Big( \sum_{i>r} \sigma_i^2 \Big)^{1/2}
+$$
+
+를 정의하고, 이를 레이어 곡률/regularization 스칼라로 사용한다.  
+이 값은 폴딩‧압축으로 버려진 정보를 곡률 functional에 다시 흡수하는 역할을 한다.
 
 ### 3.4 Metric Inverse 계산
 

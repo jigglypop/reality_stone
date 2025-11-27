@@ -282,7 +282,61 @@ $$
 
 ---
 
-## 6. Transformer → RS‑ULF 레이어 매핑 규칙
+## 6. Global Neural Basis와 압축 설계
+
+위 모듈 정의는 레이어 단위로 기술되어 있지만, RS‑ULF의 진짜 압축력은  
+개별 레이어가 아니라 **전체 스택을 하나의 Neural RS 공간으로 묶는 global basis**에서 나온다.
+
+### 6.1 Global Metric / FFN Basis
+
+- 모든 레이어의 Q/K/FFN 가중치를 한꺼번에 모아
+  - Metric용 큰 행렬 $M_Q, M_K$ ,
+  - FFN용 큰 행렬 $M_{W_1}, M_{W_2}$
+  를 구성한다.
+- Randomized SVD 등으로 **단 한 번**
+  $$
+  M \approx U_\* \Sigma_\* V_\*^\top
+  $$
+  꼴의 global basis를 추출한다.
+- 이후 각 레이어의 가중치는
+  - $W_Q^{(\ell)} \approx D_Q^{(\ell)} V_\*^\top$ ,
+  - $W_K^{(\ell)} \approx D_K^{(\ell)} V_\*^\top$ ,
+  - $W_1^{(\ell)}, W_2^{(\ell)}$ 역시 공통 FFN basis 위의 대각/저랭크 스케일로 표현한다.
+
+### 6.2 오차‑곡률 보정 (Error‑Curvature Correction)
+
+- Global SVD에서 잘려 나간 singular value 집합 $\{\sigma_{r+1},\dots\}$ 에 대해
+  $$
+  K_\text{error}^{(\ell)}
+   :=
+   \Big(
+     \sum_{i>r} \sigma_i^{2,(\ell)}
+   \Big)^{1/2}
+  $$
+  를 정의한다.
+- 이 $K_\text{error}^{(\ell)}$는
+  - 레이어의 곡률/regularization 스칼라로 들어가며,
+  - **폴딩·압축으로 버린 정보를 곡률 functional에 다시 흡수**하는 역할을 한다.
+
+### 6.3 압축률 스케일링
+
+- 원본 Transformer:
+  - 레이어당 파라미터: $O(d^2 + d d_\text{ff})$
+  - 전체: $O(L (d^2 + d d_\text{ff}))$
+- RS‑ULF (global basis 사용):
+  - 공통 basis: $O(d r_\* + d_\text{ff} r_\*)$ (한 번만)
+  - 레이어별 스케일/곡률: $O(L r_\text{small})$
+- 적절한 $r_\*, r_\text{small} \ll d, d_\text{ff}$ 를 택하고,  
+  global basis를 최대한 공유하는 극단적 설계에서는
+  - **전체 모델 기준 파라미터 압축률 ≥ 100×** 를 **최소 목표**로 삼는다.
+- 구체 수치는 `09_unified_flow/04_TRANSFORMER_MAPPING_AND_TESTS.md` 와  
+  `05_IMPLEMENTATION_CHECKLIST.md`, `scripts/benchmark_conversion.py` 에서  
+  압축률/정확도/속도 테스트와 함께 정의한다.
+
+---
+
+## 7. Transformer → RS‑ULF 레이어 매핑 규칙
+## 7. Transformer → RS‑ULF 레이어 매핑 규칙
 
 이 절은 기존 Transformer SOTA 모델(Mistral, Qwen 등)의 한 레이어를 RS‑ULF 레이어로 옮길 때의 **수학적 매핑 규칙**을 정리한다.
 

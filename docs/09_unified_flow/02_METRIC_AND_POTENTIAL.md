@@ -28,27 +28,34 @@ $$
 여기서 $g_{\text{raw}}$는 Transformer가 Q·K 내적으로 encode하고 있던 “유클리드 유사도 구조”를  
 리만 metric으로 승격한 것이다.
 
-### 1.3 안정화 전략
+### 1.3 안정화 전략과 압축률
 
-실전에서는 $g_{\text{raw}}$가 이상적인 PD 행렬이 아닐 수 있으므로, 다음 세 가지 안정화 전략 중 하나를 택한다.
+실전에서는 $g_{\text{raw}}$가 이상적인 PD 행렬이 아닐 수 있으므로, 다음 세 가지 안정화 전략 중 하나를 택한다.  
+또한, 각 전략은 **압축률** 관점에서 서로 다른 trade‑off를 가진다.
 
-1. **Diagonal metric (기본값)**  
+1. **Diagonal metric (기본값, 최대 압축)**  
    $$
    g = \text{diag}(g_{\text{raw}})
    $$
-   
-2. **Low‑rank metric (고급 옵션)**  
+   - 파라미터 수: $O(d)$  
+   - 역행렬 계산: $O(d)$  
+   - 정보는 많이 버리지만, **RS‑ULF 전체 압축률을 극대화**하는 기본 선택.
+2. **Low‑rank metric (정확도 중시)**  
    $$
    g_{\text{raw}} \approx U_r \Sigma_r V_r^\top,\quad
    g = U_r \Sigma_r V_r^\top
    $$
-   
-3. **Conformal metric**  
+   - 파라미터 수: $O(dr)$  
+   - $r \ll d$ 인 경우, diagonal보다 파라미터는 늘지만  
+     Transformer full metric($O(d^2)$)에 비해 여전히 강한 압축.
+3. **Conformal metric (중간 타협)**  
    $$
    g = e^{2\phi(x)} I,\quad
    \phi(x) \text{는 } W_Q, W_K \text{의 norm 기반 스칼라}
    $$
-   
+   - 방향 정보는 버리고 “전체 scale만 남기는” 형태  
+   - diagonal과 유사한 복잡도/압축률, but 더 aggressive한 단순화.
+
 
 ### 1.4 Metric 역행렬
 
@@ -61,6 +68,41 @@ $$
 
 - 고유값이 음수이거나 0에 가까운 축이 있으면 diagonal/conformal로 강제
 - condition number가 허용 범위 이내
+
+---
+
+### 1.5 Error‑Curvature Correction (오차‑곡률 보정)
+
+RS‑ULF에서는 차원 folding / 저랭크 근사 과정에서 버려진 정보(approximation error)를  
+**“곡률 $K$에 흡수하는 보정 항”**으로 해석한다.
+
+1. $g_{\text{raw}}$에 대해 SVD 또는 Randomized SVD 수행:
+   $$
+   g_{\text{raw}} \approx U_r \Sigma_r V_r^\top
+   $$
+2. 상위 $r$개 singular value만 유지하고, 나머지 집합을 $\{\sigma_{r+1},\dots\}$라 할 때:
+   $$
+   K_\text{error}
+   :=
+   \Big(
+     \sum_{i>r} \sigma_i^2
+   \Big)^{1/2}
+   $$
+3. 이 $K_\text{error}$를:
+   - 레이어의 **유효 곡률 스칼라**로 사용하거나,
+   - geodesic update / diffusion 계수 튜닝에 반영하여
+   - “폴딩/압축으로 인해 생긴 오차를 곡률로 보정”하는 역할을 한다.
+
+요약하면:
+
+- **폴딩으로 버려진 metric 정보 = “오차 곡률(에너지)”**로 재해석  
+- 곡률이 크다는 것은:
+  - 저차원 근사에서 많이 잘려 나간 방향이 있다는 뜻이며,
+  - RS‑ULF 레이어가 업데이트 step, diffusion 세기 등을 보수적으로 조정해야 함을 의미한다.
+
+이 개념은 `Derivations_Applications/05_Neural_RealityStone_Derivation.md` 에서의  
+“Neural RealityStone / SFE master action”과 직접적으로 연결되며,  
+**압축률을 높이면서도 손실된 정보를 곡률로 보상하는 핵심 메커니즘**이다.
 
 ---
 

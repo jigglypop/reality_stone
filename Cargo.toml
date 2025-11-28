@@ -58,7 +58,7 @@ bindgen = { version = "0.69", optional = true }
 [features]
 default = []
 cuda = ["bindgen"]
-abi3-py38 = ["pyo3/abi3-py38", "pyo3/extension-module"]
+abi3-py310 = ["pyo3/abi3-py310", "pyo3/extension-module"]
 
 [profile.release]
 lto = true

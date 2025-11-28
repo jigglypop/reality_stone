@@ -73,7 +73,7 @@ class PoincareBallLayer(Function):
                 return torch.from_numpy(output_np).to(u.device)
 
     @staticmethod
-    def backward(ctx, grad_output: Tensor) -> tuple[Tensor | None, ...]:
+    def backward(ctx, grad_output: Tensor):
         t = ctx.t
         
         if ctx.use_dynamic:

@@ -27,7 +27,7 @@ class LorentzDistance(Function):
             return torch.from_numpy(result_np).to(u.device)
 
     @staticmethod
-    def backward(ctx, grad_output: Tensor) -> tuple[Tensor | None, Tensor | None, None]:
+    def backward(ctx, grad_output: Tensor):
         u, v = ctx.saved_tensors
         c = ctx.c
         
@@ -110,7 +110,7 @@ class LorentzLayer(Function):
             return torch.from_numpy(output_np).to(u.device)
 
     @staticmethod
-    def backward(ctx, grad_output: Tensor) -> tuple[Tensor | None, Tensor | None, None, None]:
+    def backward(ctx, grad_output: Tensor):
         u, v = ctx.saved_tensors
         c, t = ctx.c, ctx.t
         grad_u = grad_v = None
@@ -187,7 +187,7 @@ class LorentzBallLayer(Function):
             return torch.from_numpy(out_np).to(u.device)
 
     @staticmethod
-    def backward(ctx, grad_output: Tensor) -> tuple[Tensor | None, ...]:
+    def backward(ctx, grad_output: Tensor):
         t = ctx.t
         if ctx.use_dynamic:
             u, v, kappas = ctx.saved_tensors
@@ -308,7 +308,7 @@ class LorentzFromPoincare(Function):
             return output
 
     @staticmethod
-    def backward(ctx, grad_output: Tensor) -> tuple[Tensor | None, ...]:
+    def backward(ctx, grad_output: Tensor):
         if ctx.use_dynamic:
             x, kappas = ctx.saved_tensors
             grad_x_np, grad_kappa_val = _rust.from_poincare_dynamic_backward_cpu(

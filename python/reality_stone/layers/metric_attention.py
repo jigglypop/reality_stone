@@ -168,8 +168,8 @@ class MetricAttention(nn.Module):
 
     def _cholesky_from_keys(
         self,
-        keys: list[str],
-        masses: Optional[list[float]],
+        keys,
+        masses,
         dim: int,
         min_lambda: float = 0.8,
         max_lambda: float = 1.2,

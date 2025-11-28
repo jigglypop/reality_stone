@@ -44,7 +44,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: aarch64-unknown-linux-gnu
-          args: --release --out dist --find-interpreter
+          args: --release --out dist -i python3.10
           sccache: 'true'
           manylinux: auto
       - name: Upload wheels

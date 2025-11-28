@@ -1,7 +1,12 @@
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, IntoPyArray};
-use crate::layers::rsulf::{RSULFLayer, RSULFConfig, RSULFComponents, fold_dimension_svd, fold_ffn_svd, create_causal_laplacian};
+use crate::layers::rsulf::{
+    RSULFLayer, RSULFConfig, RSULFComponents, 
+    fold_dimension_svd, fold_ffn_svd, create_causal_laplacian,
+    verify_fold_consistency, FoldConsistencyResult,
+    block_lanczos_svd, nystrom_approximation, adaptive_rank_svd,
+};
 
 #[pyclass]
 pub struct PyRSULFLayer {
@@ -45,6 +50,46 @@ impl PyRSULFLayer {
             config,
         );
         
+        Self { inner }
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (wq, wk, w1, w2, g_diag, d_model=4096, r=1024, eta=0.01, alpha=0.02, beta=0.01, gamma=0.99, seq_len=128, window=8))]
+    pub fn new_with_metric(
+        wq: PyReadonlyArray2<f32>,
+        wk: PyReadonlyArray2<f32>,
+        w1: PyReadonlyArray2<f32>,
+        w2: PyReadonlyArray2<f32>,
+        g_diag: PyReadonlyArray1<f32>,
+        d_model: usize,
+        r: usize,
+        eta: f32,
+        alpha: f32,
+        beta: f32,
+        gamma: f32,
+        seq_len: usize,
+        window: usize,
+    ) -> Self {
+        let config = RSULFConfig {
+            d_model,
+            r,
+            eta,
+            alpha,
+            beta,
+            gamma,
+            seq_len,
+            window,
+        };
+
+        let inner = RSULFLayer::from_transformer_with_metric(
+            wq.as_array(),
+            wk.as_array(),
+            w1.as_array(),
+            w2.as_array(),
+            config,
+            g_diag.as_array(),
+        );
+
         Self { inner }
     }
     
@@ -237,10 +282,127 @@ pub fn fold_ffn<'py>(
     )
 }
 
+#[pyfunction]
+pub fn verify_metric_consistency<'py>(
+    py: Python<'py>,
+    wq: PyReadonlyArray2<f32>,
+    wk: PyReadonlyArray2<f32>,
+    target_dim: usize,
+) -> &'py PyDict {
+    let folded = fold_dimension_svd(wq.as_array(), wk.as_array(), target_dim);
+    let result = verify_fold_consistency(wq.as_array(), wk.as_array(), &folded);
+    
+    let dict = PyDict::new(py);
+    dict.set_item("symmetry_error", result.symmetry_error).unwrap();
+    dict.set_item("reconstruction_error", result.reconstruction_error).unwrap();
+    dict.set_item("fold_accuracy", result.fold_accuracy).unwrap();
+    dict.set_item("min_eigenvalue", result.min_eigenvalue).unwrap();
+    dict.set_item("condition_number", result.condition_number).unwrap();
+    dict.set_item("is_valid", result.is_valid).unwrap();
+    dict
+}
+
+#[pyfunction]
+pub fn fold_metric_optimized<'py>(
+    py: Python<'py>,
+    wq: PyReadonlyArray2<f32>,
+    wk: PyReadonlyArray2<f32>,
+    target_dim: usize,
+    method: &str,
+) -> (&'py PyArray2<f32>, &'py PyArray1<f32>, &'py PyArray2<f32>, f32, &'py PyDict) {
+    let d_q = wq.as_array().nrows();
+    let d_k = wk.as_array().nrows();
+    let d_in = wq.as_array().ncols();
+    
+    let wk_expanded = if d_k < d_q {
+        let repeat = d_q / d_k;
+        let mut expanded = ndarray::Array2::<f32>::zeros((d_q, d_in));
+        for i in 0..repeat {
+            expanded.slice_mut(ndarray::s![i*d_k..(i+1)*d_k, ..]).assign(&wk.as_array());
+        }
+        expanded
+    } else {
+        wk.as_array().to_owned()
+    };
+    
+    let g = wq.as_array().t().dot(&wk_expanded);
+    
+    let (u, s, v) = match method {
+        "block_lanczos" => block_lanczos_svd(&g, target_dim, 32, 10),
+        "adaptive" => {
+            let (u, s, v, _) = adaptive_rank_svd(&g, 0.95, target_dim);
+            (u, s, v)
+        },
+        _ => crate::layers::rsulf::randomized_svd(&g, target_dim, 5, 2),
+    };
+    
+    let frob_g: f32 = g.iter().map(|x| x * x).sum();
+    let frob_approx: f32 = s.iter().map(|x| x * x).sum();
+    let tail = frob_g - frob_approx;
+    let curvature = if tail > 0.0 { tail.sqrt() } else { 0.0 };
+    
+    let folded = crate::layers::rsulf::FoldedMetric {
+        u: u.clone(),
+        s: s.clone(),
+        v: v.clone(),
+        s_residual: ndarray::Array1::from_elem(1, curvature),
+    };
+    let consistency = verify_fold_consistency(wq.as_array(), wk.as_array(), &folded);
+    
+    let info = PyDict::new(py);
+    info.set_item("symmetry_error", consistency.symmetry_error).unwrap();
+    info.set_item("reconstruction_error", consistency.reconstruction_error).unwrap();
+    info.set_item("fold_accuracy", consistency.fold_accuracy).unwrap();
+    info.set_item("min_eigenvalue", consistency.min_eigenvalue).unwrap();
+    info.set_item("condition_number", consistency.condition_number).unwrap();
+    info.set_item("is_valid", consistency.is_valid).unwrap();
+    info.set_item("method", method).unwrap();
+    
+    (
+        u.into_pyarray(py),
+        s.into_pyarray(py),
+        v.into_pyarray(py),
+        curvature,
+        info,
+    )
+}
+
+#[pyfunction]
+pub fn nystrom_metric<'py>(
+    py: Python<'py>,
+    wq: PyReadonlyArray2<f32>,
+    wk: PyReadonlyArray2<f32>,
+    target_dim: usize,
+    n_samples: usize,
+) -> (&'py PyArray2<f32>, &'py PyArray1<f32>) {
+    let d_q = wq.as_array().nrows();
+    let d_k = wk.as_array().nrows();
+    let d_in = wq.as_array().ncols();
+    
+    let wk_expanded = if d_k < d_q {
+        let repeat = d_q / d_k;
+        let mut expanded = ndarray::Array2::<f32>::zeros((d_q, d_in));
+        for i in 0..repeat {
+            expanded.slice_mut(ndarray::s![i*d_k..(i+1)*d_k, ..]).assign(&wk.as_array());
+        }
+        expanded
+    } else {
+        wk.as_array().to_owned()
+    };
+    
+    let g = wq.as_array().t().dot(&wk_expanded);
+    let (u, s) = nystrom_approximation(&g, target_dim, n_samples);
+    
+    (u.into_pyarray(py), s.into_pyarray(py))
+}
+
 pub fn register(m: &PyModule) -> PyResult<()> {
     m.add_class::<PyRSULFLayer>()?;
     m.add_function(wrap_pyfunction!(fold_metric_svd, m)?)?;
     m.add_function(wrap_pyfunction!(fold_ffn, m)?)?;
     m.add_function(wrap_pyfunction!(build_causal_laplacian, m)?)?;
+    m.add_function(wrap_pyfunction!(verify_metric_consistency, m)?)?;
+    m.add_function(wrap_pyfunction!(fold_metric_optimized, m)?)?;
+    m.add_function(wrap_pyfunction!(nystrom_metric, m)?)?;
     Ok(())
 }

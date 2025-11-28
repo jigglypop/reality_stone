@@ -24,3 +24,13 @@ checkpoints/*
 .mypy_cache/*
 .ruff_cache/
 .ruff_cache/*
+
+target
+target/
+target/*
+
+checkpoints
+checkpoints/*
+checkpoints/
+
+_rust*

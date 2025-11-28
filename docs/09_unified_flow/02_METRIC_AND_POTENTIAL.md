@@ -292,5 +292,6 @@ metric/곡률을 넣으면 residual 구조가 자연스럽게 RS‑ULF의 geodes
   - `03_GRAPH_DIFFUSION_AND_DP_MEMORY.md`에서 diffusion/DP 메모리 확장
   - `04_TRANSFORMER_MAPPING_AND_TESTS.md`에서 Transformer와의 정합성 테스트를 정의
   - `05_IMPLEMENTATION_CHECKLIST.md`에서 이 모듈들을 실제 코드 레벨 체크리스트로 정리
+  - `07_FOLD_CONSISTENCY.md`에서 폴드 정합성, 메트릭 정확성, 곡률 해석의 수학적 기초를 정의
 
 

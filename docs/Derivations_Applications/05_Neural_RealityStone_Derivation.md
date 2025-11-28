@@ -454,8 +454,90 @@ Transformer → RS-ULF 변환 자체는 한 번만 수행되는 **오프라인 �
 정리하면,
 
 - 이 장에서 제시한 **곡률–억압 functional**을 실제 LLM에 올바르게 구현하려면,  
-  - “뇌/우주를 닮은 아름다운 수식”뿐 아니라  
-  - “시퀀스 길이에 대해 $O(n)$으로 스케일하는 기하학적 업데이트”가 필요하다.
+  - "뇌/우주를 닮은 아름다운 수식"뿐 아니라  
+  - "시퀀스 길이에 대해 $O(n)$으로 스케일하는 기하학적 업데이트"가 필요하다.
 - RS-ULF 폴딩·변환은 바로 이 요구를 충족시키도록 설계되었으며,  
-  **SFE 마스터 작용의 “실행 가능한 이산 버전”**으로 볼 수 있다.
+  **SFE 마스터 작용의 "실행 가능한 이산 버전"**으로 볼 수 있다.
+
+---
+
+## 10. 코드 정합성: rsulf.rs와의 매핑
+
+이 절에서는 위에서 논의한 이론적 구조가 실제 Rust 코드(`src/layers/rsulf.rs`)에 
+어떻게 구현되어 있는지 매핑한다.
+
+### 10.1 Metric Tensor 구현
+
+**이론**:
+$$
+G_{\text{raw}} = W_Q^\top W_K
+$$
+
+**코드** (`fold_dimension_svd`):
+```rust
+let g = wq.t().dot(&wk_expanded);
+```
+
+### 10.2 SVD 폴딩과 Error-Curvature
+
+**이론**:
+$$
+G \approx U_r \Sigma_r V_r^\top, \quad
+K_{\text{error}} = \sqrt{\sum_{i>r} \sigma_i^2}
+$$
+
+**코드**:
+```rust
+let frob_approx: f32 = s.iter().map(|x| x * x).sum();
+let tail = frob_g - frob_approx;
+if tail > 0.0 {
+    s_residual[0] = tail.sqrt();
+}
+```
+
+### 10.3 Diagonal Metric
+
+**이론**:
+$$
+g_{ii}^{\text{diag}} = |W_Q[:, i]^\top W_K[:, i]|
+$$
+
+**코드** (`from_transformer`):
+```rust
+for i in 0..d {
+    let col_q = wq.column(i);
+    let col_k = wk.column(i);
+    g_diag[i] = col_q.dot(&col_k).abs();
+}
+```
+
+### 10.4 Curvature Correction
+
+**이론**:
+$$
+\delta_i = -\frac{1}{2} \kappa \|v_i\|^2 \cdot x_i
+$$
+
+**코드** (`forward`):
+```rust
+if self.curvature.abs() > 1e-6 {
+    for i in 0..batch {
+        let v_row = v.row(i);
+        let x_row = x_arr.row(i);
+        let v_norm_sq = v_row.dot(&v_row);
+        let scale = -0.5 * self.curvature * v_norm_sq;
+        // delta = scale * x
+    }
+}
+```
+
+### 10.5 Fold Consistency 검증
+
+폴드 정합성 검증을 위한 수학적 기초는 
+`docs/09_unified_flow/07_FOLD_CONSISTENCY.md`에 정리되어 있다.
+
+핵심 검증 조건:
+1. **폴드 정확도**: $\text{Accuracy} = \sum_{i=1}^{r} \sigma_i^2 / \|G\|_F^2 \geq 0.90$
+2. **곡률 해석**: $\kappa$가 측지선 편차의 크기로 해석됨
+3. **양정치성**: 대각 메트릭의 모든 요소가 양수
 

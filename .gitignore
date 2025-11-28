@@ -69,6 +69,7 @@ metrikey_spec.json
 
 # Large model/cache artifacts
 compressed_rbe_model/
+checkpoints/
 *.pt
 *.pth
 *.bin
@@ -79,4 +80,5 @@ compressed_rbe_model/
 **/.hf_cache/
 text.txt
 data
-data/*
+data/*.env
+.pypirc

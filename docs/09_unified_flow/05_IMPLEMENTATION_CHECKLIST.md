@@ -160,7 +160,33 @@
 
 ---
 
-## 9. 문서 간 역할 분리 요약
+## 9. Fold Consistency Verification (추가)
+
+### 9.1 Metric Consistency
+
+| 검증 항목 | 수식 | 통과 기준 |
+|----------|------|-----------|
+| 폴드 정확도 | $\sum_{i=1}^{r} \sigma_i^2 / \|G\|_F^2$ | $\geq 0.90$ |
+| 조건수 | $\sigma_1 / \sigma_r$ | $< 10^6$ |
+| 대각 양정치 | $g_{ii} > 0$ | 모든 $i$ |
+
+### 9.2 Gradient Consistency
+
+- FFN 출력과 Potential gradient 방향 일치:
+  $$
+  \cos(f(x), \nabla\Phi(x)) > 0.9
+  $$
+
+### 9.3 Curvature Correction
+
+- 잔차 곡률: $\kappa = \sqrt{\sum_{i>r} \sigma_i^2}$
+- 보정항 적용 조건: $|\kappa| > 10^{-6}$
+
+자세한 수학적 기초는 `07_FOLD_CONSISTENCY.md` 참조.
+
+---
+
+## 10. 문서 간 역할 분리 요약
 
 - `01_RS_UNIFIED_FLOW_SPEC.md`  
   - 전체 수식/스펙/모듈 정의
@@ -172,6 +198,8 @@
   - Transformer → RS‑ULF 매핑, 정합성 테스트 정의
 - `05_IMPLEMENTATION_CHECKLIST.md` (이 문서)  
   - 위 모든 것을 **실제 구현 단계**로 재정렬한 체크리스트
+- `07_FOLD_CONSISTENCY.md` (신규)  
+  - 폴드 정합성, 메트릭 정확성, 곡률 해석의 수학적 기초
 
 이 체크리스트를 따라가면:
 

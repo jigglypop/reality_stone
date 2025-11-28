@@ -82,6 +82,66 @@ def fold_metric_from_weights(WQ: torch.Tensor, WK: torch.Tensor, target_dim: int
     return U, S, V, curvature
 
 
+class FoldConsistencyResult:
+    def __init__(self, data: Dict[str, float]):
+        self.symmetry_error = data.get("symmetry_error", 0.0)
+        self.reconstruction_error = data.get("reconstruction_error", 0.0)
+        self.fold_accuracy = data.get("fold_accuracy", 0.0)
+        self.min_eigenvalue = data.get("min_eigenvalue", 0.0)
+        self.condition_number = data.get("condition_number", float("inf"))
+        self.is_valid = data.get("is_valid", False)
+    
+    def __repr__(self):
+        return (
+            f"FoldConsistency(valid={self.is_valid}, "
+            f"accuracy={self.fold_accuracy:.4f}, "
+            f"sym_err={self.symmetry_error:.4f}, "
+            f"cond={self.condition_number:.2e})"
+        )
+
+
+def verify_fold_consistency(
+    WQ: torch.Tensor, 
+    WK: torch.Tensor, 
+    target_dim: int = 128
+) -> FoldConsistencyResult:
+    if not rs._has_rust_ext:
+        raise RuntimeError("Rust extension not available")
+    
+    WQ_np = WQ.cpu().float().numpy()
+    WK_np = WK.cpu().float().numpy()
+    
+    if WK.size(0) < WQ.size(0):
+        repeat = WQ.size(0) // WK.size(0)
+        WK_np = np.tile(WK_np, (repeat, 1))
+    
+    result = rs._rust.verify_metric_consistency(WQ_np, WK_np, target_dim)
+    return FoldConsistencyResult(result)
+
+
+def fold_metric_optimized(
+    WQ: torch.Tensor,
+    WK: torch.Tensor,
+    target_dim: int = 128,
+    method: str = "randomized",
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, float, FoldConsistencyResult]:
+    if not rs._has_rust_ext:
+        raise RuntimeError("Rust extension not available")
+    
+    WQ_np = WQ.cpu().float().numpy()
+    WK_np = WK.cpu().float().numpy()
+    
+    if WK.size(0) < WQ.size(0):
+        repeat = WQ.size(0) // WK.size(0)
+        WK_np = np.tile(WK_np, (repeat, 1))
+    
+    U, S, V, curvature, info = rs._rust.fold_metric_optimized(
+        WQ_np, WK_np, target_dim, method
+    )
+    
+    return U, S, V, curvature, FoldConsistencyResult(info)
+
+
 def build_global_metric_basis_from_model(
     model,
     target_rank: int,
@@ -350,8 +410,7 @@ def create_causal_laplacian(seq_len: int, window: int = 8) -> np.ndarray:
 
 def create_graph_laplacian(
     seq_len: int,
-    window_size: int = 8,
-    directed: bool = True,
+    window_size: int = 8
 ) -> torch.Tensor:
     """
     Step-by-step 스크립트 호환용 래퍼.
@@ -513,6 +572,7 @@ def convert_transformer_to_rsulf(
     seq_len: int = 128,
     window: int = 8,
     fast_mode: bool = False,
+    verify: bool = False,
 ) -> RSULFModel:
     """
     Transformer -> RS-ULF 완전 변환
@@ -527,6 +587,7 @@ def convert_transformer_to_rsulf(
         seq_len: 시퀀스 길이
         window: Laplacian window 크기
         fast_mode: True면 diagonal metric + random projection (SVD 없음, 10x 빠름)
+        verify: 레이어별 정합성 체크 수행
     
     Returns:
         RSULFModel
@@ -539,6 +600,12 @@ def convert_transformer_to_rsulf(
     layers = []
     for i in tqdm(range(num_layers), desc=f"RS-ULF 변환 (r={r}, {mode_str})", ncols=80):
         weights = extract_transformer_layer_weights(model, i)
+        
+        if verify and not fast_mode:
+            consistency = verify_fold_consistency(weights['WQ'], weights['WK'], r)
+            if not consistency.is_valid:
+                print(f"[Layer {i}] Warning: {consistency}")
+        
         layer = RSULFLayer(
             WQ=weights['WQ'],
             WK=weights['WK'],
@@ -664,7 +731,8 @@ def _solve_rank_for_target_compression(
 
 def build_rsulf_model_for_target_compression(
     model,
-    target_compression: float = 200.0,
+    target_compression: float = 80.0,
+    fold_ratio: Optional[int] = None,
     eta: float = 0.01,
     alpha: float = 0.02,
     beta: float = 0.01,
@@ -675,7 +743,10 @@ def build_rsulf_model_for_target_compression(
     weights0 = extract_transformer_layer_weights(model, 0)
     d_model = int(weights0["WQ"].size(1))
     ffn_dim = int(weights0["W1"].size(0))
-    r = _solve_rank_for_target_compression(d_model, ffn_dim, target_compression, seq_len)
+    if fold_ratio is not None and fold_ratio > 0:
+        r = max(1, d_model // int(fold_ratio))
+    else:
+        r = _solve_rank_for_target_compression(d_model, ffn_dim, target_compression, seq_len)
     theoretical_ratio = _estimate_rsulf_layer_compression_from_shapes(d_model, ffn_dim, r, seq_len)
     rs_model = convert_transformer_to_rsulf(
         model,
@@ -804,7 +875,9 @@ def convert_transformer_to_rsulf_with_checkpoint(
     window: int = 8,
     resume: bool = True,
     fast_mode: bool = False,
-) -> RSULFModel:
+    verify_consistency: bool = True,
+    min_fold_accuracy: float = 0.85,
+) -> Tuple[RSULFModel, List[Dict[str, float]]]:
     import os
     config = model.config
     num_layers = len(model.model.layers)
@@ -820,14 +893,45 @@ def convert_transformer_to_rsulf_with_checkpoint(
                 except ValueError:
                     pass
     layers = [None] * num_layers
+    consistency_results: List[Dict[str, float]] = []
+    
     for idx in existing:
         if idx < num_layers:
             layers[idx] = load_rsulf_layer_checkpoint(checkpoint_dir, idx)
+            consistency_results.append({"layer": idx, "from_checkpoint": True})
+    
     to_convert = [i for i in range(num_layers) if layers[i] is None]
     mode_str = "fast" if fast_mode else "svd"
+    
     if to_convert:
         for i in tqdm(to_convert, desc=f"RS-ULF 변환 (r={r}, {mode_str})", ncols=80):
             weights = extract_transformer_layer_weights(model, i)
+            
+            if verify_consistency and not fast_mode:
+                consistency = verify_fold_consistency(
+                    weights['WQ'], weights['WK'], r
+                )
+                result = {
+                    "layer": i,
+                    "symmetry_error": consistency.symmetry_error,
+                    "reconstruction_error": consistency.reconstruction_error,
+                    "fold_accuracy": consistency.fold_accuracy,
+                    "min_eigenvalue": consistency.min_eigenvalue,
+                    "condition_number": consistency.condition_number,
+                    "is_valid": consistency.is_valid,
+                }
+                consistency_results.append(result)
+                
+                # 매 레이어마다 정합성 결과 출력
+                status = "✓" if consistency.is_valid else "✗"
+                tqdm.write(f"  [{status}] Layer {i:2d}: acc={consistency.fold_accuracy:.4f}, "
+                          f"sym={consistency.symmetry_error:.4f}, cond={consistency.condition_number:.2e}")
+                
+                if consistency.fold_accuracy < min_fold_accuracy:
+                    tqdm.write(f"      ⚠ Low fold accuracy: {consistency.fold_accuracy:.4f} < {min_fold_accuracy}")
+                if not consistency.is_valid:
+                    tqdm.write(f"      ⚠ Consistency check failed")
+            
             layer = RSULFLayer(
                 WQ=weights['WQ'],
                 WK=weights['WK'],
@@ -845,9 +949,851 @@ def convert_transformer_to_rsulf_with_checkpoint(
             )
             save_rsulf_layer_checkpoint(layer, checkpoint_dir, i)
             layers[i] = layer
+    
     meta = {"num_layers": num_layers, "d_model": d_model}
     np.savez(os.path.join(checkpoint_dir, "meta.npz"), **meta)
-    return RSULFModel(layers)
+    
+    return RSULFModel(layers), consistency_results
+
+
+def convert_transformer_to_rsulf_with_validation(
+    model,
+    checkpoint_dir: str,
+    r: int = 1024,
+    eta: float = 0.01,
+    alpha: float = 0.02,
+    beta: float = 0.01,
+    gamma: float = 0.99,
+    seq_len: int = 128,
+    window: int = 8,
+    svd_method: str = "randomized",
+    min_fold_accuracy: float = 0.90,
+    auto_adjust_rank: bool = True,
+) -> Tuple[RSULFModel, Dict[str, object]]:
+    import os
+    config = model.config
+    num_layers = len(model.model.layers)
+    d_model = config.hidden_size
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    
+    layers = []
+    validation_report = {
+        "layers": [],
+        "failed_layers": [],
+        "avg_fold_accuracy": 0.0,
+        "avg_symmetry_error": 0.0,
+        "total_params_compressed": 0,
+        "total_params_original": 0,
+    }
+    
+    total_accuracy = 0.0
+    total_sym_error = 0.0
+    
+    for i in tqdm(range(num_layers), desc=f"RS-ULF 변환 (r={r}, {svd_method})", ncols=80):
+        weights = extract_transformer_layer_weights(model, i)
+        
+        current_r = r
+        best_consistency = None
+        
+        if auto_adjust_rank:
+            for attempt_r in [r, int(r * 1.5), r * 2]:
+                attempt_r = min(attempt_r, d_model)
+                consistency = verify_fold_consistency(
+                    weights['WQ'], weights['WK'], attempt_r
+                )
+                if best_consistency is None or consistency.fold_accuracy > best_consistency.fold_accuracy:
+                    best_consistency = consistency
+                    current_r = attempt_r
+                if consistency.fold_accuracy >= min_fold_accuracy:
+                    break
+        else:
+            best_consistency = verify_fold_consistency(
+                weights['WQ'], weights['WK'], current_r
+            )
+        
+        layer_report = {
+            "layer_idx": i,
+            "rank_used": current_r,
+            "fold_accuracy": best_consistency.fold_accuracy,
+            "symmetry_error": best_consistency.symmetry_error,
+            "reconstruction_error": best_consistency.reconstruction_error,
+            "condition_number": best_consistency.condition_number,
+            "is_valid": best_consistency.is_valid,
+        }
+        validation_report["layers"].append(layer_report)
+        
+        total_accuracy += best_consistency.fold_accuracy
+        total_sym_error += best_consistency.symmetry_error
+        
+        if not best_consistency.is_valid:
+            validation_report["failed_layers"].append(i)
+        
+        layer = RSULFLayer(
+            WQ=weights['WQ'],
+            WK=weights['WK'],
+            W1=weights['W1'],
+            W2=weights['W2'],
+            d_model=d_model,
+            r=current_r,
+            eta=eta,
+            alpha=alpha,
+            beta=beta,
+            gamma=gamma,
+            seq_len=seq_len,
+            window=window,
+            fast_mode=False,
+        )
+        
+        save_rsulf_layer_checkpoint(layer, checkpoint_dir, i)
+        layers.append(layer)
+        
+        stats = layer.param_count()
+        validation_report["total_params_compressed"] += stats["compressed"]
+        validation_report["total_params_original"] += stats["original"]
+    
+    validation_report["avg_fold_accuracy"] = total_accuracy / max(num_layers, 1)
+    validation_report["avg_symmetry_error"] = total_sym_error / max(num_layers, 1)
+    validation_report["compression_ratio"] = (
+        validation_report["total_params_original"] / 
+        max(validation_report["total_params_compressed"], 1)
+    )
+    
+    meta = {"num_layers": num_layers, "d_model": d_model}
+    np.savez(os.path.join(checkpoint_dir, "meta.npz"), **meta)
+    
+    return RSULFModel(layers), validation_report
+
+
+class MetricFineTuner:
+    def __init__(
+        self,
+        rs_layer: RSULFLayer,
+        learning_rate: float = 1e-4,
+        momentum: float = 0.9,
+    ):
+        self.rs_layer = rs_layer
+        self.lr = learning_rate
+        self.momentum = momentum
+        self.velocity_g = None
+        self.velocity_eta = 0.0
+        self.velocity_alpha = 0.0
+    
+    def compute_riemannian_gradient(
+        self,
+        x: torch.Tensor,
+        target: torch.Tensor,
+    ) -> Tuple[np.ndarray, float, float]:
+        x_np = x.cpu().float().numpy()
+        target_np = target.cpu().float().numpy()
+        
+        if x_np.ndim == 3:
+            b, l, d = x_np.shape
+            x_np = x_np.reshape(b * l, d)
+            target_np = target_np.reshape(b * l, d)
+        
+        output_np, _ = self.rs_layer.inner.forward(x_np, None)
+        
+        error = output_np - target_np
+        
+        g_diag = np.array(self.rs_layer.inner.export_components()["g_diag"])
+        
+        grad_g = np.zeros_like(g_diag)
+        for i in range(len(g_diag)):
+            grad_g[i] = np.mean(error[:, i] ** 2)
+        
+        grad_eta = np.mean(error ** 2)
+        grad_alpha = np.mean(np.abs(error))
+        
+        return grad_g, grad_eta, grad_alpha
+    
+    def step(
+        self,
+        x: torch.Tensor,
+        target: torch.Tensor,
+    ) -> Dict[str, float]:
+        grad_g, grad_eta, grad_alpha = self.compute_riemannian_gradient(x, target)
+        
+        if self.velocity_g is None:
+            self.velocity_g = np.zeros_like(grad_g)
+        
+        self.velocity_g = self.momentum * self.velocity_g + grad_g
+        self.velocity_eta = self.momentum * self.velocity_eta + grad_eta
+        self.velocity_alpha = self.momentum * self.velocity_alpha + grad_alpha
+        
+        comp = self.rs_layer.inner.export_components()
+        g_diag = np.array(comp["g_diag"])
+        eta = float(comp["eta"])
+        alpha = float(comp["alpha"])
+        
+        g_diag_new = g_diag - self.lr * self.velocity_g
+        g_diag_new = np.clip(g_diag_new, 1e-6, 1e6)
+        
+        eta_new = eta - self.lr * 0.01 * self.velocity_eta
+        eta_new = np.clip(eta_new, 0.001, 0.05)
+        
+        alpha_new = alpha - self.lr * 0.01 * self.velocity_alpha
+        alpha_new = np.clip(alpha_new, 0.001, 0.05)
+        
+        return {
+            "grad_g_norm": float(np.linalg.norm(grad_g)),
+            "grad_eta": float(grad_eta),
+            "grad_alpha": float(grad_alpha),
+            "eta": float(eta_new),
+            "alpha": float(alpha_new),
+        }
+
+
+def finetune_rsulf_layer(
+    rs_layer: RSULFLayer,
+    data_loader,
+    num_steps: int = 100,
+    learning_rate: float = 1e-4,
+) -> Dict[str, List[float]]:
+    tuner = MetricFineTuner(rs_layer, learning_rate=learning_rate)
+    history = {
+        "grad_g_norm": [],
+        "grad_eta": [],
+        "grad_alpha": [],
+    }
+    
+    step = 0
+    for batch in data_loader:
+        if step >= num_steps:
+            break
+        
+        x = batch["input"] if isinstance(batch, dict) else batch[0]
+        target = batch["target"] if isinstance(batch, dict) else batch[1]
+        
+        metrics = tuner.step(x, target)
+        
+        for key in history:
+            if key in metrics:
+                history[key].append(metrics[key])
+        
+        step += 1
+    
+    return history
+
+
+def optimize_metric_extraction(
+    WQ: torch.Tensor,
+    WK: torch.Tensor,
+    W1: torch.Tensor,
+    W2: torch.Tensor,
+    target_dim: int,
+    num_calibration_steps: int = 50,
+    learning_rate: float = 0.1,
+    num_samples: int = 16,
+    device: str = "cuda",
+) -> Tuple[np.ndarray, np.ndarray, float]:
+    """
+    리만 메트릭 추출 + 최적화 보정
+    
+    Returns:
+        g_diag: 최적화된 대각 메트릭
+        g_inv: 역메트릭
+        final_loss: 최종 손실값
+    """
+    d_model = WQ.size(1)
+    
+    # GPU로 이동
+    WQ = WQ.to(device).float()
+    WK = WK.to(device).float()
+    W1 = W1.to(device).float()
+    W2 = W2.to(device).float()
+    
+    # GQA 처리
+    if WK.size(0) < WQ.size(0):
+        repeat = WQ.size(0) // WK.size(0)
+        WK = WK.repeat(repeat, 1)
+    
+    # 1. 초기 대각 메트릭: g_ii = WQ_i · WK_i (부호 유지)
+    with torch.no_grad():
+        g_diag_init = (WQ * WK).sum(dim=0)  # (d_model,)
+        g_diag_init = torch.clamp(g_diag_init.abs(), min=1e-6, max=1e6)
+        
+        # 정규화: 평균 1로
+        g_mean = g_diag_init.mean()
+        g_diag_init = g_diag_init / (g_mean + 1e-8)
+    
+    # 2. 학습 가능한 스케일 (작은 범위)
+    log_scale = torch.zeros(d_model, device=device, dtype=torch.float32, requires_grad=True)
+    
+    optimizer = torch.optim.SGD([log_scale], lr=learning_rate, momentum=0.9)
+    
+    # 3. Calibration 루프
+    best_loss = float('inf')
+    best_scale = None
+    
+    for step in range(num_calibration_steps):
+        optimizer.zero_grad()
+        
+        # 현재 메트릭 (스케일 범위 제한: 0.1 ~ 10)
+        scale = torch.sigmoid(log_scale) * 9.9 + 0.1
+        g_diag = g_diag_init * scale
+        
+        # 랜덤 샘플
+        x = torch.randn(num_samples, d_model, device=device, dtype=torch.float32)
+        y = torch.randn(num_samples, d_model, device=device, dtype=torch.float32)
+        
+        # Inner-product 보존 손실 (정규화)
+        with torch.no_grad():
+            Qx = F.linear(x, WQ)
+            Ky = F.linear(y, WK)
+            ip_target = (Qx * Ky).sum(dim=-1)
+            ip_target_norm = ip_target / (ip_target.abs().mean() + 1e-8)
+        
+        ip_pred = (x * (g_diag.unsqueeze(0) * y)).sum(dim=-1)
+        ip_pred_norm = ip_pred / (ip_pred.abs().mean() + 1e-8)
+        
+        # Cosine similarity 기반 손실 (스케일 불변)
+        loss_ip = 1.0 - F.cosine_similarity(ip_pred_norm.unsqueeze(0), ip_target_norm.unsqueeze(0)).mean()
+        
+        # 정규화 손실
+        loss_reg = 0.001 * ((scale - 1.0) ** 2).mean()
+        
+        total_loss = loss_ip + loss_reg
+        
+        total_loss.backward()
+        optimizer.step()
+        
+        if total_loss.item() < best_loss:
+            best_loss = total_loss.item()
+            best_scale = scale.detach().clone()
+    
+    # 4. 최종 메트릭
+    with torch.no_grad():
+        if best_scale is None:
+            best_scale = torch.ones(d_model, device=device)
+        g_diag_final = (g_diag_init * best_scale * g_mean).cpu().numpy()
+        g_diag_final = np.clip(g_diag_final, 1e-6, 1e6)
+        g_inv_final = 1.0 / g_diag_final
+    
+    return g_diag_final, g_inv_final, best_loss
+
+
+class RSULFLayerOptimized:
+    """
+    최적화된 RS-ULF Layer (메트릭 추출 시 calibration 포함)
+    """
+    def __init__(
+        self,
+        WQ: torch.Tensor,
+        WK: torch.Tensor,
+        W1: torch.Tensor,
+        W2: torch.Tensor,
+        d_model: int,
+        r: int = 1024,
+        eta: float = 0.01,
+        alpha: float = 0.02,
+        beta: float = 0.01,
+        gamma: float = 0.99,
+        seq_len: int = 128,
+        window: int = 8,
+        calibration_steps: int = 50,
+        device: str = "cuda",
+    ):
+        if not rs._has_rust_ext:
+            raise RuntimeError("Rust extension not available")
+        
+        # 1. 메트릭 최적화
+        g_diag, g_inv, calib_loss = optimize_metric_extraction(
+            WQ,
+            WK,
+            W1,
+            W2,
+            target_dim=r,
+            num_calibration_steps=calibration_steps,
+            device=device,
+        )
+        
+        self.calibration_loss = calib_loss
+        
+        # 2. Rust 레이어 생성 (최적화된 메트릭 사용)
+        WQ_np = WQ.cpu().float().numpy()
+        WK_np = WK.cpu().float().numpy()
+        W1_np = W1.cpu().float().numpy()
+        W2_np = W2.cpu().float().numpy()
+        
+        if WK.size(0) < WQ.size(0):
+            repeat = WQ.size(0) // WK.size(0)
+            WK_np = np.tile(WK_np, (repeat, 1))
+
+        # 최적화된 대각 메트릭을 Rust 레이어에 전달
+        # 1순위: 새 바인딩(new_with_metric)이 있을 때 직접 사용
+        # 2순위: 구버전 바인딩일 경우 export_components / from_components 경로로 주입
+        try:
+            self.inner = rs._rust.PyRSULFLayer.new_with_metric(
+                WQ_np,
+                WK_np,
+                W1_np,
+                W2_np,
+                g_diag.astype(np.float32),
+                d_model,
+                r,
+                eta,
+                alpha,
+                beta,
+                gamma,
+                seq_len,
+                window,
+            )
+        except AttributeError:
+            # 구버전: 먼저 기본 레이어를 만들고, export_components 후 from_components로 교체
+            base = rs._rust.PyRSULFLayer(
+                WQ_np,
+                WK_np,
+                W1_np,
+                W2_np,
+                d_model,
+                r,
+                eta,
+                alpha,
+                beta,
+                gamma,
+                seq_len,
+                window,
+            )
+            comp = base.export_components()
+
+            self.inner = rs._rust.PyRSULFLayer.from_components(
+                int(comp["d_model"]),
+                int(comp["r"]),
+                float(comp["eta"]),
+                float(comp["alpha"]),
+                float(comp["beta"]),
+                float(comp["gamma"]),
+                int(comp["seq_len"]),
+                int(comp["window"]),
+                g_diag.astype(np.float32),
+                g_inv.astype(np.float32),
+                np.array(comp["u_metric"], dtype=np.float32),
+                np.array(comp["v_metric"], dtype=np.float32),
+                float(comp["curvature"]),
+                np.array(comp["ffn_u1"], dtype=np.float32),
+                np.array(comp["ffn_s1"], dtype=np.float32),
+                np.array(comp["ffn_v1"], dtype=np.float32),
+                np.array(comp["ffn_u2"], dtype=np.float32),
+                np.array(comp["ffn_s2"], dtype=np.float32),
+                np.array(comp["ffn_v2"], dtype=np.float32),
+            )
+        
+        self.d_model = d_model
+        self.r = r
+        self.device = WQ.device
+        self.dtype = WQ.dtype
+        self.g_diag_optimized = g_diag
+        self.g_inv_optimized = g_inv
+    
+    def forward(self, x: torch.Tensor, v_mem: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+        original_shape = x.shape
+        if x.dim() == 3:
+            b, l, d = x.shape
+            x_flat = x.reshape(b * l, d)
+        else:
+            x_flat = x
+        
+        x_np = x_flat.cpu().float().numpy()
+        v_np = None
+        if v_mem is not None and v_mem.dim() == 1 and v_mem.numel() == x_flat.size(0):
+            v_np = v_mem.cpu().float().numpy()
+        
+        output_np, v_new_np = self.inner.forward(x_np, v_np)
+        
+        output_flat = torch.from_numpy(output_np).to(self.device).to(self.dtype)
+        v_new = torch.from_numpy(v_new_np).to(self.device).float()
+        
+        if len(original_shape) == 3:
+            b, l, d = original_shape
+            output = output_flat.reshape(b, l, d)
+        else:
+            output = output_flat
+        
+        return output, v_new
+    
+    def param_count(self) -> Dict[str, any]:
+        compressed, original, ratio = self.inner.param_count()
+        return {
+            'compressed': compressed,
+            'original': original,
+            'ratio': ratio,
+        }
+    
+    @property
+    def curvature(self) -> float:
+        return self.inner.curvature
+
+
+def convert_transformer_to_rsulf_optimized(
+    model,
+    r: int = 1024,
+    eta: float = 0.01,
+    alpha: float = 0.02,
+    beta: float = 0.01,
+    gamma: float = 0.99,
+    seq_len: int = 128,
+    window: int = 8,
+    calibration_steps: int = 50,
+    checkpoint_dir: Optional[str] = None,
+) -> Tuple[RSULFModel, Dict[str, float]]:
+    """
+    Transformer → RS-ULF 변환 (메트릭 최적화 포함)
+    
+    단순 SVD가 아니라 calibration을 통해 메트릭을 최적화합니다.
+    """
+    import os
+    
+    config = model.config
+    num_layers = len(model.model.layers)
+    d_model = config.hidden_size
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    if checkpoint_dir:
+        os.makedirs(checkpoint_dir, exist_ok=True)
+    
+    layers = []
+    calibration_losses = []
+    
+    for i in tqdm(range(num_layers), desc=f"RS-ULF 최적화 변환 (r={r}, calib={calibration_steps})", ncols=80):
+        weights = extract_transformer_layer_weights(model, i)
+        
+        # 정합성 체크 (최적화 전)
+        consistency_before = verify_fold_consistency(weights['WQ'], weights['WK'], r)
+        
+        # 최적화된 레이어 생성
+        layer = RSULFLayerOptimized(
+            WQ=weights['WQ'],
+            WK=weights['WK'],
+            W1=weights['W1'],
+            W2=weights['W2'],
+            d_model=d_model,
+            r=r,
+            eta=eta,
+            alpha=alpha,
+            beta=beta,
+            gamma=gamma,
+            seq_len=seq_len,
+            window=window,
+            calibration_steps=calibration_steps,
+            device=device,
+        )
+        
+        calibration_losses.append(layer.calibration_loss)
+        
+        tqdm.write(f"  [✓] Layer {i:2d}: calib_loss={layer.calibration_loss:.6f}, "
+                  f"fold_acc={consistency_before.fold_accuracy:.4f}")
+        
+        if checkpoint_dir:
+            # 체크포인트 저장 (RSULFLayer 호환)
+            layer_compat = RSULFLayer(
+                WQ=weights['WQ'],
+                WK=weights['WK'],
+                W1=weights['W1'],
+                W2=weights['W2'],
+                d_model=d_model,
+                r=r,
+                eta=eta,
+                alpha=alpha,
+                beta=beta,
+                gamma=gamma,
+                seq_len=seq_len,
+                window=window,
+                fast_mode=False,
+            )
+            save_rsulf_layer_checkpoint(layer_compat, checkpoint_dir, i)
+        
+        layers.append(layer)
+    
+    if checkpoint_dir:
+        meta = {"num_layers": num_layers, "d_model": d_model}
+        np.savez(os.path.join(checkpoint_dir, "meta.npz"), **meta)
+    
+    report = {
+        "num_layers": num_layers,
+        "avg_calibration_loss": sum(calibration_losses) / len(calibration_losses),
+        "calibration_steps": calibration_steps,
+        "r": r,
+    }
+    
+    # RSULFModel 호환 래퍼
+    rs_model = RSULFModel([])
+    rs_model.layers = layers
+    rs_model.d_model = d_model
+    
+    return rs_model, report
+
+
+class LowRankFFNStudent(torch.nn.Module):
+    """
+    Low-rank FFN student: approximates Transformer FFN with rank-r factors.
+    W1 ≈ U1 diag(S1) V1^T, W2 ≈ U2 diag(S2) V2^T.
+    """
+
+    def __init__(self, d_model: int, d_ff: int, r: int):
+        super().__init__()
+        self.d_model = d_model
+        self.d_ff = d_ff
+        self.r = r
+
+        self.V1 = torch.nn.Parameter(torch.randn(d_model, r) / (d_model ** 0.5))
+        self.S1 = torch.nn.Parameter(torch.ones(r))
+        self.U1 = torch.nn.Parameter(torch.randn(d_ff, r) / (d_ff ** 0.5))
+
+        self.V2 = torch.nn.Parameter(torch.randn(d_ff, r) / (d_ff ** 0.5))
+        self.S2 = torch.nn.Parameter(torch.ones(r))
+        self.U2 = torch.nn.Parameter(torch.randn(d_model, r) / (d_model ** 0.5))
+
+    @torch.no_grad()
+    def init_from_weights(self, W1: torch.Tensor, W2: torch.Tensor):
+        """
+        Initialize from full FFN weights using truncated SVD.
+        W1: (d_ff, d_model), W2: (d_model, d_ff)
+        """
+        # W1 SVD
+        try:
+            U1_full, S1_full, V1h_full = torch.linalg.svd(W1, full_matrices=False)
+        except RuntimeError:
+            U1_full, S1_full, V1h_full = torch.svd(W1)
+        r = min(self.r, S1_full.shape[0])
+        self.U1.copy_(U1_full[:, :r])
+        self.S1.data.zero_()
+        self.S1[:r].copy_(S1_full[:r])
+        self.V1.copy_(V1h_full[:r, :].t())
+
+        # W2 SVD
+        try:
+            U2_full, S2_full, V2h_full = torch.linalg.svd(W2, full_matrices=False)
+        except RuntimeError:
+            U2_full, S2_full, V2h_full = torch.svd(W2)
+        r2 = min(self.r, S2_full.shape[0])
+        self.U2.copy_(U2_full[:, :r2])
+        self.S2.data.zero_()
+        self.S2[:r2].copy_(S2_full[:r2])
+        self.V2.copy_(V2h_full[:r2, :].t())
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        x: (B, D) or (B, L, D)
+        Returns: residual output x + f_lowrank(x)
+        """
+        original_shape = x.shape
+        if x.dim() == 3:
+            b, l, d = original_shape
+            x_flat = x.view(b * l, d)
+        else:
+            x_flat = x
+
+        # Approximate W1: (d_ff, d_model)
+        h1 = x_flat @ self.V1          # (B, r)
+        h1 = h1 * self.S1              # scale by singular values
+        pre_act = h1 @ self.U1.t()     # (B, d_ff)
+        h_act = F.silu(pre_act)
+
+        # Approximate W2: (d_model, d_ff)
+        h2 = h_act @ self.V2           # (B, r)
+        h2 = h2 * self.S2
+        f_x = h2 @ self.U2.t()         # (B, d_model)
+
+        y = x_flat + f_x
+        if x.dim() == 3:
+            return y.view(b, l, d)
+        return y
+
+
+def distill_ffn_low_rank_for_layer(
+    model,
+    layer_idx: int,
+    r: int,
+    num_steps: int = 200,
+    batch_size: int = 64,
+    device: Optional[torch.device] = None,
+) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, float]]:
+    """
+    Distill a single Transformer's FFN (gate_proj + down_proj) to a low-rank student.
+
+    Teacher: y_T = x + W2 σ(W1 x)
+    Student: y_S = LowRankFFNStudent(x)
+    Objective: E[||y_T - y_S||^2]
+    """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Locate layer (reuse logic from extract_transformer_layer_weights)
+    try:
+        layer = model.model.layers[layer_idx]
+    except AttributeError:
+        try:
+            layer = model.transformer.h[layer_idx]
+        except AttributeError:
+            layer = model.layers[layer_idx]
+
+    W1 = layer.mlp.gate_proj.weight.detach().to(device=device, dtype=torch.float32)
+    W2 = layer.mlp.down_proj.weight.detach().to(device=device, dtype=torch.float32)
+
+    d_ff, d_model = W1.shape
+    assert W2.shape[1] == d_ff and W2.shape[0] == d_model
+
+    student = LowRankFFNStudent(d_model=d_model, d_ff=d_ff, r=r).to(device)
+    student.init_from_weights(W1, W2)
+
+    optimizer = torch.optim.Adam(student.parameters(), lr=1e-3)
+
+    losses: List[float] = []
+    cosines: List[float] = []
+
+    for step in range(num_steps):
+        x = torch.randn(batch_size, d_model, device=device, dtype=torch.float32)
+
+        # Teacher FFN residual
+        with torch.no_grad():
+            h1 = F.linear(x, W1)
+            h_act = F.silu(h1)
+            f_teacher = F.linear(h_act, W2)
+            y_teacher = x + f_teacher
+
+        y_student = student(x)
+
+        loss = F.mse_loss(y_student, y_teacher)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        with torch.no_grad():
+            cos = F.cosine_similarity(
+                y_teacher.view(batch_size, -1),
+                y_student.view(batch_size, -1),
+                dim=-1,
+            ).mean().item()
+
+        losses.append(float(loss.item()))
+        cosines.append(cos)
+
+    # Reconstruct full low-rank W1_hat, W2_hat
+    with torch.no_grad():
+        V1 = student.V1           # (d_model, r)
+        S1 = student.S1           # (r,)
+        U1 = student.U1           # (d_ff, r)
+        V2 = student.V2           # (d_ff, r)
+        S2 = student.S2           # (r,)
+        U2 = student.U2           # (d_model, r)
+
+        W1_low = (U1 * S1.view(1, -1)) @ V1.t()  # (d_ff, d_model)
+        W2_low = (U2 * S2.view(1, -1)) @ V2.t()  # (d_model, d_ff)
+
+    info = {
+        "final_loss": float(losses[-1] if losses else 0.0),
+        "final_cosine": float(cosines[-1] if cosines else 0.0),
+        "avg_loss": float(sum(losses) / len(losses)) if losses else 0.0,
+        "avg_cosine": float(sum(cosines) / len(cosines)) if cosines else 0.0,
+        "num_steps": int(num_steps),
+        "rank": int(r),
+    }
+
+    return W1_low.cpu(), W2_low.cpu(), info
+
+
+def convert_transformer_to_rsulf_with_ffn_distillation(
+    model,
+    r: int = 1024,
+    eta: float = 0.01,
+    alpha: float = 0.02,
+    beta: float = 0.01,
+    gamma: float = 0.99,
+    seq_len: int = 128,
+    window: int = 8,
+    distill_steps: int = 200,
+    distill_batch_size: int = 64,
+    device: Optional[torch.device] = None,
+) -> Tuple[RSULFModel, Dict[str, object]]:
+    """
+    Transformer → RS-ULF 변환 (FFN 저랭크 증류 포함).
+
+    - Q, K는 그대로 사용
+    - FFN(W1, W2)는 레이어별 distillation으로 rank-r 저랭크 근사로 교체
+    - 그 이후 RSULFLayer로 매핑
+    """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    try:
+        layers_tf = model.model.layers
+    except AttributeError:
+        layers_tf = model.layers
+
+    num_layers = len(layers_tf)
+    d_model = layers_tf[0].self_attn.q_proj.weight.size(1)
+
+    rs_layers: List[RSULFLayer] = []
+    distill_reports: List[Dict[str, object]] = []
+
+    for idx in tqdm(range(num_layers), desc=f"RS-ULF FFN distill (r={r})", ncols=80):
+        weights = extract_transformer_layer_weights(model, idx)
+
+        # Distill FFN of this layer to rank-r student
+        W1_low, W2_low, info = distill_ffn_low_rank_for_layer(
+            model,
+            layer_idx=idx,
+            r=r,
+            num_steps=distill_steps,
+            batch_size=distill_batch_size,
+            device=device,
+        )
+
+        # Convert distilled numpy weights back to torch on correct device/dtype
+        W1_t = torch.from_numpy(W1_low).to(
+            weights["W1"].device, dtype=weights["W1"].dtype
+        )
+        W2_t = torch.from_numpy(W2_low).to(
+            weights["W2"].device, dtype=weights["W2"].dtype
+        )
+
+        # Build RSULF layer using original Q/K and distilled FFN
+        rs_layer = RSULFLayer(
+            WQ=weights["WQ"],
+            WK=weights["WK"],
+            W1=W1_t,
+            W2=W2_t,
+            d_model=d_model,
+            r=r,
+            eta=eta,
+            alpha=alpha,
+            beta=beta,
+            gamma=gamma,
+            seq_len=seq_len,
+            window=window,
+            fast_mode=False,
+        )
+
+        rs_layers.append(rs_layer)
+        layer_report: Dict[str, object] = {"layer_idx": idx}
+        layer_report.update(info)
+        distill_reports.append(layer_report)
+
+        tqdm.write(
+            f"  [FFN distill] layer {idx:2d}: "
+            f"cos={info['final_cosine']:.4f}, loss={info['final_loss']:.6f}"
+        )
+
+    rs_model = RSULFModel(rs_layers)
+    stats = rs_model.param_count()
+
+    avg_cos = (
+        sum(r["final_cosine"] for r in distill_reports) / len(distill_reports)
+        if distill_reports
+        else 0.0
+    )
+
+    summary: Dict[str, object] = {
+        "num_layers": num_layers,
+        "rank": r,
+        "avg_final_cosine": float(avg_cos),
+        "compressed_params": float(stats["compressed"]),
+        "original_params": float(stats["original"]),
+        "compression_ratio": float(stats["ratio"]),
+        "per_layer": distill_reports,
+    }
+
+    return rs_model, summary
 
 
 def rsulf_generate(
@@ -933,3 +1879,196 @@ def rsulf_generate(
     text = tokenizer.decode(generated[0], skip_special_tokens=True)
     return text
 
+
+def finetune_rsulf_lm_head(
+    model,
+    rs_model: RSULFModel,
+    tokenizer,
+    train_loader,
+    num_steps: int = 1000,
+    lr: float = 1e-4,
+    device: str = "cuda",
+):
+    """
+    RS-ULF LLM용 lm_head만 미세조정하는 distillation 루프.
+
+    - Transformer 본체와 RS-ULF 레이어는 고정
+    - RS-ULF가 만든 hidden state 위에서 lm_head를 LM loss로 학습
+    """
+    if device == "cuda" and not torch.cuda.is_available():
+        device = "cpu"
+    torch_device = torch.device(device)
+
+    if hasattr(model, "model"):
+        base = model.model
+    else:
+        base = model
+
+    # lm_head만 학습, 나머지는 freeze
+    # RS-ULF 경로는 float32로 동작하므로 lm_head도 float32로 맞춘다.
+    lm_head = model.lm_head.to(torch_device, dtype=torch.float32)
+    base.to(torch_device)
+    for n, p in model.named_parameters():
+        if "lm_head" in n:
+            p.requires_grad = True
+        else:
+            p.requires_grad = False
+
+    optimizer = torch.optim.AdamW(lm_head.parameters(), lr=lr)
+    loss_fct = torch.nn.CrossEntropyLoss()
+
+    step = 0
+    for batch in tqdm(train_loader, desc="Finetune RS-ULF lm_head", ncols=80):
+        if step >= num_steps:
+            break
+
+        input_ids = batch["input_ids"].to(torch_device)
+        labels = batch.get("labels", batch["input_ids"]).to(torch_device)
+
+        with torch.no_grad():
+            # RS-ULF Rust 바인딩은 float32를 기대하므로 임베딩도 float32로 맞춘다.
+            embed_weight = base.embed_tokens.weight.to(torch_device, dtype=torch.float32)
+            embeddings = F.embedding(input_ids, embed_weight).to(torch.float32)  # (B, L, D)
+            x_np = embeddings.detach().cpu().numpy()
+            h_np = rs_model.forward_numpy(x_np)
+            h_torch = torch.from_numpy(h_np).to(torch_device)
+            if hasattr(base, "norm"):
+                h_torch = base.norm(h_torch)
+
+        # Shift for LM loss
+        shift_hidden = h_torch[:, :-1, :]
+        shift_labels = labels[:, 1:]
+
+        logits = F.linear(shift_hidden, lm_head.weight, lm_head.bias)
+
+        loss = loss_fct(
+            logits.reshape(-1, logits.size(-1)),
+            shift_labels.reshape(-1),
+        )
+
+        optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(lm_head.parameters(), 1.0)
+        optimizer.step()
+
+        step += 1
+
+    return lm_head
+
+
+def cache_rsulf_hidden_states(
+    model,
+    rs_model,
+    train_loader,
+    cache_path: str,
+    device: str = "cuda",
+    max_samples: int = 10000,
+):
+    """
+    RS-ULF hidden states를 미리 계산하여 디스크에 저장 (1회 실행).
+    이후 lm_head 학습 시 캐시를 불러와 사용하면 훨씬 빠름.
+    """
+    import os
+    torch_device = torch.device(device)
+
+    if hasattr(model, "model"):
+        base = model.model
+    else:
+        base = model
+    base.to(torch_device)
+
+    all_hidden = []
+    all_labels = []
+    count = 0
+
+    for batch in tqdm(train_loader, desc="Caching RS-ULF hidden", ncols=80):
+        if count >= max_samples:
+            break
+
+        input_ids = batch["input_ids"].to(torch_device)
+        labels = batch.get("labels", batch["input_ids"]).to(torch_device)
+
+        with torch.no_grad():
+            embed_weight = base.embed_tokens.weight.to(torch_device, dtype=torch.float32)
+            embeddings = F.embedding(input_ids, embed_weight).to(torch.float32)
+            x_np = embeddings.detach().cpu().numpy()
+            h_np = rs_model.forward_numpy(x_np)
+            h_torch = torch.from_numpy(h_np)
+            if hasattr(base, "norm"):
+                h_torch = base.norm(h_torch.to(torch_device)).cpu()
+
+        all_hidden.append(h_torch)
+        all_labels.append(labels.cpu())
+        count += input_ids.size(0)
+
+    hidden_cat = torch.cat(all_hidden, dim=0)
+    labels_cat = torch.cat(all_labels, dim=0)
+
+    os.makedirs(os.path.dirname(cache_path) if os.path.dirname(cache_path) else ".", exist_ok=True)
+    torch.save({"hidden": hidden_cat, "labels": labels_cat}, cache_path)
+    print(f"  캐시 저장: {cache_path} ({hidden_cat.shape[0]} 샘플)")
+    return cache_path
+
+
+def finetune_lm_head_from_cache(
+    model,
+    cache_path: str,
+    num_steps: int = 1000,
+    batch_size: int = 32,
+    lr: float = 1e-4,
+    device: str = "cuda",
+):
+    """
+    캐싱된 hidden states로 lm_head만 빠르게 학습.
+    RS-ULF forward 없이 순수 GPU 연산만 수행.
+    """
+    torch_device = torch.device(device)
+
+    cache = torch.load(cache_path, map_location="cpu")
+    hidden = cache["hidden"]
+    labels = cache["labels"]
+
+    lm_head = model.lm_head.to(torch_device, dtype=torch.float32)
+    for n, p in model.named_parameters():
+        if "lm_head" in n:
+            p.requires_grad = True
+        else:
+            p.requires_grad = False
+
+    optimizer = torch.optim.AdamW(lm_head.parameters(), lr=lr)
+    loss_fct = torch.nn.CrossEntropyLoss()
+
+    n_samples = hidden.size(0)
+    step = 0
+    pbar = tqdm(total=num_steps, desc="Finetune lm_head (cached)", ncols=80)
+
+    while step < num_steps:
+        perm = torch.randperm(n_samples)
+        for i in range(0, n_samples, batch_size):
+            if step >= num_steps:
+                break
+            idx = perm[i : i + batch_size]
+            h_batch = hidden[idx].to(torch_device, dtype=torch.float32)
+            l_batch = labels[idx].to(torch_device)
+
+            shift_hidden = h_batch[:, :-1, :]
+            shift_labels = l_batch[:, 1:]
+
+            logits = F.linear(shift_hidden, lm_head.weight, lm_head.bias)
+            loss = loss_fct(
+                logits.reshape(-1, logits.size(-1)),
+                shift_labels.reshape(-1),
+            )
+
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(lm_head.parameters(), 1.0)
+            optimizer.step()
+
+            step += 1
+            pbar.update(1)
+            if step % 100 == 0:
+                pbar.set_postfix(loss=f"{loss.item():.4f}")
+
+    pbar.close()
+    return lm_head

@@ -1,17 +1,9 @@
 """
-Banking77 의도 분류를 위한 리만 하이퍼볼릭 확산 실험 (Lorentz + Reality Stone).
+Banking77 의도 분류를 위한 리만 하이퍼볼릭 확산 실험.
 
-구성 개요
----------
 - 인코더: BERT CLS 임베딩 (768차원)
-- 하이퍼 확장: 768 → 4096 차원으로 투영 (유클리드 / 접공간 표현)
 - 리만 디퓨전: Reality Stone의 Rust+CUDA 엔진으로 T-step 확산
-- 리드아웃: Lorentz 모델 위로 올린 후, Reality Stone `lorentz_distance` 로 프로토타입까지의 거리 계산
-
-철학
------
-- "Riemannian Geometry is the Engine, Diffusion is the Fuel."
-  (기하학은 엔진, 확산은 연료)
+- 리드아웃: Lorentz/Poincare 모델 위로 올린 후 거리 기반 분류
 """
 
 import torch
@@ -25,74 +17,7 @@ import numpy as np
 import math
 import reality_stone as rs
 from reality_stone.layers.lorentz import lorentz_distance
-
-
-class RiemannianDiffusionStep(torch.autograd.Function):
-    """
-    Reality Stone 리만 디퓨전 엔진(PyRiemannianDiffusion)을 감싸는 Autograd Function.
-
-    Forward (CUDA 커널 수준 수식)
-    ------------------------------
-    각 성분 i 에 대해,
-        v_i      = (1 - alpha) * (flow_i - h_i)
-        h_next_i = h_i + v_i * dt
-    이후 커널 내부에서 컴포넌트별 클리핑으로 Poincaré Ball 제약을 근사(retraction).
-
-    Backward (정확한 선형 야코비안)
-    --------------------------------
-    위 식을 정리하면,
-        h_next = a * h + b * flow
-        a = 1 - (1 - alpha) * dt
-        b = (1 - alpha) * dt
-    이므로,
-        ∂h_next/∂h    = a
-        ∂h_next/∂flow = b
-    를 그대로 사용한다. (클리핑 항은 근사적으로 무시)
-    """
-
-    @staticmethod
-    def forward(ctx, h, flow, diffusion_engine, alpha, dt):
-        # 연속 메모리 보장
-        h = h.contiguous()
-        flow = flow.contiguous()
-
-        # 출력 텐서 (GPU 상에 미리 할당)
-        h_next = torch.empty_like(h)
-        batch_size, dim = h.shape
-
-        # CUDA 사용 가능 시: Rust+CUDA 커널 직접 호출 (Zero-Copy)
-        if h.is_cuda and getattr(rs, "_has_cuda", False):
-            diffusion_engine.step_cuda(
-                h.data_ptr(),
-                flow.data_ptr(),
-                h_next.data_ptr(),
-                batch_size,
-                dim,
-            )
-        else:
-            # CPU Fallback (Numpy ↔ Rust)
-            h_np = h.detach().cpu().numpy().astype("float32")
-            flow_np = flow.detach().cpu().numpy().astype("float32")
-            h_next_np = diffusion_engine.step_cpu(h_np, flow_np)
-            h_next = torch.from_numpy(h_next_np).to(h.device)
-
-        ctx.alpha = float(alpha)
-        ctx.dt = float(dt)
-        return h_next
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        alpha = ctx.alpha
-        dt = ctx.dt
-        # h_next = (1 - (1-alpha) * dt) * h + ((1-alpha) * dt) * flow
-        a = 1.0 - (1.0 - alpha) * dt  # d h_next / d h
-        b = (1.0 - alpha) * dt        # d h_next / d flow
-
-        grad_h = grad_output * a
-        grad_flow = grad_output * b
-
-        # diffusion_engine, alpha, dt 는 학습 대상이 아니므로 None
-        return grad_h, grad_flow, None, None, None
+from reality_stone.layers.diffusion import RiemannianDiffusionStep
 
 
 def to_lorentz(x, c: float = 1.0) -> torch.Tensor:

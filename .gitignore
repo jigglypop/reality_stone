@@ -82,3 +82,4 @@ text.txt
 data
 data/*.env
 .pypirc
+.env

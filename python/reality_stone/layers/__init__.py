@@ -4,6 +4,7 @@ from .klein import KleinLayer, klein_add, klein_scalar_mul, klein_distance, klei
 from .spline import SplineLinear
 from .poincare_embedding import PoincareEmbedding, EquivalentPoincareEmbedding
 from .metric_attention import MetricAttention, SPDMetric, normalize, build_topo_topk, masked_gather, aggregate, get_default_topk_cfg
+from .diffusion import RiemannianDiffusionStep, RiemannianDiffusionModule
 
 __all__ = [
     'PoincareBallLayer',
@@ -39,4 +40,6 @@ __all__ = [
     'masked_gather',
     'aggregate',
     'get_default_topk_cfg',
+    'RiemannianDiffusionStep',
+    'RiemannianDiffusionModule',
 ] 

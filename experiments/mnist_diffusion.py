@@ -6,9 +6,9 @@ from torch.utils.data import DataLoader
 import time
 from tqdm import tqdm
 import numpy as np
-import reality_stone as rs  # Reality Stone Bindings
+import reality_stone as rs
+from reality_stone.layers.diffusion import RiemannianDiffusionStep
 
-# CUDA Check
 if torch.cuda.is_available():
     DEVICE = "cuda"
     print(f"CUDA Available: {torch.cuda.get_device_name(0)}")
@@ -16,75 +16,6 @@ else:
     DEVICE = "cpu"
     print("CUDA Not Available, using CPU")
 
-# === Reality Stone Integration ===
-# Custom Autograd Function to bridge PyTorch and Rust with Zero-Copy
-class RiemannianDiffusionStep(torch.autograd.Function):
-    """
-    PyTorch Autograd wrapper for Reality Stone's Riemannian Diffusion.
-
-    Forward:
-        - Uses CUDA-optimized kernel via Rust binding (Zero-Copy).
-        - Kernel implements (per element):
-              v = (1 - alpha) * (flow - h)
-              h_next = h + v * dt
-          (plus clipping as a retraction to the manifold).
-
-    Backward:
-        - Uses the exact Jacobian of the above affine map (clipping 무시한 근사):
-              h_next = a * h + b * flow
-          where
-              a = 1 - (1 - alpha) * dt
-              b = (1 - alpha) * dt
-        - ∂h_next/∂h   = a
-        - ∂h_next/∂flow = b
-    """
-
-    @staticmethod
-    def forward(ctx, h, flow, diffusion_engine, alpha, dt):
-        # Ensure contiguous tensors for raw pointer access
-        h = h.contiguous()
-        flow = flow.contiguous()
-
-        # Pre-allocate output tensor on GPU
-        h_next = torch.empty_like(h)
-
-        batch_size, dim = h.shape
-
-        # CUDA path (zero-copy) or CPU fallback
-        if h.is_cuda and getattr(rs, "_has_cuda", False):
-            diffusion_engine.step_cuda(
-                h.data_ptr(),
-                flow.data_ptr(),
-                h_next.data_ptr(),
-                batch_size,
-                dim,
-            )
-        else:
-            h_np = h.detach().cpu().numpy().astype("float32")
-            flow_np = flow.detach().cpu().numpy().astype("float32")
-            h_next_np = diffusion_engine.step_cpu(h_np, flow_np)
-            h_next = torch.from_numpy(h_next_np).to(h.device)
-
-        ctx.save_for_backward(h, flow)
-        ctx.alpha = float(alpha)
-        ctx.dt = float(dt)
-        return h_next
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        # Exact Jacobian for the affine part of the CUDA kernel:
-        #   h_next = h + (1 - alpha) * (flow - h) * dt
-        #         = (1 - (1 - alpha) * dt) * h + ((1 - alpha) * dt) * flow
-        alpha = ctx.alpha
-        dt = ctx.dt
-        a = 1.0 - (1.0 - alpha) * dt  # d h_next / d h
-        b = (1.0 - alpha) * dt        # d h_next / d flow
-
-        grad_h = grad_output * a
-        grad_flow = grad_output * b
-
-        # diffusion_engine, alpha, dt have no gradients
-        return grad_h, grad_flow, None, None, None
 
 class BioGeometricEncoder(nn.Module):
     """Fixed Biological Encoder"""

@@ -44,16 +44,16 @@ except ImportError:
     RSULFLLMAdapter = None
 
 from .spd_operations import (
-    spd_mean,
-    spd_geodesic,
+    spd_barycenter,
     spd_log,
     spd_exp,
     spd_distance,
+    SPDBarycentricMixer,
+    CrossLevelMetricMixer,
 )
 
 from .riemannian_aggregation import (
-    RiemannianAggregator,
-    frechet_mean,
+    RiemannianAggregation,
 )
 
 from .product_manifold import (
@@ -62,13 +62,13 @@ from .product_manifold import (
 )
 
 __all__ = [
-    "spd_mean",
-    "spd_geodesic",
+    "spd_barycenter",
     "spd_log",
     "spd_exp",
     "spd_distance",
-    "RiemannianAggregator",
-    "frechet_mean",
+    "SPDBarycentricMixer",
+    "CrossLevelMetricMixer",
+    "RiemannianAggregation",
     "ProductManifold",
     "ProductManifoldLayer",
     "HierarchicalLLMConfig",

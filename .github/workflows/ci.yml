@@ -24,7 +24,8 @@ jobs:
       - name: Build and install
         run: |
           pip install maturin pytest torch numpy
-          maturin develop
+          maturin build --release -o dist
+          pip install dist/*.whl
       - name: Run tests
         run: pytest tests/ -v --tb=short
 

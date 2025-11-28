@@ -134,6 +134,36 @@ try:
 except Exception:
     PyRiemannianDiffusion = None  # type: ignore
 
+try:
+    if _has_rust_ext:
+        from ._rust import PyRSULFLayer as RSULFLayer  # type: ignore
+        from ._rust import fold_metric_svd, fold_ffn, build_causal_laplacian  # type: ignore
+        from ._rust import verify_metric_consistency, fold_metric_optimized, nystrom_metric  # type: ignore
+        from ._rust import bellman_geodesic_forward, bellman_geodesic_backward  # type: ignore
+        from ._rust import extract_metric_cuda  # type: ignore
+    else:
+        RSULFLayer = None  # type: ignore
+        fold_metric_svd = None  # type: ignore
+        fold_ffn = None  # type: ignore
+        build_causal_laplacian = None  # type: ignore
+        verify_metric_consistency = None  # type: ignore
+        fold_metric_optimized = None  # type: ignore
+        nystrom_metric = None  # type: ignore
+        bellman_geodesic_forward = None  # type: ignore
+        bellman_geodesic_backward = None  # type: ignore
+        extract_metric_cuda = None  # type: ignore
+except Exception:
+    RSULFLayer = None  # type: ignore
+    fold_metric_svd = None  # type: ignore
+    fold_ffn = None  # type: ignore
+    build_causal_laplacian = None  # type: ignore
+    verify_metric_consistency = None  # type: ignore
+    fold_metric_optimized = None  # type: ignore
+    nystrom_metric = None  # type: ignore
+    bellman_geodesic_forward = None  # type: ignore
+    bellman_geodesic_backward = None  # type: ignore
+    extract_metric_cuda = None  # type: ignore
+
 
 def poincare_ball_layer(u: torch.Tensor, v: torch.Tensor, c: float = None, t: float = 0.5, kappas: torch.Tensor = None, layer_idx: int = None, c_min: float = -2.0, c_max: float = -0.1) -> torch.Tensor:
     return PoincareBallLayer.apply(u, v, c, t, kappas, layer_idx, c_min, c_max)
@@ -199,4 +229,14 @@ __all__ = [
     'geodesic_distance',
     'geodesic_interpolate',
     'PyRiemannianDiffusion',
+    'RSULFLayer',
+    'fold_metric_svd',
+    'fold_ffn',
+    'build_causal_laplacian',
+    'verify_metric_consistency',
+    'fold_metric_optimized',
+    'nystrom_metric',
+    'bellman_geodesic_forward',
+    'bellman_geodesic_backward',
+    'extract_metric_cuda',
 ]

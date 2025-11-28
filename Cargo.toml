@@ -7,12 +7,25 @@ description = "High-performance hyperbolic neural networks library powered by Ru
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/jigglypop/reality_stone"
+documentation = "https://github.com/jigglypop/reality_stone"
+homepage = "https://github.com/jigglypop/reality_stone"
 keywords = [
     "hyperbolic",
     "neural-networks",
     "deep-learning",
     "manifold-learning",
-    "rust",
+    "riemannian",
+]
+categories = ["science", "mathematics", "algorithms"]
+exclude = [
+    "experiments/**",
+    "scripts/**",
+    "docs/**",
+    "examples/**",
+    "tests/**",
+    "*.md",
+    ".git/**",
+    ".github/**",
 ]
 
 [lib]
@@ -46,3 +59,8 @@ bindgen = { version = "0.69", optional = true }
 default = []
 cuda = ["bindgen"]
 abi3-py38 = ["pyo3/abi3-py38", "pyo3/extension-module"]
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3

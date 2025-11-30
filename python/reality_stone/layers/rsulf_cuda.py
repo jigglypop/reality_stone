@@ -102,7 +102,7 @@ class RSULFLayerCUDA(nn.Module):
         m, n = a.shape
         l = min(k + n_oversamples, m, n)
         
-        omega = torch.randn(n, l)
+        omega = torch.randn(n, l, device=a.device, dtype=a.dtype)
         y = a @ omega
         
         for _ in range(n_iter):
@@ -122,7 +122,7 @@ class RSULFLayerCUDA(nn.Module):
         return u, s, v
     
     def _create_causal_laplacian(self, seq_len: int, window: int) -> torch.Tensor:
-        a = torch.zeros(seq_len, seq_len)
+        a = torch.zeros(seq_len, seq_len, device=self.device)
         for i in range(seq_len):
             start = max(0, i - window)
             for j in range(start, i):

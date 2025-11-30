@@ -1,6 +1,6 @@
 [package]
 name = "reality_stone"
-version = "0.2.7"
+version = "0.2.8"
 edition = "2021"
 authors = ["jigglypop <donghwanyeom@gmail.com>"]
 description = "High-performance hyperbolic neural networks library powered by Rust"

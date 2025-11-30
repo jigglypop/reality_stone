@@ -5,24 +5,24 @@ from .. import _rust, _has_cuda
 from .poincare import poincare_to_lorentz
 
 class LorentzDistance(Function):
+    """
+    로렌츠 거리(Lorentz Distance)를 계산하는 Autograd Function입니다.
+    """
     @staticmethod
     def forward(ctx, u: Tensor, v: Tensor, c: float) -> Tensor:
         ctx.c = c
         ctx.save_for_backward(u, v)
         
         if u.is_cuda and _has_cuda:
-            # _rust.lorentz_distance_cuda returns void and writes to output ptr
+            # CUDA 구현 사용
             output = torch.empty(u.shape[0], dtype=u.dtype, device=u.device)
-            # Note: Binding signature is (out, u, v, c, batch_size, dim)
-            # But wait, input is usually expanded (B*10, dim) for pairwise
-            # We assume flattened inputs here.
             _rust.lorentz_distance_cuda(
                 output.data_ptr(), u.data_ptr(), v.data_ptr(),
                 c, u.shape[0], u.shape[1]
             )
             return output
         else:
-            # CPU binding returns numpy array
+            # CPU 구현 사용
             result_np = _rust.lorentz_distance(u.detach().cpu().numpy(), v.detach().cpu().numpy(), c)
             return torch.from_numpy(result_np).to(u.device)
 
@@ -31,25 +31,10 @@ class LorentzDistance(Function):
         u, v = ctx.saved_tensors
         c = ctx.c
         
-        # We need gradients w.r.t u and v.
-        # d(dist)/du and d(dist)/dv
-        # Since we don't have explicit distance_backward bindings yet (we only have layer_backward),
-        # we must implement the analytic gradient here or use PyTorch autograd for the formula.
-        # HOWEVER, the user wants to use the LIBRARY.
-        # If the library is missing the backward kernel for distance, we should implement it or fallback to torch.
-        
-        # Implementing Analytic Backward for Lorentz Distance here to support Autograd
+        # 로렌츠 거리의 해석적 역전파 구현
         # d(dist) = acosh(z) / sqrt(c) where z = c * <u,v>_L
-        # This is exactly what we implemented in python script. 
-        # But to strictly follow "Use RS Library", we should ideally have a backward binding.
-        # Checking bindings... we have lorentz_ball_layer_backward, but not distance_backward.
         
-        # Compromise: Use the torch formula for backward pass (which is mathematically correct)
-        # or use the autograd-supported torch implementation in forward pass too?
-        # The user said "Why not use rs?". This implies using the optimized CUDA kernel for forward.
-        # So we use CUDA for forward, and Torch math for backward.
-        
-        # Re-computing for backward (standard practice for activation functions etc)
+        # 역전파를 위한 재계산
         # <u, v>_L = u0v0 - u.v
         inner = u[..., 0] * v[..., 0] - (u[..., 1:] * v[..., 1:]).sum(dim=-1)
         z = (c * inner).clamp(min=1.0 + 1e-7)
@@ -60,11 +45,7 @@ class LorentzDistance(Function):
         d_dist_dz = 1.0 / (sqrt_c * torch.sqrt(z*z - 1.0))
         
         # d(z)/du = c * d(<u,v>)/du
-        # d(<u,v>)/du_0 = v_0
-        # d(<u,v>)/du_i = -v_i
-        # So gradient vector is like v but with space components negated = Minkowski conjugate?
-        # Let's construct the Minkowski-gradient of inner product w.r.t u:
-        # It is [c*v0, -c*v1, -c*v2 ...]
+        # 내적의 미분 (민코프스키 계량 고려)
         
         grad_z_u = torch.empty_like(v)
         grad_z_u[..., 0] = c * v[..., 0]
@@ -74,10 +55,7 @@ class LorentzDistance(Function):
         grad_z_v[..., 0] = c * u[..., 0]
         grad_z_v[..., 1:] = -c * u[..., 1:]
         
-        # Chain rule
-        # grad_u = grad_output * d(dist)/dz * grad_z_u
-        # grad_output shape: (B,) -> unsqueeze to (B,1)
-        
+        # 연쇄 법칙
         scale = (grad_output * d_dist_dz).unsqueeze(-1)
         grad_u = scale * grad_z_u
         grad_v = scale * grad_z_v
@@ -86,13 +64,15 @@ class LorentzDistance(Function):
 
 def lorentz_distance(x: Tensor, y: Tensor, c: float) -> Tensor:
     """
-    Computes Lorentz distance using Reality Stone's optimized kernels.
-    Supports Autograd.
+    로렌츠 거리를 계산합니다. Reality Stone의 최적화된 커널을 사용합니다.
     """
     return LorentzDistance.apply(x, y, c)
 
 
 class LorentzLayer(Function):
+    """
+    로렌츠 레이어 (지오데식 보간) Function
+    """
     @staticmethod
     def forward(ctx, u: Tensor, v: Tensor, c: float, t: float) -> Tensor:
         ctx.c = c
@@ -131,27 +111,58 @@ class LorentzLayer(Function):
         return grad_u, grad_v, None, None
 
 def lorentz_add(u: Tensor, v: Tensor, c: float) -> Tensor:
+    """
+    로렌츠 덧셈 (자이로벡터 합)
+    """
     result_np = _rust.lorentz_add(u.cpu().numpy(), v.cpu().numpy(), c)
     return torch.from_numpy(result_np).to(u.device)
 
 def lorentz_scalar_mul(x: Tensor, r: float, c: float) -> Tensor:
+    """
+    로렌츠 스칼라 곱
+    """
     result_np = _rust.lorentz_scalar(x.cpu().numpy(), r, c)
     return torch.from_numpy(result_np).to(x.device)
 
 def lorentz_inner(u: Tensor, v: Tensor) -> Tensor:
+    """
+    로렌츠 민코프스키 내적
+    """
     result_np = _rust.lorentz_inner(u.cpu().numpy(), v.cpu().numpy())
     return torch.from_numpy(result_np).to(u.device)
 
 def lorentz_to_poincare(x: Tensor, c: float) -> Tensor:
+    """
+    로렌츠 -> 푸앵카레 변환
+    """
     result_np = _rust.lorentz_to_poincare(x.cpu().numpy(), c)
     return torch.from_numpy(result_np).to(x.device)
 
 def lorentz_to_klein(x: Tensor, c: float) -> Tensor:
+    """
+    로렌츠 -> 클라인 변환
+    """
     result_np = _rust.lorentz_to_klein(x.cpu().numpy(), c)
     return torch.from_numpy(result_np).to(x.device) 
 
+def euclidean_to_lorentz(x: Tensor, c: float = 1.0, epsilon: float = 1e-6) -> Tensor:
+    """
+    유클리드 벡터 x를 로렌츠 쌍곡면으로 들어올립니다(Lift).
+    R^n의 x를 R^{n+1}의 부분집합인 H^n의 (sqrt(1/c + ||x||^2), x)로 매핑합니다.
+    """
+    # sq = ||x||^2
+    sq = (x * x).sum(dim=-1, keepdim=True)
+    # x0 = sqrt(1/c + ||x||^2)
+    time_comp = torch.sqrt(torch.clamp(1.0 / c + sq, min=epsilon))
+    return torch.cat([time_comp, x], dim=-1) 
+
 
 class LorentzBallLayer(Function):
+    """
+    로렌츠 공 레이어 (Lorentz Ball Layer)
+    
+    동적 곡률(Dynamic Curvature)을 지원하며, 로렌츠 모델 위에서 두 점을 보간합니다.
+    """
     @staticmethod
     def forward(ctx, u: Tensor, v: Tensor, c: float = None, t: float = 0.5, kappas: Tensor = None, layer_idx: int = None, c_min: float = 0.1, c_max: float = 5.0) -> Tensor:
         ctx.t = t
@@ -165,7 +176,7 @@ class LorentzBallLayer(Function):
                 kappa_val = kappas.item()
             else:
                 kappa_val = kappas[layer_idx].item()
-            # Prefer native binding if available
+            # 네이티브 바인딩이 있다면 우선 사용
             if hasattr(_rust, 'lorentz_layer_layerwise_cpu'):
                 out_np, c_val = _rust.lorentz_layer_layerwise_cpu(
                     u.cpu().numpy(), v.cpu().numpy(), kappa_val, layer_idx, c_min, c_max, t
@@ -173,7 +184,7 @@ class LorentzBallLayer(Function):
                 ctx.c_val = c_val
                 return torch.from_numpy(out_np).to(u.device)
             else:
-                # Python fallback: compute c and call static forward
+                # Python fallback
                 sig = 1.0 / (1.0 + torch.exp(torch.tensor(-kappa_val)))
                 c_val = c_min + (c_max - c_min) * sig.item()
                 ctx.c_val = c_val
@@ -203,7 +214,8 @@ class LorentzBallLayer(Function):
                 sig = 1.0 / (1.0 + torch.exp(torch.tensor(-kappa_val)))
                 c_val = (c_min + (c_max - c_min) * sig.item())
                 ctx.c_val = c_val
-            # grads w.r.t u, v via static backward
+            
+            # 정적 역전파를 통한 u, v 그라디언트 계산
             if grad_output.is_cuda and _has_cuda:
                 grad_u = torch.empty_like(u)
                 grad_v = torch.empty_like(v)
@@ -219,7 +231,7 @@ class LorentzBallLayer(Function):
                 grad_u = torch.from_numpy(gu_np).to(grad_output.device)
                 grad_v = torch.from_numpy(gv_np).to(grad_output.device)
 
-            # exact grad wrt kappa via chain rule
+            # kappa에 대한 정확한 그라디언트 (연쇄 법칙)
             def minkowski_inner(p: Tensor, q: Tensor) -> Tensor:
                 return p[..., :1]*q[..., :1] - (p[..., 1:]*q[..., 1:]).sum(dim=-1, keepdim=True)
 
@@ -283,9 +295,15 @@ class LorentzBallLayer(Function):
 
 
 def lorentz_ball(u: Tensor, v: Tensor, c: float = None, t: float = 0.5, kappas: Tensor = None, layer_idx: int = None, c_min: float = 0.1, c_max: float = 5.0) -> Tensor:
+    """
+    로렌츠 공 레이어 편의 함수
+    """
     return LorentzBallLayer.apply(u, v, c, t, kappas, layer_idx, c_min, c_max)
 
 class LorentzFromPoincare(Function):
+    """
+    푸앵카레 -> 로렌츠 변환 (Autograd 지원, 동적 곡률 지원)
+    """
     @staticmethod
     def forward(ctx, x: Tensor, c: float = None, kappas: Tensor = None, c_min: float = -2.0, c_max: float = -0.1) -> Tensor:
         if kappas is not None:
@@ -302,7 +320,7 @@ class LorentzFromPoincare(Function):
         else:
             ctx.use_dynamic = False
             ctx.c = c if c is not None else 1.0
-            # Delegate to poincare_to_lorentz for non-dynamic path
+            # 정적 경로
             output = poincare_to_lorentz(x, ctx.c)
             ctx.save_for_backward(x)
             return output
@@ -323,4 +341,7 @@ class LorentzFromPoincare(Function):
             return grad_x, None, None, None, None
 
 def from_poincare(x: Tensor, c: float = None, kappas: Tensor = None, c_min: float = -2.0, c_max: float = -0.1) -> Tensor:
+    """
+    푸앵카레 -> 로렌츠 변환 편의 함수
+    """
     return LorentzFromPoincare.apply(x, c, kappas, c_min, c_max)

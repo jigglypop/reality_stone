@@ -467,6 +467,10 @@ class MistralRSULFAdapter(nn.Module):
         return obj
 
 
+# Alias for compatibility
+RSULFLLMAdapter = MistralRSULFAdapter
+
+
 class RealityStoneLLMAdapter(nn.Module):
     def __init__(self, config: LLMAdapterConfig):
         super().__init__()

@@ -176,3 +176,7 @@ class MultiLevelProductManifold(nn.Module):
     ) -> torch.Tensor:
         return self.compute_multilevel_distance(x, y, level_weights)
 
+
+# Aliases for compatibility with __init__.py
+ProductManifold = ProductManifoldDistance
+ProductManifoldLayer = ProductManifoldAttention

@@ -1,8 +1,9 @@
 from reality_stone import RSULFLayerCUDA, RSULFLMHeadCUDA
 import torch
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(f'Device: {device}')
+assert torch.cuda.is_available(), "CUDA not available"
+device = torch.device('cuda')
+print(f'Device: {device}, GPU: {torch.cuda.get_device_name(0)}')
 
 wq = torch.randn(4096, 4096)
 wk = torch.randn(1024, 4096)

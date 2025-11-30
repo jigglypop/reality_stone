@@ -1,6 +1,6 @@
 use crate::layers::klein;
 use ndarray::Array2;
-use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray2};
+use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 
 #[pyfunction]
@@ -122,7 +122,7 @@ fn from_poincare_dynamic_backward_cpu<'py>(
     let dynamic_c = crate::ops::DynamicCurvature::new(kappa, c_min, c_max);
     let c = dynamic_c.compute_c();
 
-    let grad_x = Array2::zeros(x.dims());
+    let grad_x = Array2::zeros((x.shape()[0], x.shape()[1]));
 
     let grad_c_tensor = klein::from_poincare_grad_c(&x_view, c);
     let grad_c = (&grad_output_view * &grad_c_tensor).sum();

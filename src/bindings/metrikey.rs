@@ -429,11 +429,7 @@ pub fn init_module(_py: Python, m: &PyModule) -> PyResult<()> {
         let y = crate::ops::softmax_lastdim_f32(&x);
         PyArray2::from_owned_array(py, y)
     }
-    #[pyfunction]
-    fn apply_causal_mask_inplace_f32_py(x: PyReadonlyArray2<f32>, neg_large: f32) {
-        let mut a = x.as_array().to_owned();
-        crate::ops::apply_causal_mask_inplace_f32(&mut a, neg_large);
-    }
+
     sub.add_function(wrap_pyfunction!(layer_norm_forward_exact_f32_py, sub)?)?;
     sub.add_function(wrap_pyfunction!(gelu_new_f32_py, sub)?)?;
     sub.add_function(wrap_pyfunction!(softmax_lastdim_f32_py, sub)?)?;
@@ -470,11 +466,6 @@ pub fn init_module(_py: Python, m: &PyModule) -> PyResult<()> {
         let x = x.as_array().to_owned();
         let y = crate::ops::softmax_lastdim_f64(&x);
         PyArray2::from_owned_array(py, y)
-    }
-    #[pyfunction]
-    fn apply_causal_mask_inplace_f64_py(x: PyReadonlyArray2<f64>, neg_large: f64) {
-        let mut a = x.as_array().to_owned();
-        crate::ops::apply_causal_mask_inplace_f64(&mut a, neg_large);
     }
     sub.add_function(wrap_pyfunction!(layer_norm_forward_exact_f64_py, sub)?)?;
     sub.add_function(wrap_pyfunction!(gelu_new_f64_py, sub)?)?;

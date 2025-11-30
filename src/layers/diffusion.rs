@@ -3,8 +3,8 @@
 // 목적: 리만 라그랑지안 디퓨전 (Riemannian Lagrangian Diffusion) 구현
 // ============================================================================
 
-use ndarray::{Array1, Array2, ArrayView2, Axis};
-use crate::layers::metric::{MetricTensor, DiagonalMetric};
+use ndarray::{Array2, ArrayView2};
+use crate::layers::metric::DiagonalMetric;
 use crate::layers::geodesic;
 
 /// 리만 라그랑지안 디퓨전 상태 관리

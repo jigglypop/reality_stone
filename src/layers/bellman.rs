@@ -1,5 +1,4 @@
-use ndarray::{Array1, Array2, ArrayView1, ArrayView2, Axis, Zip};
-use std::f64::consts::E;
+use ndarray::{Array2, ArrayView2, Zip};
 
 /// Computes the Geodesic update for a batch of vectors using a diagonal metric approximation.
 ///
@@ -30,10 +29,6 @@ pub fn compute_diagonal_geodesic_update(
                 // To avoid division by zero, we add epsilon or ensure sigmoid range is safe.
                 // Sigmoid is naturally (0, 1), so it's safe for division if we don't hit exact 0.
                 let w = 1.0 / (1.0 + (-val).exp());
-                
-                // 2. Derivative: dw/dx = w * (1 - w)
-                let dw = w * (1.0 - w);
-                
                 // 3. Christoffel Symbol (Diagonal): Gamma = 1/2 * (1/w) * dw
                 // Gamma = 0.5 * (1/w) * (w * (1-w)) = 0.5 * (1 - w)
                 // This simplification works specifically for Sigmoid metric.

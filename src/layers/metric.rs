@@ -3,7 +3,7 @@
 // 목적: 리만 메트릭 텐서의 추상화 및 구현
 // ============================================================================
 
-use ndarray::{Array1, Array2, ArrayView1, ArrayView2, Axis};
+use ndarray::{Array1, Array2, ArrayView2, Axis};
 
 const EPS: f32 = 1e-7;
 

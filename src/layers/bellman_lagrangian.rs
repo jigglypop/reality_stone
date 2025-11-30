@@ -6,8 +6,6 @@
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2, Axis};
 use super::metric::{MetricTensor, MetricType, DiagonalMetric};
 
-const EPS: f32 = 1e-7;
-
 /// 벨만 가치 함수 근사
 pub struct ValueFunction {
     /// MLP 파라미터 (단순화: 선형 근사)
@@ -172,7 +170,7 @@ pub fn representation_flow(
 /// (대각 메트릭에 대해서만 구현)
 pub fn metric_flow(
     metric: &mut DiagonalMetric,
-    x: &ArrayView2<f32>,
+    _: &ArrayView2<f32>,
     v: &ArrayView2<f32>,
     lagrangian_value: &ArrayView1<f32>,
     learning_rate: f32,

@@ -59,7 +59,7 @@ Changelog = "https://github.com/jigglypop/reality_stone/releases"
 
 [tool.maturin]
 python-source = "python"
-features = ["pyo3/extension-module"]
+features = ["pyo3/extension-module", "abi3-py310"]
 module-name = "reality_stone._rust"
 exclude = [
     "experiments/**",

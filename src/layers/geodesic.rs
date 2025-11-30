@@ -3,8 +3,8 @@
 // 목적: 측지선 흐름 및 exponential/logarithmic map
 // ============================================================================
 
-use ndarray::{Array2, ArrayView2, Axis};
-use super::metric::{MetricTensor, MetricType};
+use ndarray::{Array2, ArrayView2};
+use super::metric::MetricType;
 
 const EPS: f32 = 1e-7;
 const MAX_GEODESIC_STEPS: usize = 100;
@@ -30,7 +30,7 @@ pub fn exponential_map(
                 exponential_map_generic(metric, x, v, step_size)
             }
         }
-        MetricType::Klein(m) => {
+        MetricType::Klein(_) => {
             // Klein uses geodesic flow
             exponential_map_generic(metric, x, v, step_size)
         }

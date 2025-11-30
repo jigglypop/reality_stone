@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 pub mod bindings;
 pub mod layers;
 pub mod ops;

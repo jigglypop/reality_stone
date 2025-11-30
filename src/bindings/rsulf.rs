@@ -4,7 +4,7 @@ use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, IntoPyArray}
 use crate::layers::rsulf::{
     RSULFLayer, RSULFConfig, RSULFComponents, 
     fold_dimension_svd, fold_ffn_svd, create_causal_laplacian,
-    verify_fold_consistency, FoldConsistencyResult,
+    verify_fold_consistency, 
     block_lanczos_svd, nystrom_approximation, adaptive_rank_svd,
 };
 

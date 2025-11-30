@@ -5,7 +5,7 @@
 
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
+use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use crate::layers::unified_riemannian::*;
 
 #[pyclass]

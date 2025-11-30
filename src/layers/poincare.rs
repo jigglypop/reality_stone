@@ -3,8 +3,6 @@ use ndarray::{s, Array1, Array2, ArrayView2, Axis};
 
 // Common constants to avoid magic numbers
 const BOUNDARY_EPS: f32 = 1e-5;
-const MIN_DENOMINATOR: f32 = 1e-6;
-const ATANH_DOMAIN_CLAMP: f32 = 1e-3; // More conservative clamp for atanh domain
 
 pub fn poincare_ball_layer_backward(
     grad_output: &ArrayView2<f32>,
@@ -70,7 +68,7 @@ pub fn poincare_to_klein(x: &ArrayView2<f32>, c: f32) -> Array2<f32> {
 
 /// General exponential map on the Poincaré ball at point x with tangent vector v.
 /// Stable implementation following: Exp_x(v) = x ⊕_c (tanh( (λ_x^c * sqrt(c) * ||v||)/2 ) * v / (sqrt(c) * ||v||))
-pub fn poincare_exp_at(x: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32, boundary_eps: f32) -> Array2<f32> {
+pub fn poincare_exp_at(x: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32, _: f32) -> Array2<f32> {
     // λ_x = 2 / (1 - c ||x||^2)
     let x2 = norm_sq_batched(x).insert_axis(Axis(1));
     let one_minus_cx2 = (1.0 - c * &x2).mapv(|z| z.max(EPS));
@@ -212,27 +210,6 @@ pub fn poincare_ball_layer_layerwise_backward(
     let dc_dkappa = layer_curvatures.compute_dc_dkappa(layer_idx);
     let grad_kappa = grad_c_total * dc_dkappa;
     (grad_u, grad_v, grad_kappa)
-}
-
-fn project_to_ball_with_c(
-    x: &ArrayView2<f32>,
-    c: f32,
-) -> Array2<f32> {
-    let mut out = x.to_owned();
-    let mut norms = norm_sq_batched(&out.view())
-        .mapv(f32::sqrt)
-        .insert_axis(Axis(1));
-    let radius = if c > 0.0 { 1.0 / c.sqrt() } else { 1.0 };
-    let max_norm = radius - BOUNDARY_EPS;
-    for (mut row, mut norm) in out.axis_iter_mut(Axis(0)).zip(norms.axis_iter_mut(Axis(0))) {
-        let n = norm[0].max(EPS);
-        if n > max_norm {
-            let scale = max_norm / n;
-            row *= scale;
-            norm[0] = max_norm;
-        }
-    }
-    out
 }
 
 pub fn poincare_riemannian_adam_step(

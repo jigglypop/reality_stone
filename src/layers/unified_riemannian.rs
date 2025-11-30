@@ -4,14 +4,12 @@
 // ============================================================================
 
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
-use super::metric::{MetricType, MetricTensor, DiagonalMetric, PoincareMetric, LorentzMetric, KleinMetric};
+use super::metric::{MetricType, DiagonalMetric, PoincareMetric, LorentzMetric, KleinMetric};
 use super::bellman_lagrangian::{
     ValueFunction, LagrangianParams, EnergyComponents,
     compute_energy_components, representation_flow, bellman_update, metric_flow,
 };
 use super::geodesic::{geodesic_path, geodesic_interpolation};
-
-const EPS: f32 = 1e-7;
 
 /// 통합 리만 레이어
 pub struct UnifiedRiemannianLayer {
@@ -75,7 +73,6 @@ impl UnifiedRiemannianLayer {
         target: Option<&ArrayView2<f32>>,
     ) -> LayerOutput {
         let batch_size = x.nrows();
-        let dim = x.ncols();
         
         // 1. 메트릭 계산
         let metric_values = self.metric.as_trait().compute_metric(x);

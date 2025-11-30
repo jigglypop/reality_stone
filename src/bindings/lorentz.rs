@@ -1,7 +1,7 @@
 use crate::layers::lorentz;
 use crate::ops::{DynamicCurvature, LayerWiseDynamicCurvature};
 use ndarray::Array2;
-use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray2};
+use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 
 #[pyfunction]
@@ -10,11 +10,11 @@ pub fn lorentz_add<'py>(
     u: PyReadonlyArray2<f32>,
     v: PyReadonlyArray2<f32>,
     c: f32,
-) -> &'py PyArray2<f32> {
+) -> Bound<'py, PyArray2<f32>> {
     let u_arr = u.as_array();
     let v_arr = v.as_array();
     let result = lorentz::lorentz_add(&u_arr, &v_arr, c);
-    result.into_pyarray(py)
+    result.into_pyarray_bound(py)
 }
 
 #[pyfunction]
@@ -23,10 +23,10 @@ pub fn lorentz_scalar<'py>(
     u: PyReadonlyArray2<f32>,
     r: f32,
     c: f32,
-) -> &'py PyArray2<f32> {
+) -> Bound<'py, PyArray2<f32>> {
     let u_arr = u.as_array();
     let result = lorentz::lorentz_scalar(&u_arr, c, r);
-    result.into_pyarray(py)
+    result.into_pyarray_bound(py)
 }
 
 #[pyfunction]
@@ -35,11 +35,11 @@ pub fn lorentz_distance<'py>(
     u: PyReadonlyArray2<f32>,
     v: PyReadonlyArray2<f32>,
     c: f32,
-) -> &'py PyArray1<f32> {
+) -> Bound<'py, PyArray1<f32>> {
     let u_arr = u.as_array();
     let v_arr = v.as_array();
     let result = lorentz::lorentz_distance(&u_arr, &v_arr, c);
-    result.into_pyarray(py)
+    result.into_pyarray_bound(py)
 }
 
 #[pyfunction]
@@ -47,11 +47,11 @@ pub fn lorentz_inner<'py>(
     py: Python<'py>,
     u: PyReadonlyArray2<f32>,
     v: PyReadonlyArray2<f32>,
-) -> &'py PyArray1<f32> {
+) -> Bound<'py, PyArray1<f32>> {
     let u_arr = u.as_array();
     let v_arr = v.as_array();
     let result = lorentz::lorentz_inner(&u_arr, &v_arr);
-    result.into_pyarray(py)
+    result.into_pyarray_bound(py)
 }
 
 #[pyfunction]
@@ -59,10 +59,10 @@ pub fn lorentz_to_poincare<'py>(
     py: Python<'py>,
     x: PyReadonlyArray2<f32>,
     c: f32,
-) -> &'py PyArray2<f32> {
+) -> Bound<'py, PyArray2<f32>> {
     let x_arr = x.as_array();
     let result = lorentz::lorentz_to_poincare(&x_arr, c);
-    result.into_pyarray(py)
+    result.into_pyarray_bound(py)
 }
 
 #[pyfunction]
@@ -70,10 +70,10 @@ pub fn lorentz_to_klein<'py>(
     py: Python<'py>,
     x: PyReadonlyArray2<f32>,
     c: f32,
-) -> &'py PyArray2<f32> {
+) -> Bound<'py, PyArray2<f32>> {
     let x_arr = x.as_array();
     let result = lorentz::lorentz_to_klein(&x_arr, c);
-    result.into_pyarray(py)
+    result.into_pyarray_bound(py)
 }
 
 #[pyfunction]
@@ -83,11 +83,11 @@ pub fn lorentz_layer_forward<'py>(
     v: PyReadonlyArray2<f32>,
     c: f32,
     t: f32,
-) -> &'py PyArray2<f32> {
+) -> Bound<'py, PyArray2<f32>> {
     let u_arr = u.as_array();
     let v_arr = v.as_array();
     let result = lorentz::lorentz_layer_forward(&u_arr, &v_arr, c, t);
-    result.into_pyarray(py)
+    result.into_pyarray_bound(py)
 }
 
 #[pyfunction]
@@ -98,12 +98,12 @@ pub fn lorentz_ball_layer_backward_cpu<'py>(
     v: PyReadonlyArray2<f32>,
     c: f32,
     t: f32,
-) -> (&'py PyArray2<f32>, &'py PyArray2<f32>) {
+) -> (Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<f32>>) {
     let grad_output_arr = grad_output.as_array();
     let u_arr = u.as_array();
     let v_arr = v.as_array();
     let (grad_u, grad_v) = lorentz::lorentz_layer_backward(&grad_output_arr, &u_arr, &v_arr, c, t);
-    (grad_u.into_pyarray(py), grad_v.into_pyarray(py))
+    (grad_u.into_pyarray_bound(py), grad_v.into_pyarray_bound(py))
 }
 
 #[pyfunction]
@@ -115,12 +115,12 @@ pub fn lorentz_layer_dynamic_cpu<'py>(
     c_min: f32,
     c_max: f32,
     t: f32,
-) -> (&'py PyArray2<f32>, f32) {
+) -> (Bound<'py, PyArray2<f32>>, f32) {
     let u_arr = u.as_array();
     let v_arr = v.as_array();
     let dynamic_c = DynamicCurvature::new(kappa, c_min, c_max);
     let (out, c) = lorentz::lorentz_layer_dynamic(&u_arr, &v_arr, &dynamic_c, t);
-    (out.into_pyarray(py), c)
+    (out.into_pyarray_bound(py), c)
 }
 
 #[pyfunction]
@@ -133,7 +133,7 @@ pub fn lorentz_layer_dynamic_backward_cpu<'py>(
     c_min: f32,
     c_max: f32,
     t: f32,
-) -> (&'py PyArray2<f32>, &'py PyArray2<f32>, f32) {
+) -> (Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<f32>>, f32) {
     let grad_output_arr = grad_output.as_array();
     let u_arr = u.as_array();
     let v_arr = v.as_array();
@@ -145,7 +145,7 @@ pub fn lorentz_layer_dynamic_backward_cpu<'py>(
         &dynamic_c,
         t,
     );
-    (gu.into_pyarray(py), gv.into_pyarray(py), gk)
+    (gu.into_pyarray_bound(py), gv.into_pyarray_bound(py), gk)
 }
 
 #[pyfunction]
@@ -158,12 +158,12 @@ pub fn lorentz_layer_layerwise_cpu<'py>(
     c_min: f32,
     c_max: f32,
     t: f32,
-) -> (&'py PyArray2<f32>, f32) {
+) -> (Bound<'py, PyArray2<f32>>, f32) {
     let u_arr = u.as_array();
     let v_arr = v.as_array();
     let lw = LayerWiseDynamicCurvature::from_kappas(vec![kappa], c_min, c_max);
     let (out, c) = lorentz::lorentz_layer_layerwise(&u_arr, &v_arr, &lw, layer_idx, t);
-    (out.into_pyarray(py), c)
+    (out.into_pyarray_bound(py), c)
 }
 
 #[pyfunction]
@@ -177,7 +177,7 @@ pub fn lorentz_layer_layerwise_backward_cpu<'py>(
     c_min: f32,
     c_max: f32,
     t: f32,
-) -> (&'py PyArray2<f32>, &'py PyArray2<f32>, f32) {
+) -> (Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<f32>>, f32) {
     let grad_output_arr = grad_output.as_array();
     let u_arr = u.as_array();
     let v_arr = v.as_array();
@@ -190,7 +190,7 @@ pub fn lorentz_layer_layerwise_backward_cpu<'py>(
         layer_idx,
         t,
     );
-    (gu.into_pyarray(py), gv.into_pyarray(py), gk)
+    (gu.into_pyarray_bound(py), gv.into_pyarray_bound(py), gk)
 }
 
 #[cfg(feature = "cuda")]
@@ -271,12 +271,12 @@ fn from_poincare_dynamic_cpu<'py>(
     kappa: f32,
     c_min: f32,
     c_max: f32,
-) -> (&'py PyArray2<f32>, f32) {
+) -> (Bound<'py, PyArray2<f32>>, f32) {
     let x_view = x.as_array();
     let dynamic_c = crate::ops::DynamicCurvature::new(kappa, c_min, c_max);
     let c = dynamic_c.compute_c();
     let result = lorentz::from_poincare(&x_view, c);
-    (result.into_pyarray(py), c)
+    (result.into_pyarray_bound(py), c)
 }
 
 #[pyfunction]
@@ -293,14 +293,14 @@ fn from_poincare_dynamic_backward_cpu<'py>(
     let dynamic_c = crate::ops::DynamicCurvature::new(kappa, c_min, c_max);
     let c = dynamic_c.compute_c();
 
-    let grad_x = Array2::zeros(x.dims());
+    let grad_x = Array2::zeros((x.shape()[0], x.shape()[1]));
 
     let grad_c_tensor = lorentz::from_poincare_grad_c(&x_view, c);
     let grad_c = (&grad_output_view * &grad_c_tensor).sum();
     let dc_dkappa = dynamic_c.compute_dc_dkappa();
     let grad_kappa = grad_c * dc_dkappa;
 
-    (grad_x.into_pyarray(py).to_owned(), grad_kappa)
+    (grad_x.into_pyarray_bound(py).unbind(), grad_kappa)
 }
 
 pub fn register(m: &PyModule) -> PyResult<()> {

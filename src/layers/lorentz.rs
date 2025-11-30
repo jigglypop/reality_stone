@@ -602,19 +602,6 @@ pub fn lorentz_layer_dynamic_backward(
         let alpha = z.acosh();
         let sinh_alpha = alpha.sinh().max(EPS);
         let cosh_alpha = alpha.cosh();
-
-        // weights
-        let w1 = if alpha.abs() < 1e-6 {
-            1.0 - t
-        } else {
-            ((1.0 - t) * alpha).sinh() / sinh_alpha
-        };
-        let w2 = if alpha.abs() < 1e-6 {
-            t
-        } else {
-            (t * alpha).sinh() / sinh_alpha
-        };
-
         // dw/dalpha (same as in backward)
         let num1 = (1.0 - t) * ((1.0 - t) * alpha).cosh() * sinh_alpha
             - ((1.0 - t) * alpha).sinh() * cosh_alpha;

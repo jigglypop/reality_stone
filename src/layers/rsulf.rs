@@ -1,10 +1,5 @@
 use ndarray::{Array1, Array2, ArrayView2, ArrayView1, Axis, s};
 use faer::Mat;
-use faer::prelude::*;
-
-// RS-ULF (Riemannian Suppression Unified Lagrangian Flow)
-// Mathematical foundations: docs/09_unified_flow/07_FOLD_CONSISTENCY.md
-// SFE theory connection: docs/Derivations_Applications/05_Neural_RealityStone_Derivation.md
 
 pub struct RSULFConfig {
     pub d_model: usize,
@@ -40,7 +35,6 @@ pub struct FoldedMetric {
 }
 
 use rand::Rng;
-use rayon::prelude::*;
 
 pub fn randomized_svd(
     a: &Array2<f32>,
@@ -48,7 +42,6 @@ pub fn randomized_svd(
     n_oversamples: usize,
     n_iter: usize,
 ) -> (Array2<f32>, Array1<f32>, Array2<f32>) {
-    let m = a.nrows();
     let n = a.ncols();
     let l = k + n_oversamples;
     

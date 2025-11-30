@@ -1,4 +1,4 @@
-__version__ = "0.2.1"
+__version__ = "0.2.4"
 
 import torch
 import sys
@@ -74,6 +74,7 @@ from .layers.klein import (
 )
 from .layers.spline import SplineLinear
 from .layers.metric_attention import MetricAttention, SPDMetric
+from .layers.rsulf_cuda import RSULFLayerCUDA, RSULFWrapperCUDA, RSULFLMHeadCUDA
 
 try:
     if _has_rust_ext:
@@ -239,4 +240,7 @@ __all__ = [
     'bellman_geodesic_forward',
     'bellman_geodesic_backward',
     'extract_metric_cuda',
+    'RSULFLayerCUDA',
+    'RSULFWrapperCUDA',
+    'RSULFLMHeadCUDA',
 ]

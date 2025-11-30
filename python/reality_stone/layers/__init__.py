@@ -5,6 +5,7 @@ from .spline import SplineLinear
 from .poincare_embedding import PoincareEmbedding, EquivalentPoincareEmbedding
 from .metric_attention import MetricAttention, SPDMetric, normalize, build_topo_topk, masked_gather, aggregate, get_default_topk_cfg
 from .diffusion import RiemannianDiffusionStep, RiemannianDiffusionModule
+from .rsulf_cuda import RSULFLayerCUDA, RSULFWrapperCUDA, RSULFLMHeadCUDA
 
 __all__ = [
     'PoincareBallLayer',
@@ -42,4 +43,7 @@ __all__ = [
     'get_default_topk_cfg',
     'RiemannianDiffusionStep',
     'RiemannianDiffusionModule',
+    'RSULFLayerCUDA',
+    'RSULFWrapperCUDA',
+    'RSULFLMHeadCUDA',
 ] 

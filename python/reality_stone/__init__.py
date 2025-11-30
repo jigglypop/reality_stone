@@ -1,4 +1,4 @@
-__version__ = "0.2.6"
+__version__ = "0.2.7"
 
 import torch
 import sys
@@ -63,6 +63,7 @@ from .layers.lorentz import (
     lorentz_inner,
     lorentz_to_poincare,
     lorentz_to_klein,
+    euclidean_to_lorentz,
 )
 from .layers.klein import (
     KleinLayer,
@@ -200,6 +201,7 @@ __all__ = [
     'lorentz_inner',
     'lorentz_to_poincare',
     'lorentz_to_klein',
+    'euclidean_to_lorentz',
     'lorentz_layer',
     'LorentzLayer',
     'klein_add',

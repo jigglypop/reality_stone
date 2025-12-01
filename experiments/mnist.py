@@ -16,15 +16,14 @@ from reality_stone import (
     klein_distance,
     poincare_ball_layer,
     poincare_distance,
+    project_to_ball,
+    euclidean_to_lorentz,
+    lorentz_to_poincare,
 )
 from reality_stone.layers.poincare import log_map_zero
-
-
-def project_to_ball(x: torch.Tensor, c: float = 1.0, epsilon: float = 1e-5) -> torch.Tensor:
-    norm = torch.norm(x, p=2, dim=1, keepdim=True)
-    max_norm = (1.0 / math.sqrt(c)) - epsilon  # ← c 반영
-    scale = torch.where(norm > max_norm, max_norm / norm, torch.ones_like(norm))
-    return x * scale
+from reality_stone.layers.klein import project_to_klein
+from reality_stone.optim import PoincareRiemannianAdam
+from reality_stone.utils.misc import get_device, load_mnist_dataloaders, evaluate_accuracy
 
 class MnistLinear(nn.Module):
     def __init__(self, hidden_dim=128):
@@ -53,12 +52,14 @@ class PoincareMLP(nn.Module):
         x = x.view(x.size(0), -1)
         h = self.fc1(x)
         h = torch.relu(h)
-        h = project_to_ball(h, c=self.c)
+        h = project_to_ball(h, epsilon=1e-5)
+        
         u = self.fc2(h)
         u = torch.relu(u)
-        u = project_to_ball(u, c=self.c)
-
+        u = project_to_ball(u, epsilon=1e-5)
+        
         z = poincare_ball_layer(h, u, c=self.c, t=self.t)
+        
         if torch.isnan(z).any():
             z = h
         return self.out(z)
@@ -80,44 +81,22 @@ class LorentzMLP(nn.Module):
         x = x.view(x.size(0), -1)
         h = x @ self.weights1 + self.bias1
         h = torch.relu(h)
-        # Lorentz model can handle unbounded spatial coordinates
-        # h = project_to_ball(h) 
+        
         u = h @ self.weights2 + self.bias2
         u = torch.relu(u)
-        # u = project_to_ball(u)
 
-        def to_lorentz_coords(sp: torch.Tensor, c: float) -> torch.Tensor:
-            x2 = (sp * sp).sum(dim=1, keepdim=True)
-            x0 = torch.sqrt(torch.clamp(1.0 / c + x2, min=1e-6))
-            return torch.cat([x0, sp], dim=1)
-
-        hl = to_lorentz_coords(h, self.c)
-        ul = to_lorentz_coords(u, self.c)
+        hl = euclidean_to_lorentz(h, self.c)
+        ul = euclidean_to_lorentz(u, self.c)
 
         z_l = lorentz_layer(hl, ul, self.c, self.t)
 
-        def lorentz_log0_space(x_l: torch.Tensor, c: float) -> torch.Tensor:
-            x0 = x_l[:, :1]
-            xs = x_l[:, 1:]
-            sqrtc = math.sqrt(c)
-            s = torch.acosh(torch.clamp(sqrtc * x0, min=1.0 + 1e-6))
-            denom = torch.clamp(torch.sinh(s), min=1e-6)
-            scale = s / (denom * sqrtc)
-            return xs * scale
-
-        z = lorentz_log0_space(z_l, self.c)
+        z_p = lorentz_to_poincare(z_l, self.c)
+        z = log_map_zero(z_p, self.c)
+        
         if torch.isnan(z).any():
             z = h
         output = z @ self.out_weights + self.out_bias
         return output
-
-
-def _project_to_klein_with_c(x: torch.Tensor, c: float, epsilon: float = 1e-5) -> torch.Tensor:
-    radius = (1.0 / math.sqrt(c)) if c > 0 else 1.0
-    norm = torch.norm(x, p=2, dim=-1, keepdim=True)
-    max_norm = radius - epsilon
-    scale = torch.where(norm > max_norm, max_norm / norm, torch.ones_like(norm))
-    return x * scale
 
 
 class KleinMLP(nn.Module):
@@ -133,10 +112,10 @@ class KleinMLP(nn.Module):
         x = x.view(x.size(0), -1)
         h = self.fc1(x)
         h = torch.relu(h)
-        h = _project_to_klein_with_c(h, self.c)
+        h = project_to_klein(h, self.c)
         u = self.fc2(h)
         u = torch.relu(u)
-        u = _project_to_klein_with_c(u, self.c)
+        u = project_to_klein(u, self.c)
 
         z = klein_layer(h, u, c=self.c, t=self.t)
         if torch.isnan(z).any():
@@ -157,24 +136,6 @@ class MnistHyperbolic(nn.Module):
         # Prototypes (learnable class centers)
         self.prototypes = nn.Parameter(torch.randn(10, hidden_dim) * 0.01)
             
-    def to_lorentz(self, x):
-        # x0 = sqrt(1/c + ||x||^2)
-        sq = (x * x).sum(dim=-1, keepdim=True)
-        time_comp = torch.sqrt(1.0/self.c + sq)
-        return torch.cat([time_comp, x], dim=-1)
-        
-    def project_klein(self, x):
-        norm = x.norm(dim=-1, keepdim=True)
-        max_norm = 1.0 / np.sqrt(self.c) - 1e-5
-        cond = norm > max_norm
-        return torch.where(cond, x / norm * max_norm, x)
-        
-    def project_poincare(self, x):
-        norm = x.norm(dim=-1, keepdim=True)
-        max_norm = 1.0 / np.sqrt(self.c) - 1e-5
-        cond = norm > max_norm
-        return torch.where(cond, x / norm * max_norm, x)
-
     def forward(self, x):
         B = x.size(0)
         flat = x.view(B, -1)
@@ -182,13 +143,11 @@ class MnistHyperbolic(nn.Module):
         
         if self.model_type == 'poincare':
             h = torch.tanh(h) # Map to ball approx
-            h = self.project_poincare(h)
-            # Poincare layer mixing (just identity mixing for now to test distance)
-            # h = poincare_ball_layer(h, h, self.c, 0.5) 
+            h = project_to_ball(h, epsilon=1e-5)
             
             # Distance
             h_exp = h.unsqueeze(1).expand(B, 10, self.hidden_dim)
-            p_exp = self.project_poincare(self.prototypes).unsqueeze(0).expand(B, 10, self.hidden_dim)
+            p_exp = project_to_ball(self.prototypes, epsilon=1e-5).unsqueeze(0).expand(B, 10, self.hidden_dim)
             dist = poincare_distance(
                 h_exp.reshape(-1, self.hidden_dim), 
                 p_exp.reshape(-1, self.hidden_dim), 
@@ -197,8 +156,8 @@ class MnistHyperbolic(nn.Module):
             
         elif self.model_type == 'lorentz':
             h = torch.tanh(h)
-            h_lor = self.to_lorentz(h)
-            p_lor = self.to_lorentz(self.prototypes)
+            h_lor = euclidean_to_lorentz(h, self.c)
+            p_lor = euclidean_to_lorentz(self.prototypes, self.c)
             
             h_exp = h_lor.unsqueeze(1).expand(B, 10, self.hidden_dim + 1).contiguous()
             p_exp = p_lor.unsqueeze(0).expand(B, 10, self.hidden_dim + 1).contiguous()
@@ -211,10 +170,10 @@ class MnistHyperbolic(nn.Module):
             dist = torch.sqrt(dist_sq.clamp(min=1e-8))
             
         elif self.model_type == 'klein':
-            h = self.project_klein(h)
+            h = project_to_klein(h, self.c)
             
             h_exp = h.unsqueeze(1).expand(B, 10, self.hidden_dim).contiguous()
-            p_exp = self.project_klein(self.prototypes).unsqueeze(0).expand(B, 10, self.hidden_dim).contiguous()
+            p_exp = project_to_klein(self.prototypes, self.c).unsqueeze(0).expand(B, 10, self.hidden_dim).contiguous()
             
             dist_sq = klein_distance(
                 h_exp.reshape(-1, self.hidden_dim),
@@ -226,57 +185,8 @@ class MnistHyperbolic(nn.Module):
         return -dist # Logits
 
 
-class PoincareRiemannianAdam(torch.optim.Optimizer):
-    def __init__(self, params, c, lr=1e-3, betas=(0.9, 0.999), eps=1e-8):
-        defaults = dict(lr=lr, betas=betas, eps=eps, c=c)
-        super().__init__(params, defaults)
-        self._step = 0
-
-    @torch.no_grad()
-    def step(self, closure=None):
-        loss = None
-        if closure is not None:
-            with torch.enable_grad():
-                loss = closure()
-        self._step += 1
-        for group in self.param_groups:
-            lr = group["lr"]
-            beta1, beta2 = group["betas"]
-            eps = group["eps"]
-            c = group["c"]
-            for p in group["params"]:
-                if p.grad is None:
-                    continue
-                grad = p.grad.detach()
-                state = self.state[p]
-                if len(state) == 0:
-                    state["m"] = torch.zeros_like(p, device="cpu", dtype=torch.float32)
-                    state["v"] = torch.zeros_like(p, device="cpu", dtype=torch.float32)
-                m = state["m"]
-                v = state["v"]
-                x_np = p.detach().cpu().numpy().astype(np.float32)
-                g_np = grad.cpu().numpy().astype(np.float32)
-                m_np = m.cpu().numpy().astype(np.float32)
-                v_np = v.cpu().numpy().astype(np.float32)
-                x_new_np, m_new_np, v_new_np = rs._rust.poincare.poincare_riemannian_adam_step_cpu(  # type: ignore[attr-defined]
-                    x_np,
-                    g_np,
-                    m_np,
-                    v_np,
-                    self._step,
-                    float(c),
-                    float(lr),
-                    float(beta1),
-                    float(beta2),
-                    float(eps),
-                )
-                p.copy_(torch.from_numpy(x_new_np).to(p.device))
-                state["m"] = torch.from_numpy(m_new_np)
-                state["v"] = torch.from_numpy(v_new_np)
-        return loss
-
 def run_benchmark():
-    DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+    DEVICE = get_device()
     print(f"Benchmarking on {DEVICE}")
     print(f"PyTorch CUDA available: {torch.cuda.is_available()}")
     
@@ -284,12 +194,7 @@ def run_benchmark():
     print(f"Reality Stone CUDA support: {rs._has_cuda}")
     
     # Data
-    transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
-    train_dataset = datasets.MNIST('./data', train=True, download=True, transform=transform)
-    test_dataset = datasets.MNIST('./data', train=False, transform=transform)
-    
-    train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=1000, shuffle=False)
+    train_loader, test_loader = load_mnist_dataloaders(batch_size=256, test_batch_size=1000)
     
     models = {
         'Poincare': PoincareMLP().to(DEVICE),
@@ -328,14 +233,7 @@ def run_benchmark():
             avg_loss = total_loss / max(1, total_samples)
             scheduler.step()
             
-            model.eval()
-            correct = 0
-            with torch.no_grad():
-                for x, y in test_loader:
-                    x, y = x.to(DEVICE), y.to(DEVICE)
-                    pred = model(x).argmax(dim=1)
-                    correct += pred.eq(y).sum().item()
-            acc = correct / len(test_dataset)
+            acc = evaluate_accuracy(model, test_loader, DEVICE)
             best_acc = max(best_acc, acc)
             elapsed = time.time() - start
             print(f"  Ep {epoch} Loss: {avg_loss:.4f} Acc: {acc:.4f} Best: {best_acc:.4f} Time: {elapsed:.2f}s")
@@ -348,7 +246,7 @@ def run_benchmark():
 
 
 def run_hyperbolic_riemannian_adam():
-    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+    DEVICE = get_device()
     print(f"Hyperbolic prototypes with Riemannian Adam on {DEVICE}")
     print(f"PyTorch CUDA available: {torch.cuda.is_available()}")
     print(f"Reality Stone Rust extension: {rs._has_rust_ext}")  # type: ignore[attr-defined]
@@ -356,18 +254,7 @@ def run_hyperbolic_riemannian_adam():
         print("Rust extension not available, skipping Riemannian Adam experiment")
         return
 
-    transform = transforms.Compose(
-        [transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))]
-    )
-    train_dataset = datasets.MNIST(
-        "./data", train=True, download=True, transform=transform
-    )
-    test_dataset = datasets.MNIST(
-        "./data", train=False, transform=transform
-    )
-
-    train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=1000, shuffle=False)
+    train_loader, test_loader = load_mnist_dataloaders(batch_size=256, test_batch_size=1000)
 
     model = MnistHyperbolic(model_type="poincare", hidden_dim=128, c=1.0).to(DEVICE)
 
@@ -405,14 +292,7 @@ def run_hyperbolic_riemannian_adam():
 
         avg_loss = total_loss / max(1, total_samples)
 
-        model.eval()
-        correct = 0
-        with torch.no_grad():
-            for x, y in test_loader:
-                x, y = x.to(DEVICE), y.to(DEVICE)
-                pred = model(x).argmax(dim=1)
-                correct += pred.eq(y).sum().item()
-        acc = correct / len(test_dataset)
+        acc = evaluate_accuracy(model, test_loader, DEVICE)
         best_acc = max(best_acc, acc)
         elapsed = time.time() - start
         print(

@@ -8,6 +8,7 @@ Metric Learning Example
 import numpy as np
 import reality_stone as rs
 import matplotlib.pyplot as plt
+from reality_stone.utils.plotting import plot_energy_history, plot_distance_distribution, plot_embeddings_2d
 
 def generate_hierarchical_data(num_samples=1000, dim=128, num_classes=10):
     """계층적 구조를 가진 데이터 생성"""
@@ -170,63 +171,17 @@ def main():
     print("\n5. Visualizing results...")
     
     # 학습 곡선
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
-    
-    axes[0].plot(history['lagrangian'], 'g-o')
-    axes[0].set_title('Lagrangian Evolution')
-    axes[0].set_xlabel('Epoch (x10)')
-    axes[0].set_ylabel('L = T - V')
-    axes[0].grid(True, alpha=0.3)
-    
-    axes[1].plot(history['kinetic'], 'b-o')
-    axes[1].set_title('Kinetic Energy Evolution')
-    axes[1].set_xlabel('Epoch (x10)')
-    axes[1].set_ylabel('T')
-    axes[1].grid(True, alpha=0.3)
-    
-    axes[2].plot(history['potential'], 'r-o')
-    axes[2].set_title('Potential Energy Evolution')
-    axes[2].set_xlabel('Epoch (x10)')
-    axes[2].set_ylabel('V')
-    axes[2].grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    plt.savefig('metric_learning_curves.png', dpi=150, bbox_inches='tight')
-    print("   -> Saved learning curves to 'metric_learning_curves.png'")
+    plot_energy_history(history, 'metric_learning_curves.png')
     
     # 거리 분포
-    plt.figure(figsize=(10, 6))
-    plt.hist(intra_class_dist, bins=30, alpha=0.6, label='Intra-class', color='blue')
-    plt.hist(inter_class_dist, bins=30, alpha=0.6, label='Inter-class', color='red')
-    plt.xlabel('Geodesic Distance')
-    plt.ylabel('Frequency')
-    plt.title('Distance Distribution: Intra-class vs Inter-class')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.savefig('distance_distribution.png', dpi=150, bbox_inches='tight')
-    print("   -> Saved distance distribution to 'distance_distribution.png'")
+    plot_distance_distribution(intra_class_dist, inter_class_dist, 'distance_distribution.png')
     
     # 2D 임베딩 시각화 (PCA)
     print("\n6. Visualizing embeddings (PCA)...")
-    from sklearn.decomposition import PCA
     
     # 학습된 메트릭으로 임베딩
     embeddings, _ = layer.forward(X_test)
-    
-    # PCA로 2D 투영
-    pca = PCA(n_components=2)
-    embeddings_2d = pca.fit_transform(embeddings)
-    
-    plt.figure(figsize=(10, 8))
-    scatter = plt.scatter(embeddings_2d[:, 0], embeddings_2d[:, 1], 
-                         c=y_test, cmap='tab10', alpha=0.6, s=50)
-    plt.colorbar(scatter, label='Class')
-    plt.xlabel('PC1')
-    plt.ylabel('PC2')
-    plt.title('Learned Embeddings (2D PCA projection)')
-    plt.grid(True, alpha=0.3)
-    plt.savefig('embeddings_2d.png', dpi=150, bbox_inches='tight')
-    print("   -> Saved embeddings visualization to 'embeddings_2d.png'")
+    plot_embeddings_2d(embeddings, y_test, 'embeddings_2d.png')
     
     print("\n" + "=" * 70)
     print("Example completed successfully!")

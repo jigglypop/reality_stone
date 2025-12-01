@@ -1163,7 +1163,7 @@ dependencies = [
 
 [[package]]
 name = "reality_stone"
-version = "0.2.6"
+version = "0.2.10"
 dependencies = [
  "anyhow",
  "approx 0.4.0",

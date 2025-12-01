@@ -6,6 +6,7 @@ use crate::layers::rsulf::{
     fold_dimension_svd, fold_ffn_svd, create_causal_laplacian,
     verify_fold_consistency, 
     block_lanczos_svd, nystrom_approximation, adaptive_rank_svd,
+    analyze_layer,
 };
 
 #[pyclass]
@@ -122,6 +123,36 @@ impl PyRSULFLayer {
     pub fn r(&self) -> usize {
         self.inner.config.r
     }
+    
+    #[getter]
+    pub fn eta(&self) -> f32 {
+        self.inner.config.eta
+    }
+    
+    #[getter]
+    pub fn alpha(&self) -> f32 {
+        self.inner.config.alpha
+    }
+    
+    #[getter]
+    pub fn beta(&self) -> f32 {
+        self.inner.config.beta
+    }
+    
+    #[getter]
+    pub fn gamma(&self) -> f32 {
+        self.inner.config.gamma
+    }
+    
+    #[getter]
+    pub fn g_inv<'py>(&self, py: Python<'py>) -> &'py PyArray1<f32> {
+        self.inner.g_inv.clone().into_pyarray(py)
+    }
+    
+    #[getter]
+    pub fn g_diag<'py>(&self, py: Python<'py>) -> &'py PyArray1<f32> {
+        self.inner.g_diag.clone().into_pyarray(py)
+    }
 
     pub fn export_components<'py>(&self, py: Python<'py>) -> &'py PyDict {
         let comp = self.inner.export_components();
@@ -136,8 +167,12 @@ impl PyRSULFLayer {
         dict.set_item("window", comp.window).unwrap();
         dict.set_item("g_diag", comp.g_diag.into_pyarray(py)).unwrap();
         dict.set_item("g_inv", comp.g_inv.into_pyarray(py)).unwrap();
+        dict.set_item("g_sym", comp.g_sym.into_pyarray(py)).unwrap();
+        dict.set_item("a_antisym", comp.a_antisym.into_pyarray(py)).unwrap();
         dict.set_item("u_metric", comp.u_metric.into_pyarray(py)).unwrap();
         dict.set_item("v_metric", comp.v_metric.into_pyarray(py)).unwrap();
+        dict.set_item("g_core", comp.g_core.into_pyarray(py)).unwrap();
+        dict.set_item("a_core", comp.a_core.into_pyarray(py)).unwrap();
         dict.set_item("curvature", comp.curvature).unwrap();
         dict.set_item("ffn_u1", comp.ffn_u1.into_pyarray(py)).unwrap();
         dict.set_item("ffn_s1", comp.ffn_s1.into_pyarray(py)).unwrap();
@@ -160,8 +195,12 @@ impl PyRSULFLayer {
         window: usize,
         g_diag: PyReadonlyArray1<f32>,
         g_inv: PyReadonlyArray1<f32>,
+        g_sym: PyReadonlyArray2<f32>,
+        a_antisym: PyReadonlyArray2<f32>,
         u_metric: PyReadonlyArray2<f32>,
         v_metric: PyReadonlyArray2<f32>,
+        g_core: PyReadonlyArray2<f32>,
+        a_core: PyReadonlyArray2<f32>,
         curvature: f32,
         ffn_u1: PyReadonlyArray2<f32>,
         ffn_s1: PyReadonlyArray1<f32>,
@@ -181,8 +220,12 @@ impl PyRSULFLayer {
             window,
             g_diag: g_diag.as_array().to_owned(),
             g_inv: g_inv.as_array().to_owned(),
+            g_sym: g_sym.as_array().to_owned(),
+            a_antisym: a_antisym.as_array().to_owned(),
             u_metric: u_metric.as_array().to_owned(),
             v_metric: v_metric.as_array().to_owned(),
+            g_core: g_core.as_array().to_owned(),
+            a_core: a_core.as_array().to_owned(),
             curvature,
             ffn_u1: ffn_u1.as_array().to_owned(),
             ffn_s1: ffn_s1.as_array().to_owned(),
@@ -396,6 +439,34 @@ pub fn nystrom_metric<'py>(
     (u.into_pyarray(py), s.into_pyarray(py))
 }
 
+#[pyfunction(name = "analyze_layer")]
+pub fn analyze_layer_py<'py>(
+    py: Python<'py>,
+    wq: PyReadonlyArray2<f32>,
+    wk: PyReadonlyArray2<f32>,
+    w1: PyReadonlyArray2<f32>,
+    w2: PyReadonlyArray2<f32>,
+    layer_idx: usize,
+    target_rank: usize,
+) -> &'py PyDict {
+    let analysis = analyze_layer(
+        wq.as_array(),
+        wk.as_array(),
+        w1.as_array(),
+        w2.as_array(),
+        layer_idx,
+        target_rank,
+    );
+    let dict = PyDict::new(py);
+    dict.set_item("layer_idx", analysis.layer_idx).unwrap();
+    dict.set_item("param_count", analysis.param_count).unwrap();
+    dict.set_item("spectral_decay", analysis.spectral_decay).unwrap();
+    dict.set_item("condition_number", analysis.condition_number).unwrap();
+    dict.set_item("recommended_rank", analysis.recommended_rank).unwrap();
+    dict.set_item("expected_accuracy", analysis.expected_accuracy).unwrap();
+    dict
+}
+
 pub fn register(m: &PyModule) -> PyResult<()> {
     m.add_class::<PyRSULFLayer>()?;
     m.add_function(wrap_pyfunction!(fold_metric_svd, m)?)?;
@@ -404,5 +475,6 @@ pub fn register(m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(verify_metric_consistency, m)?)?;
     m.add_function(wrap_pyfunction!(fold_metric_optimized, m)?)?;
     m.add_function(wrap_pyfunction!(nystrom_metric, m)?)?;
+    m.add_function(wrap_pyfunction!(analyze_layer_py, m)?)?;
     Ok(())
 }

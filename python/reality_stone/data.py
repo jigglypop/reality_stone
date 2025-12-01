@@ -203,3 +203,60 @@ def collate_batch(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         "paragraphs": batched_paragraphs
     }
 
+
+class SimpleTextDataset(Dataset):
+    """
+    Simple dataset for list of text strings.
+    Used in compression and finetuning scripts.
+    """
+    def __init__(self, texts: List[str], tokenizer, max_len: int = 128):
+        self.encodings = tokenizer(
+            texts, 
+            truncation=True, 
+            max_length=max_len,
+            padding="max_length", 
+            return_tensors="pt"
+        )
+    
+    def __len__(self):
+        return self.encodings.input_ids.size(0)
+    
+    def __getitem__(self, idx):
+        return {
+            "input_ids": self.encodings.input_ids[idx],
+            "attention_mask": self.encodings.attention_mask[idx],
+            # For CausalLM training, labels are usually input_ids
+            "labels": self.encodings.input_ids[idx] 
+        }
+
+
+class TextFileDataset(Dataset):
+    """
+    Simple dataset reading lines from a text file.
+    Used in RS-ULF finetuning.
+    """
+    def __init__(self, path: str, tokenizer, max_len: int = 128):
+        self.path = path
+        self.tokenizer = tokenizer
+        self.max_len = max_len
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                self.lines = [ln.strip() for ln in f.readlines() if ln.strip()]
+        else:
+            print(f"Warning: Data file {path} not found.")
+            self.lines = []
+
+    def __len__(self) -> int:
+        return len(self.lines)
+
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
+        text = self.lines[idx]
+        enc = self.tokenizer(
+            text,
+            truncation=True,
+            max_length=self.max_len,
+            padding="max_length",
+            return_tensors="pt",
+        )
+        input_ids = enc["input_ids"].squeeze(0)
+        return {"input_ids": input_ids, "labels": input_ids.clone()}

@@ -1,96 +1,60 @@
+#!/usr/bin/env python3
+"""
+모델 압축 및 미세조정 (Compress and Finetune)
+
+이 스크립트는 다음 5단계 파이프라인을 수행합니다:
+1. 모델 로드
+2. 교정(Calibration) 데이터 생성
+3. 리만 메트릭 추출 (CUDA 최적화)
+4. 초압축 (Hyper Compression) 적용
+5. 미세조정 (Fine-tuning) - 선택 사항
+
+사용법:
+    python scripts/compress_and_finetune.py --model_id gpt2 --finetune
+"""
+
 import os
 import argparse
+import json
 import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset
-from transformers import AutoModelForCausalLM, AutoTokenizer
+
 from reality_stone.metric_extraction import extract_riemannian_metric
 from reality_stone.hyper_compression import apply_hyper_compression
-from tqdm.auto import tqdm
-import json
-
-
-class TextDataset(Dataset):
-    def __init__(self, texts, tokenizer, max_len=256):
-        self.encodings = tokenizer(
-            texts,
-            truncation=True,
-            max_length=max_len,
-            padding="max_length",
-            return_tensors="pt"
-        )
-    
-    def __len__(self):
-        return self.encodings.input_ids.size(0)
-    
-    def __getitem__(self, idx):
-        return {
-            "input_ids": self.encodings.input_ids[idx],
-            "attention_mask": self.encodings.attention_mask[idx]
-        }
+from reality_stone.data import SimpleTextDataset as TextDataset
+from reality_stone.utils.misc import get_device
+from reality_stone.utils.training import load_model_and_tokenizer, train_model_simple, generate_text
 
 
 def generate_calibration_data(tokenizer, num_samples=32, seq_len=128):
+    """임의의 토큰 ID로 구성된 교정용 데이터를 생성합니다."""
     vocab_size = tokenizer.vocab_size
     random_ids = torch.randint(0, vocab_size, (num_samples, seq_len))
     return random_ids.float()
 
-
-def finetune_compressed_model(model, tokenizer, train_texts, epochs=3, lr=5e-5, batch_size=4, device="cuda"):
-    dataset = TextDataset(train_texts, tokenizer)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-    
-    model.train()
-    model.to(device)
-    
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
-    
-    for epoch in range(epochs):
-        total_loss = 0
-        pbar = tqdm(loader, desc=f"Epoch {epoch+1}/{epochs}")
-        
-        for batch in pbar:
-            input_ids = batch["input_ids"].to(device)
-            attention_mask = batch["attention_mask"].to(device)
-            
-            outputs = model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                labels=input_ids
-            )
-            loss = outputs.loss
-            
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            
-            total_loss += loss.item()
-            pbar.set_postfix({"loss": f"{loss.item():.4f}"})
-        
-        avg_loss = total_loss / len(loader)
-        print(f"Epoch {epoch+1} Average Loss: {avg_loss:.4f}")
-    
-    return model
-
-
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model_id", type=str, default="gpt2")
-    parser.add_argument("--target_dim", type=int, default=64)
-    parser.add_argument("--save_dir", type=str, default="checkpoints/gpt2-compressed-rs")
+    parser = argparse.ArgumentParser(description="Compress and Finetune Model")
+    
+    # 모델 설정
+    parser.add_argument("--model_id", type=str, default="gpt2", help="Target model ID")
+    parser.add_argument("--target_dim", type=int, default=64, help="Target compression dimension")
+    parser.add_argument("--save_dir", type=str, default="checkpoints/gpt2-compressed-rs", help="Output directory")
     parser.add_argument("--dtype", type=str, default="float32", choices=["float16", "bfloat16", "float32"])
     parser.add_argument("--cache_dir", type=str, default=os.environ.get("HF_HOME", "E:/hf-cache"))
-    parser.add_argument("--num_steps", type=int, default=100, help="CUDA geometric tuning steps")
-    parser.add_argument("--curvature", type=float, default=-1.0)
-    parser.add_argument("--lr", type=float, default=0.01)
-    parser.add_argument("--finetune", action="store_true", help="Run fine-tuning after compression")
-    parser.add_argument("--finetune_epochs", type=int, default=3)
-    parser.add_argument("--finetune_lr", type=float, default=5e-5)
-    parser.add_argument("--data_path", type=str, default=None, help="JSONL file with text data")
+    
+    # 압축 설정
+    parser.add_argument("--num_steps", type=int, default=100, help="Metric extraction steps (CUDA)")
+    parser.add_argument("--curvature", type=float, default=-1.0, help="Target curvature")
+    parser.add_argument("--lr", type=float, default=0.01, help="Extraction learning rate")
+    
+    # 미세조정 설정
+    parser.add_argument("--finetune", action="store_true", help="Enable fine-tuning")
+    parser.add_argument("--finetune_epochs", type=int, default=3, help="Fine-tuning epochs")
+    parser.add_argument("--finetune_lr", type=float, default=5e-5, help="Fine-tuning learning rate")
+    parser.add_argument("--data_path", type=str, default=None, help="Path to JSONL training data")
+    
     args = parser.parse_args()
 
-    os.environ.setdefault("HF_HOME", args.cache_dir)
-
+    # dtype 설정
     if args.dtype == "float16":
         dtype = torch.float16
     elif args.dtype == "bfloat16":
@@ -99,15 +63,10 @@ def main():
         dtype = torch.float32
 
     print(f"[1/5] Loading model: {args.model_id}")
-    tok = AutoTokenizer.from_pretrained(args.model_id, cache_dir=args.cache_dir)
-    if getattr(tok, "pad_token", None) is None:
-        tok.pad_token = tok.eos_token
-
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model_id,
-        torch_dtype=dtype,
-        low_cpu_mem_usage=True,
-        cache_dir=args.cache_dir,
+    model, tok = load_model_and_tokenizer(
+        args.model_id, 
+        cache_dir=args.cache_dir, 
+        dtype=dtype
     )
     
     orig_params = sum(p.numel() for p in model.parameters())
@@ -151,6 +110,7 @@ def main():
                         train_texts.append(obj["paragraph"])
             print(f"   Loaded {len(train_texts)} samples from {args.data_path}")
         else:
+            # 더미 데이터 사용 (테스트용)
             train_texts = [
                 "The quick brown fox jumps over the lazy dog.",
                 "Machine learning is a subset of artificial intelligence.",
@@ -163,9 +123,10 @@ def main():
             ] * 10
             print(f"   Using {len(train_texts)} synthetic samples")
         
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        model = finetune_compressed_model(
-            model, tok, train_texts,
+        device = get_device()
+        train_dataset = TextDataset(train_texts, tok, max_len=256)
+        model = train_model_simple(
+            model, tok, train_dataset,
             epochs=args.finetune_epochs,
             lr=args.finetune_lr,
             device=device
@@ -173,32 +134,14 @@ def main():
     else:
         print("[5/5] Skipping fine-tuning (use --finetune to enable)")
 
+    # 저장
     model.save_pretrained(args.save_dir)
     tok.save_pretrained(args.save_dir)
     print(f"Saved to {args.save_dir}")
 
     print("\n[Test] Generating sample text...")
-    model.eval()
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model.to(device)
-    
-    prompt = "The future of AI is"
-    inputs = tok(prompt, return_tensors="pt").to(device)
-    
-    with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=50,
-            do_sample=True,
-            temperature=0.7,
-            pad_token_id=tok.pad_token_id
-        )
-    
-    generated = tok.decode(outputs[0], skip_special_tokens=True)
-    print(f"Prompt: {prompt}")
-    print(f"Generated: {generated}")
+    generate_text(model, tok, ["The future of AI is"], device=get_device())
 
 
 if __name__ == "__main__":
     main()
-

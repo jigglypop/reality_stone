@@ -20,20 +20,6 @@ from reality_stone.layers.lorentz import lorentz_distance
 from reality_stone.layers.diffusion import RiemannianDiffusionStep
 
 
-def to_lorentz(x, c: float = 1.0) -> torch.Tensor:
-    """
-    유클리드 벡터 x 를 Lorentz 하이퍼볼로이드 모델 좌표로 올린다.
-
-    수식
-    ----
-    - 입력: x ∈ R^d
-    - 출력: x_L ∈ R^{d+1}
-        x0 = sqrt(1/c + ||x||^2)
-        xL = [x0, x]
-    """
-    sq = (x * x).sum(dim=-1, keepdim=True)
-    time_comp = torch.sqrt(1.0 / c + sq)
-    return torch.cat([time_comp, x], dim=-1)
 
 class BERTEncoder(nn.Module):
     def __init__(self, model_name='bert-base-uncased'):
@@ -121,8 +107,8 @@ class RiemannianHyperExpansion(nn.Module):
         # 3. Lorentz 모델로 리프트 후, 리만 거리 계산
         #    h: (B, 4096)  → h_L: (B, 4097)
         #    P: (77, 4096) → P_L: (77, 4097)
-        h_L = to_lorentz(h, self.c)
-        P_L = to_lorentz(self.prototypes, self.c)
+        h_L = rs.euclidean_to_lorentz(h, self.c)
+        P_L = rs.euclidean_to_lorentz(self.prototypes, self.c)
         
         # 배치-프로토타입 쌍별 Lorentz 거리 계산을 위한 브로드캐스트 준비
         #   h_L: (B,   1, 4097)

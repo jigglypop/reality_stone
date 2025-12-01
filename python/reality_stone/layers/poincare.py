@@ -8,7 +8,9 @@ from ..core.mobius import MobiusAdd, MobiusScalarMul
 import math
 
 def project_to_ball(x: Tensor, epsilon: float = 1e-7) -> Tensor:
-    """텐서를 푸앵카레 공으로 투영합니다. 모든 차원을 지원합니다."""
+    """
+    텐서를 푸앵카레 공으로 투영합니다. 모든 차원을 지원합니다.
+    """
     # 순수 PyTorch 구현으로 대체 (Rust 바인딩이 2D만 지원하므로)
     norm = torch.norm(x, p=2, dim=-1, keepdim=True)
     # norm이 1-epsilon보다 큰 경우만 스케일링
@@ -20,6 +22,9 @@ def project_to_ball(x: Tensor, epsilon: float = 1e-7) -> Tensor:
     return x * scale
 
 class PoincareBallLayer(Function):
+    """
+    푸앵카레 공 모델에서의 거리 및 덧셈 연산을 수행하는 레이어입니다.
+    """
 
     @staticmethod
     def forward(ctx, u: Tensor, v: Tensor, c: float = None, t: float = 0.5, kappas: Tensor = None, layer_idx: int = None, c_min: float = -2.0, c_max: float = -0.1) -> Tensor:
@@ -60,7 +65,7 @@ class PoincareBallLayer(Function):
                 )
                 return output
             else:
-                # CPU Path - try both root level and submodule
+                # CPU Path - 루트 레벨과 서브모듈 모두 시도
                 try:
                     output_np = _rust.poincare_ball_layer_cpu(
                         u.cpu().numpy(), v.cpu().numpy(), ctx.c, t
@@ -138,12 +143,21 @@ def poincare_add(
     c_min: float = -2.0,
     c_max: float = -0.1,
 ) -> Tensor:
+    """
+    뫼비우스 덧셈 (Mobius Addition)을 수행합니다.
+    """
     return MobiusAdd.apply(x, y, c, kappas, layer_idx, c_min, c_max)
 
 def poincare_scalar_mul(x: Tensor, r: float, c: float) -> Tensor:
+    """
+    뫼비우스 스칼라 곱 (Mobius Scalar Multiplication)을 수행합니다.
+    """
     return MobiusScalarMul.apply(x, r, c)
 
 def poincare_distance(x: Tensor, y: Tensor, c: float | Tensor, eps: float = 1e-7) -> Tensor:
+    """
+    푸앵카레 거리 (Poincare Distance)를 계산합니다.
+    """
     if isinstance(c, (float, int)):
         if abs(c) < eps:
             return torch.norm(x - y, dim=1)
@@ -159,9 +173,8 @@ def poincare_distance(x: Tensor, y: Tensor, c: float | Tensor, eps: float = 1e-7
     frac = (c * diff2) / den
     frac = frac.clamp_min(0.0)
     
-    # Correct formula: d = (2/sqrt(c)) * atanh(sqrt(frac / (1 + frac)))
-    # This corresponds to d = (1/sqrt(c)) * arccosh(1 + 2*frac)
-    # Current incorrect implementation was: d = (2/sqrt(c)) * atanh(sqrt(frac))
+    # 정확한 공식: d = (2/sqrt(c)) * atanh(sqrt(frac / (1 + frac)))
+    # 이는 d = (1/sqrt(c)) * arccosh(1 + 2*frac) 와 같습니다.
     
     arg = (frac / (1.0 + frac)).sqrt().clamp_max(1.0 - eps)
     if isinstance(c, Tensor):
@@ -171,17 +184,24 @@ def poincare_distance(x: Tensor, y: Tensor, c: float | Tensor, eps: float = 1e-7
     return (2.0 / sqrtc) * torch.atanh(arg)
 
 def poincare_to_lorentz(x: Tensor, c: float) -> Tensor:
+    """
+    푸앵카레 공 모델에서 로렌츠 모델로 변환합니다.
+    """
     output_np = _rust.poincare_to_lorentz_cpu(x.cpu().numpy(), c)
     return torch.from_numpy(output_np).to(x.device)
 
 def poincare_to_klein(x: Tensor, c: float) -> Tensor:
+    """
+    푸앵카레 공 모델에서 클라인 모델로 변환합니다.
+    """
     output_np = _rust.poincare_to_klein_cpu(x.cpu().numpy(), c)
     return torch.from_numpy(output_np).to(x.device)
 
 # --- HyperbolicLinear 및 관련 함수 ---
 
 def exp_map_zero(v: Tensor, c: float, eps: float = 1e-7) -> Tensor:
-    """원점에서의 지수 맵 (접선 공간 -> 푸앵카레 공)
+    """
+    원점에서의 지수 맵 (접선 공간 -> 푸앵카레 공)
 
     NOTE: c 텐서를 항상 v 와 같은 device/dtype 으로 올려서
     CPU/GPU 혼합으로 인한 clamp/device 오류를 방지한다.
@@ -201,7 +221,8 @@ def exp_map_zero(v: Tensor, c: float, eps: float = 1e-7) -> Tensor:
 
 
 def log_map_zero(y: Tensor, c: float, eps: float = 1e-7) -> Tensor:
-    """원점에서의 로그 맵 (푸앵카레 공 -> 접선 공간)
+    """
+    원점에서의 로그 맵 (푸앵카레 공 -> 접선 공간)
 
     NOTE: c 텐서를 항상 y 와 같은 device/dtype 으로 올려서
     CPU/GPU 혼합 연산을 피한다.
@@ -337,9 +358,12 @@ class HyperbolicLinear(nn.Module):
         return hyperbolic_layer
 
 
-# duplicate import removed
+# 중복 import 제거됨
 
 class PoincareWrapper(nn.Module):
+    """
+    기존 선형 레이어를 감싸서 푸앵카레 공 위에서 동작하도록 만드는 래퍼(Wrapper)입니다.
+    """
 
     def __init__(self, linear_layer: nn.Module):
         super().__init__()
@@ -367,7 +391,7 @@ class PoincareWrapper(nn.Module):
 
 class GeodesicLinear(nn.Module):
     """
-    측지거리를 고려한 쌍곡 선형 레이어.
+    측지거리(Geodesic Distance)를 고려한 쌍곡 선형 레이어.
     HyperbolicLinear의 개선 버전으로, 더 안정적인 초기화와 스케일링을 사용합니다.
     """
     
@@ -558,7 +582,7 @@ class CompactEquivalentHyperbolicLinear(nn.Module):
                 compact_layer.bias.data.copy_(linear_layer.bias.data)
         return compact_layer 
 def _extract_linear_like(linear_layer: nn.Module) -> tuple[int, int, torch.Tensor, bool]:
-    """Extract (in_features, out_features, weight_matrix, has_bias) from Linear or Conv1D-like layers."""
+    """Linear 또는 Conv1D와 유사한 레이어에서 (in_features, out_features, weight_matrix, has_bias)를 추출합니다."""
     if 'Conv1D' in str(type(linear_layer)):
         in_features = linear_layer.weight.shape[0]
         out_features = linear_layer.weight.shape[1]

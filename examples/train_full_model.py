@@ -4,8 +4,8 @@ from datasets import load_dataset
 from reality_stone.conversion import convert_to_full_riemannian
 import math
 
-def train_full_model():
-    print("=== Reality Stone: Deep Manifold Fine-Tuning ===")
+def train_full_model_serious():
+    print("=== Reality Stone: Serious Training ===")
     
     # 1. 모델 및 토크나이저 로드
     model_id = "microsoft/phi-2"
@@ -15,73 +15,81 @@ def train_full_model():
     print(f"Loading base model: {model_id}")
     model = AutoModelForCausalLM.from_pretrained(model_id)
     
-    # 2. 리만 수술 집도 (Deep Riemannian Surgery)
-    # 곡률 c=1e-4로 설정하여 초기 충격을 완화 (R ~ 100)
-    # 모델 내부의 모든 Linear/Conv1D 레이어가 Riemannian Layer로 교체됨
+    # 2. 리만 수술 집도 (곡률을 더 낮추어 충격 최소화)
     print("Performing full model surgery...")
-    model = convert_to_full_riemannian(model, curvature=1e-4)
+    # curvature를 1e-5로 낮춰 초기 충격을 줄임 (거의 유클리드에 가깝게 시작)
+    model = convert_to_full_riemannian(model, curvature=1e-5)
     
-    # 3. 모델 파라미터 확인
-    # 모든 파라미터가 학습 대상이어야 함 (Full Fine-Tuning)
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Trainable parameters: {trainable_params:,}")
+    # 3. 데이터셋 준비 (WikiText-2 전체 사용)
+    print("Loading FULL dataset...")
+    dataset = load_dataset("wikitext", "wikitext-2-raw-v1")
     
-    # 4. 데이터셋 준비 (WikiText-2 tiny subset)
-    print("Loading dataset...")
-    dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="train[:2%]")
-    
+    # 블록 크기를 128로 늘려 문맥 확보
+    block_size = 128
     def tokenize_function(examples):
-        return tokenizer(examples["text"], padding="max_length", truncation=True, max_length=64)
+        return tokenizer(examples["text"], padding="max_length", truncation=True, max_length=block_size)
 
-    tokenized_datasets = dataset.map(tokenize_function, batched=True)
+    tokenized_datasets = dataset.map(tokenize_function, batched=True, remove_columns=["text"])
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
-    # 5. 학습 설정
+    # 4. 학습 설정 (본격적인 Fine-Tuning 파라미터)
     training_args = TrainingArguments(
-        output_dir="./results-full-riemannian",
-        per_device_train_batch_size=4,
-        gradient_accumulation_steps=2,
-        num_train_epochs=1,
-        learning_rate=5e-5, # Full FT는 낮은 LR 권장
-        logging_steps=10,
-        save_strategy="no", # 데모용 저장 생략
+        output_dir="./results-full-riemannian-serious",
+        per_device_train_batch_size=8, # 배치 키움
+        gradient_accumulation_steps=4, # 그래디언트 누적
+        num_train_epochs=3,            # 3 Epoch
+        learning_rate=2e-5,            # 더 섬세한 LR
+        weight_decay=0.01,             # 과적합 방지
+        warmup_ratio=0.1,              # 웜업
+        logging_steps=50,
+        save_strategy="epoch",         # 에폭마다 저장
         fp16=torch.cuda.is_available(),
         report_to="none"
     )
 
-    # 6. Trainer
+    # 5. Trainer
     trainer = Trainer(
         model=model,
         args=training_args,
-        train_dataset=tokenized_datasets,
+        train_dataset=tokenized_datasets["train"],
+        eval_dataset=tokenized_datasets["validation"],
         data_collator=data_collator,
     )
 
-    # 7. 학습 시작
-    print("\n--- Starting Training (Re-aligning Manifold Weights) ---")
+    # 6. 학습 시작
+    print("\n--- Starting Serious Training ---")
     trainer.train()
     
-    # 8. 학습 후 추론 테스트
-    print("\n=== Inference Test after Full Training ===")
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    # 7. 저장
+    print("Saving trained model...")
+    try:
+        model.save_pretrained("./reality-stone-phi2-tuned", safe_serialization=False)
+        tokenizer.save_pretrained("./reality-stone-phi2-tuned")
+    except Exception as e:
+        print(f"Save warning: {e}")
+
+    # 8. 추론 테스트
+    print("\n=== Inference Test ===")
+    from reality_stone.utils.misc import get_device
+    device = get_device()
     model.eval()
     
-    input_text = "The nature of reality is"
+    input_text = "The theory of general relativity suggests that"
     inputs = tokenizer(input_text, return_tensors="pt").to(device)
     
     with torch.no_grad():
         outputs = model.generate(
             **inputs, 
-            max_new_tokens=30, 
+            max_new_tokens=50, 
             do_sample=True, 
             temperature=0.7,
+            top_p=0.9,
             pad_token_id=tokenizer.eos_token_id
         )
     
     print(f"Input: {input_text}")
-    print(f"Output: {tokenizer.decode(outputs[0])}")
-    print("\nTransformation verified.")
+    print(f"Output: {tokenizer.decode(outputs[0], skip_special_tokens=True)}")
 
 if __name__ == "__main__":
-    train_full_model()
+    train_full_model_serious()
 

@@ -7,6 +7,7 @@ Bellman-Lagrangian Geodesic Flow Example
 
 import numpy as np
 import reality_stone as rs
+from reality_stone.utils.plotting import plot_energy_history
 
 try:
     import matplotlib.pyplot as plt
@@ -126,44 +127,7 @@ def main():
     # 5. 시각화
     print("\n5. Visualizing energy evolution...")
     
-    if not HAS_MATPLOTLIB:
-        print("   -> Skipping visualization (matplotlib not available)")
-    else:
-        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-        
-        # Kinetic Energy
-        axes[0, 0].plot(history['energies']['kinetic'], 'b-', alpha=0.7)
-        axes[0, 0].set_title('Kinetic Energy T = ½g_ij v^i v^j')
-        axes[0, 0].set_xlabel('Step')
-        axes[0, 0].set_ylabel('Energy')
-        axes[0, 0].grid(True, alpha=0.3)
-        
-        # Potential Energy
-        axes[0, 1].plot(history['energies']['potential'], 'r-', alpha=0.7)
-        axes[0, 1].set_title('Potential Energy V = (V(x) - R - γV(x\'))²')
-        axes[0, 1].set_xlabel('Step')
-        axes[0, 1].set_ylabel('Energy')
-        axes[0, 1].grid(True, alpha=0.3)
-        
-        # Lagrangian
-        axes[1, 0].plot(history['energies']['lagrangian'], 'g-', alpha=0.7)
-        axes[1, 0].set_title('Lagrangian L = T - V')
-        axes[1, 0].set_xlabel('Step')
-        axes[1, 0].set_ylabel('Energy')
-        axes[1, 0].grid(True, alpha=0.3)
-        axes[1, 0].axhline(y=0, color='k', linestyle='--', alpha=0.3)
-        
-        # Bellman Residual
-        axes[1, 1].plot(history['energies']['bellman_residual'], 'm-', alpha=0.7)
-        axes[1, 1].set_title('Bellman Residual δ = V(x) - (R + γV(x\'))')
-        axes[1, 1].set_xlabel('Step')
-        axes[1, 1].set_ylabel('Residual')
-        axes[1, 1].grid(True, alpha=0.3)
-        axes[1, 1].axhline(y=0, color='k', linestyle='--', alpha=0.3)
-        
-        plt.tight_layout()
-        plt.savefig('bellman_energy_evolution.png', dpi=150, bbox_inches='tight')
-        print("   -> Saved plot to 'bellman_energy_evolution.png'")
+    plot_energy_history(history['energies'], 'bellman_energy_evolution.png')
     
     # 6. 학습된 가치 함수 테스트
     print("\n6. Testing learned value function...")

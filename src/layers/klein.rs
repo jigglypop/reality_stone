@@ -13,8 +13,10 @@ fn safe_acosh(x: f32) -> f32 {
 
 const BOUNDARY_EPS: f32 = 1e-5;
 
+/// 클라인 거리 (Klein Distance)
+///
+/// d_K(u,v) = (1/√c) * acosh((1 - c⟨u,v⟩) / √((1-c||u||²)(1-c||v||²)))
 pub fn klein_distance(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32) -> Array1<f32> {
-    // Klein distance: d_K(u,v) = (1/√c) * acosh((1 - c⟨u,v⟩) / √((1-c||u||²)(1-c||v||²)))
     let sqrtc = c.sqrt();
     let u2 = norm_sq_batched(u);
     let v2 = norm_sq_batched(v);
@@ -26,10 +28,11 @@ pub fn klein_distance(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32) -> Array
     arg.mapv(|r| safe_acosh(r) / sqrtc)
 }
 
+/// 클라인 덧셈 (Einstein Addition)
+///
+/// u (+) v = (1 / (1 + c<u,v>)) * (u + v/gamma_u + (c*gamma_u / (1+gamma_u)) * <u,v> * u)
+/// where gamma_u = 1 / sqrt(1 - c|u|^2)
 pub fn klein_add(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32) -> Array2<f32> {
-    // Einstein addition: u (+) v = (1 / (1 + c<u,v>)) * (u + v/gamma_u + (c*gamma_u / (1+gamma_u)) * <u,v> * u)
-    // where gamma_u = 1 / sqrt(1 - c|u|^2)
-    
     let u_norm_sq = norm_sq_batched(u).insert_axis(Axis(1));
     let uv = dot_batched(u, v).insert_axis(Axis(1));
     
@@ -47,14 +50,14 @@ pub fn klein_add(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32) -> Array2<f32
     result * &denom_inv
 }
 
+/// 클라인 덧셈의 역전파 (VJP)
 pub fn klein_add_vjp(
     grad_output: &ArrayView2<f32>,
     u: &ArrayView2<f32>,
     v: &ArrayView2<f32>,
     c: f32,
 ) -> (Array2<f32>, Array2<f32>) {
-    // Backward pass for Einstein addition
-    // Recalculate forward intermediates
+    // Forward 중간값 재계산
     let u_norm_sq = norm_sq_batched(u).insert_axis(Axis(1));
     let uv = dot_batched(u, v).insert_axis(Axis(1));
     
@@ -66,10 +69,10 @@ pub fn klein_add_vjp(
     let coeff_u_part = (c * &gamma_u * &uv) / (1.0 + &gamma_u);
     let coeff_u = 1.0 + &coeff_u_part;
     
-    let num = u * &coeff_u + v * &inv_gamma_u; // Numerator
+    let num = u * &coeff_u + v * &inv_gamma_u; // 분자
     // output = num / denom
     
-    // Gradients
+    // 그라디언트 계산
     // dL/dNum = grad_output / denom
     let grad_num = grad_output * &denom_inv;
     
@@ -95,39 +98,24 @@ pub fn klein_add_vjp(
     let grad_inv_gamma_u = (&grad_num * v).sum_axis(Axis(1)).insert_axis(Axis(1));
     
     // inv_gamma_u = sqrt(1 - c|u|^2)
-    // d_inv_gamma_u / du = - c u / sqrt(...) = -c u inv_gamma_u ? No
-    // d(sqrt(1-cx^2)) = 1/(2sqrt) * (-2cx) = -cx / sqrt = -cx / gamma_u * gamma_u = -cx / gamma_u ??
-    // d/du (1/gamma_u) = d/du (1-c u^2)^0.5 = 0.5 (1-cu^2)^-0.5 (-2cu) = -c u gamma_u
-    // Wait, gamma_u = (1-cu^2)^-0.5.
-    // inv_gamma_u = (1-cu^2)^0.5.
-    // d(inv_gamma_u) = 0.5 * (inv_gamma_u)^-1 * (-2cu) = -c u / inv_gamma_u = -c u gamma_u.
-    // Correct: d_inv_gamma_u / du = -c * gamma_u * u
+    // d_inv_gamma_u / du = -c * gamma_u * u
     grad_u = &grad_u - &(u * (&grad_inv_gamma_u * c * &gamma_u));
     
-    // coeff_u = 1 + c * gamma_u * uv / (1 + gamma_u)
-    // Let K = c * uv. Term = K * gamma_u / (1 + gamma_u)
-    // d_coeff_u = d_coeff_u/d_gamma_u * d_gamma_u + d_coeff_u/d_uv * d_uv
-    
-    // d_coeff_u / d_uv = c * gamma_u / (1 + gamma_u)
+    // coeff_u 미분
     let d_coeff_u_d_uv = c * &gamma_u / (1.0 + &gamma_u);
-    
-    // d_coeff_u / d_gamma_u = K * [ (1+g) - g ] / (1+g)^2 = K / (1+g)^2
     let d_coeff_u_d_gamma_u = (c * &uv) / ((1.0 + &gamma_u) * (1.0 + &gamma_u));
     
-    // d_uv / du = v. d_uv / dv = u.
     let grad_uv = &grad_coeff_u * &d_coeff_u_d_uv;
     grad_u = &grad_u + &(v * &grad_uv);
     grad_v = &grad_v + &(u * &grad_uv);
     
-    // d_gamma_u / du
-    // gamma_u = (1 - c u^2)^-0.5
-    // d_gamma_u = -0.5 (...) ^-1.5 (-2cu) = c u gamma_u^3
     let grad_gamma_u = &grad_coeff_u * &d_coeff_u_d_gamma_u;
     grad_u = &grad_u + &(u * (&grad_gamma_u * c * &gamma_u * &gamma_u * &gamma_u));
     
     (grad_u, grad_v)
 }
 
+/// 클라인 스칼라 곱 (Klein Scalar Multiplication)
 pub fn klein_scalar(u: &ArrayView2<f32>, c: f32, r: f32) -> Array2<f32> {
     let norm = norm_sq_batched(u).mapv(f32::sqrt).insert_axis(Axis(1));
     let norm_clamped = norm.mapv(|v| v.max(EPS));
@@ -137,12 +125,14 @@ pub fn klein_scalar(u: &ArrayView2<f32>, c: f32, r: f32) -> Array2<f32> {
     u * scale
 }
 
+/// 클라인 -> 푸앵카레 변환
 pub fn klein_to_poincare(x: &ArrayView2<f32>, c: f32) -> Array2<f32> {
     let x_norm_sq = norm_sq_batched(x).insert_axis(Axis(1));
     let den = (1.0 + (1.0 - c * x_norm_sq).mapv(|v| v.max(0.0).sqrt())).mapv(|v| v.max(EPS));
     x / &den
 }
 
+/// 클라인 -> 로렌츠 변환
 pub fn klein_to_lorentz(x: &ArrayView2<f32>, c: f32) -> Array2<f32> {
     let x_norm_sq = norm_sq_batched(x).insert_axis(Axis(1));
     let x0 = 1.0 / (1.0 - c * &x_norm_sq).mapv(|v| v.max(EPS).sqrt());
@@ -152,7 +142,7 @@ pub fn klein_to_lorentz(x: &ArrayView2<f32>, c: f32) -> Array2<f32> {
     result
 }
 
-/// Klein 스칼라 곱의 VJP(Vector-Jacobian Product)를 계산합니다.
+/// 클라인 스칼라 곱의 VJP
 pub fn klein_scalar_vjp(
     grad_output: &ArrayView2<f32>,
     x: &ArrayView2<f32>,
@@ -180,7 +170,7 @@ pub fn klein_scalar_vjp(
 }
 
 
-/// Klein 모델의 순전파 레이어를 계산합니다.
+/// 클라인 모델의 순전파 레이어
 pub fn klein_layer_forward(
     u: &ArrayView2<f32>,
     v: &ArrayView2<f32>,
@@ -192,7 +182,7 @@ pub fn klein_layer_forward(
     klein_add(&u_prime.view(), &v_prime.view(), c)
 }
 
-/// Klein 모델의 역전파 레이어를 계산합니다.
+/// 클라인 모델의 역전파 레이어
 pub fn klein_layer_backward(
     grad_output: &ArrayView2<f32>,
     u: &ArrayView2<f32>,
@@ -298,6 +288,7 @@ pub mod cuda {
     }
 }
 
+/// 클라인 -> 푸앵카레 곡률 그라디언트
 pub fn to_poincare_grad_c(x: &ArrayView2<f32>, c: f32) -> Array2<f32> {
     let x_norm_sq = norm_sq_batched(x).insert_axis(Axis(1));
     let den = 1.0 + c * &x_norm_sq;
@@ -309,6 +300,7 @@ pub fn to_poincare_grad_c(x: &ArrayView2<f32>, c: f32) -> Array2<f32> {
     numerator / denominator
 }
 
+/// 푸앵카레 -> 클라인 변환
 pub fn from_poincare(x: &ArrayView2<f32>, c: f32) -> Array2<f32> {
     // Poincaré -> Klein: 2x / (1 + c||x||^2)
     let x_norm_sq = norm_sq_batched(x).insert_axis(Axis(1));
@@ -316,6 +308,7 @@ pub fn from_poincare(x: &ArrayView2<f32>, c: f32) -> Array2<f32> {
     (2.0 * x) / &den
 }
 
+/// 푸앵카레 -> 클라인 곡률 그라디언트
 pub fn from_poincare_grad_c(x: &ArrayView2<f32>, c: f32) -> Array2<f32> {
     let x_norm_sq = norm_sq_batched(x).insert_axis(Axis(1));
     let sqrt_expr = (1.0 - c * &x_norm_sq)

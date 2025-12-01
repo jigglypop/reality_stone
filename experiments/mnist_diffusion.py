@@ -1,20 +1,15 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torchvision import datasets, transforms
-from torch.utils.data import DataLoader
 import time
 from tqdm import tqdm
 import numpy as np
 import reality_stone as rs
 from reality_stone.layers.diffusion import RiemannianDiffusionStep
+from reality_stone.utils.misc import get_device, load_mnist_dataloaders, evaluate_accuracy
 
-if torch.cuda.is_available():
-    DEVICE = "cuda"
-    print(f"CUDA Available: {torch.cuda.get_device_name(0)}")
-else:
-    DEVICE = "cpu"
-    print("CUDA Not Available, using CPU")
+DEVICE = get_device()
+print(f"Device: {DEVICE}")
 
 
 class BioGeometricEncoder(nn.Module):
@@ -82,14 +77,7 @@ def run_diffusion_experiment():
     print(f"\n=== Running Experiment: Riemannian Lagrangian Diffusion (Rust+CUDA Backend) ===")
     print(f"Backend: {DEVICE.upper()}")
     
-    transform = transforms.Compose([
-        transforms.ToTensor(), 
-        transforms.Normalize((0.1307,), (0.3081,))
-    ])
-    train_dataset = datasets.MNIST("./data", train=True, download=True, transform=transform)
-    test_dataset = datasets.MNIST("./data", train=False, transform=transform)
-    train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=1000, shuffle=False)
+    train_loader, test_loader = load_mnist_dataloaders(batch_size=256, test_batch_size=1000)
 
     # Initialize model
     model = ManifoldDiffusionModel(steps=5, alpha=0.9).to(DEVICE)
@@ -122,14 +110,7 @@ def run_diffusion_experiment():
         elapsed = time.time() - start
         
         # Evaluation
-        model.eval()
-        correct = 0
-        with torch.no_grad():
-            for x, y in test_loader:
-                x, y = x.to(DEVICE), y.to(DEVICE)
-                pred = model(x).argmax(dim=1)
-                correct += pred.eq(y).sum().item()
-        acc = correct / len(test_dataset)
+        acc = evaluate_accuracy(model, test_loader, DEVICE)
         best_acc = max(best_acc, acc)
         
         print(f"  Loss: {avg_loss:.4f} Acc: {acc:.4f} Best: {best_acc:.4f} Time: {elapsed:.2f}s")

@@ -12,6 +12,10 @@ const MIN_DENOMINATOR: f32 = 1e-6;
 const BOUNDARY_EPS64: f64 = 1e-12;
 const MIN_DENOMINATOR64: f64 = 1e-12;
 
+/// 뫼비우스 덧셈 (Mobius Addition)
+///
+/// 두 벡터 u와 v를 곡률 c의 푸앵카레 공 위에서 더합니다.
+/// 수식: u +_c v = (1 + 2c<u,v> + c|v|^2)u + (1 - c|u|^2)v / (1 + 2c<u,v> + c^2|u|^2|v|^2)
 pub fn mobius_add(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32) -> Array2<f32> {
     let u2 = norm_sq_batched(u).insert_axis(Axis(1));
     let v2 = norm_sq_batched(v).insert_axis(Axis(1));
@@ -25,6 +29,7 @@ pub fn mobius_add(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32) -> Array2<f3
     coeff_u * u + coeff_v * v
 }
 
+/// 뫼비우스 덧셈 (Double Precision)
 pub fn mobius_add_f64(u: &ArrayView2<f64>, v: &ArrayView2<f64>, c: f64) -> Array2<f64> {
     let u2 = norm_sq_batched_f64(u).insert_axis(Axis(1));
     let v2 = norm_sq_batched_f64(v).insert_axis(Axis(1));
@@ -36,28 +41,35 @@ pub fn mobius_add_f64(u: &ArrayView2<f64>, v: &ArrayView2<f64>, c: f64) -> Array
     coeff_u * u + coeff_v * v
 }
 
+/// 뫼비우스 스칼라 곱 (Mobius Scalar Multiplication)
+///
+/// 벡터 u에 스칼라 r을 곡률 c 공간에서 곱합니다.
+/// c=0일 때는 유클리드 스칼라 곱과 동일합니다.
 pub fn mobius_scalar(u: &ArrayView2<f32>, c: f32, r: f32) -> Array2<f32> {
     let norm = norm_sq_batched(u).mapv(f32::sqrt).insert_axis(Axis(1));
     let norm_clamped = norm.mapv(|v| v.max(EPS));
 
     if c.abs() < EPS {
-        // c = 0: 유클리드 경우
+        // c = 0: 유클리드 근사
         return Array2::from_elem(u.dim(), r) * u;
     }
-    // 음수 곡률도 처리 가능하도록 수정
-    // sqrt(c) * norm이 1보다 작아야 atanh가 정의됨
+    
+    // 양수/음수 곡률 모두 처리
+    // sqrt(c) * norm이 1보다 작아야 atanh가 정의됨 (경계값 처리)
     let sqrt_c_norm = if c > 0.0 {
         (c.sqrt() * &norm_clamped).mapv(|v| v.min(1.0 - BOUNDARY_EPS))
     } else {
         (-c).sqrt() * &norm_clamped
     };
+    
     let scale = if c > 0.0 {
-        // 양수 곡률: 원래 공식
+        // 양수 곡률: tanh(r * atanh(sqrt(c)*|u|)) / (sqrt(c)*|u|)
         let alpha = sqrt_c_norm.mapv(|v| v.atanh());
         let beta = (r * &alpha).mapv(|v| v.tanh());
         beta / (c.sqrt() * &norm_clamped)
     } else {
-        // 음수 곡률: atanh(i*x) = i*atan(x), tanh(i*x) = i*tan(x)
+        // 음수 곡률: tan(r * atan(sqrt(-c)*|u|)) / (sqrt(-c)*|u|)
+        // atanh(i*x) = i*atan(x), tanh(i*x) = i*tan(x) 관계식 이용
         let alpha = sqrt_c_norm.mapv(|v| v.atan());
         let beta = (r * &alpha).mapv(|v| v.tan());
         beta / ((-c).sqrt() * &norm_clamped)
@@ -65,6 +77,7 @@ pub fn mobius_scalar(u: &ArrayView2<f32>, c: f32, r: f32) -> Array2<f32> {
     scale * u
 }
 
+/// 뫼비우스 스칼라 곱 (Double Precision)
 pub fn mobius_scalar_f64(u: &ArrayView2<f64>, c: f64, r: f64) -> Array2<f64> {
     let norm = norm_sq_batched_f64(u).mapv(f64::sqrt).insert_axis(Axis(1));
     let norm_clamped = norm.mapv(|v| v.max(EPS64));
@@ -88,11 +101,12 @@ pub fn mobius_scalar_f64(u: &ArrayView2<f64>, c: f64, r: f64) -> Array2<f64> {
     scale * u
 }
 
+/// 곡률 c에 대한 뫼비우스 스칼라 곱의 그라디언트
 pub fn mobius_scalar_grad_c(u: &ArrayView2<f32>, c: f32, r: f32) -> Array2<f32> {
     let norm = norm_sq_batched(u).mapv(f32::sqrt).insert_axis(Axis(1));
     let norm_clamped = norm.mapv(|v| v.max(EPS));
     if c.abs() < EPS {
-        // c = 0: gradient is 0
+        // c = 0: 그라디언트는 0
         return Array2::zeros(u.dim());
     }
 
@@ -112,7 +126,7 @@ pub fn mobius_scalar_grad_c(u: &ArrayView2<f32>, c: f32, r: f32) -> Array2<f32> 
         // d(beta)/d(alpha) = r * (1 - tanh^2(r*alpha))
         let tanh_r_alpha = (r * &alpha).mapv(|v| v.tanh());
         let d_beta_dalpha = r * (1.0 - &tanh_r_alpha * &tanh_r_alpha);
-        // Chain rule
+        // 연쇄 법칙 (Chain rule)
         let d_beta_dc = &d_beta_dalpha * &d_alpha_dscn * &norm_clamped * d_sqrt_c_dc;
         let d_scale_dc = (&d_beta_dc * sqrt_c - &beta * d_sqrt_c_dc) / (c * &norm_clamped);
         &d_scale_dc * u
@@ -129,7 +143,7 @@ pub fn mobius_scalar_grad_c(u: &ArrayView2<f32>, c: f32, r: f32) -> Array2<f32> 
         // d(beta)/d(alpha) = r * (1 + tan^2(r*alpha))
         let tan_r_alpha = (r * &alpha).mapv(|v| v.tan());
         let d_beta_dalpha = r * (1.0 + &tan_r_alpha * &tan_r_alpha);
-        // Chain rule
+        // 연쇄 법칙 (Chain rule)
         let d_beta_dc = &d_beta_dalpha * &d_alpha_dscn * &norm_clamped * d_sqrt_abs_c_dc;
         // d(scale)/dc
         let d_scale_dc =
@@ -138,6 +152,7 @@ pub fn mobius_scalar_grad_c(u: &ArrayView2<f32>, c: f32, r: f32) -> Array2<f32> 
     }
 }
 
+/// 곡률 c에 대한 뫼비우스 스칼라 곱의 그라디언트 (Double Precision)
 pub fn mobius_scalar_grad_c_f64(u: &ArrayView2<f64>, c: f64, r: f64) -> Array2<f64> {
     let norm = norm_sq_batched_f64(u).mapv(f64::sqrt).insert_axis(Axis(1));
     let norm_clamped = norm.mapv(|v| v.max(EPS64));
@@ -172,6 +187,7 @@ pub fn mobius_scalar_grad_c_f64(u: &ArrayView2<f64>, c: f64, r: f64) -> Array2<f
     }
 }
 
+/// 곡률 c에 대한 뫼비우스 덧셈의 그라디언트
 pub fn mobius_add_grad_c(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32) -> Array2<f32> {
     let u2 = norm_sq_batched(u).insert_axis(Axis(1));
     let v2 = norm_sq_batched(v).insert_axis(Axis(1));
@@ -185,6 +201,7 @@ pub fn mobius_add_grad_c(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32) -> Ar
     result
 }
 
+/// 곡률 c에 대한 뫼비우스 덧셈의 그라디언트 (Double Precision)
 pub fn mobius_add_grad_c_f64(u: &ArrayView2<f64>, v: &ArrayView2<f64>, c: f64) -> Array2<f64> {
     let u2 = norm_sq_batched_f64(u).insert_axis(Axis(1));
     let v2 = norm_sq_batched_f64(v).insert_axis(Axis(1));
@@ -198,8 +215,9 @@ pub fn mobius_add_grad_c_f64(u: &ArrayView2<f64>, v: &ArrayView2<f64>, c: f64) -
     result
 }
 
-// --- VJP Implementations (Moved from layers/poincare.rs) ---
+// --- VJP 구현 (Vector-Jacobian Product) ---
 
+/// 뫼비우스 스칼라 곱의 역전파 (VJP)
 pub fn mobius_scalar_vjp(
     grad_output: &ArrayView2<f32>,
     x: &ArrayView2<f32>,
@@ -245,6 +263,7 @@ pub fn mobius_scalar_vjp(
     }
 }
 
+/// 뫼비우스 덧셈의 역전파 (VJP)
 pub fn mobius_add_vjp(
     grad_output: &ArrayView2<f32>,
     x: &ArrayView2<f32>,
@@ -288,7 +307,7 @@ pub fn mobius_add_vjp(
     (grad_x, grad_y)
 }
 
-// 동적 곡률을 사용한 Mobius 덧셈
+/// 동적 곡률을 사용한 뫼비우스 덧셈
 pub fn mobius_add_dynamic(
     u: &ArrayView2<f32>,
     v: &ArrayView2<f32>,
@@ -299,7 +318,7 @@ pub fn mobius_add_dynamic(
     (result, c)
 }
 
-// 동적 곡률 Mobius 덧셈의 backward pass
+/// 동적 곡률 뫼비우스 덧셈의 역전파 (Backward)
 pub fn mobius_add_dynamic_backward(
     grad_output: &ArrayView2<f32>,
     u: &ArrayView2<f32>,
@@ -315,6 +334,7 @@ pub fn mobius_add_dynamic_backward(
     (grad_u, grad_v, grad_kappa)
 }
 
+/// 레이어별 동적 곡률을 사용한 뫼비우스 덧셈
 pub fn mobius_add_layerwise(
     u: &ArrayView2<f32>,
     v: &ArrayView2<f32>,
@@ -326,6 +346,7 @@ pub fn mobius_add_layerwise(
     (result, c)
 }
 
+/// 레이어별 동적 곡률 뫼비우스 덧셈의 역전파
 pub fn mobius_add_layerwise_backward(
     grad_output: &ArrayView2<f32>,
     u: &ArrayView2<f32>,

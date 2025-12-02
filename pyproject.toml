@@ -1,91 +1,18 @@
 [build-system]
-requires = ["maturin>=1.4,<2.0"]
+requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [project]
 name = "reality_stone"
-version = "0.2.10"
-description = "High-performance hyperbolic neural networks library powered by Rust"
-authors = [{name = "jigglypop", email = "donghwanyeom@gmail.com"}]
-license = {text = "MIT"}
-readme = "README.md"
-requires-python = ">=3.10"
+version = "0.1.0"
+requires-python = ">=3.8"
 classifiers = [
-    "Development Status :: 4 - Beta",
-    "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10", 
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
     "Programming Language :: Rust",
-    "Topic :: Scientific/Engineering :: Artificial Intelligence",
-    "Topic :: Scientific/Engineering :: Mathematics",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: Implementation :: PyPy",
 ]
-keywords = ["hyperbolic", "neural-networks", "deep-learning", "manifold-learning", "rust", "riemannian", "poincare", "lorentz"]
-dependencies = [
-    "numpy>=1.21.0,<2.0.0",
-    "torch>=2.0.0",
-]
-
-[project.optional-dependencies]
-api = [
-    "fastapi>=0.104.0",
-    "uvicorn>=0.24.0",
-    "pydantic>=2.0.0",
-]
-data = [
-    "datasets>=2.16.0",
-    "tqdm>=4.66.0",
-]
-full = [
-    "reality_stone[api,data]",
-    "transformers>=4.30.0",
-    "sentencepiece>=0.1.99",
-]
-dev = [
-    "pytest>=6.0",
-    "pytest-cov>=4.0",
-    "maturin>=1.4",
-    "ruff>=0.1.0",
-]
-
-[project.urls]
-Homepage = "https://github.com/jigglypop/reality_stone"
-Documentation = "https://github.com/jigglypop/reality_stone"
-Repository = "https://github.com/jigglypop/reality_stone"
-Issues = "https://github.com/jigglypop/reality_stone/issues"
-Changelog = "https://github.com/jigglypop/reality_stone/releases"
 
 [tool.maturin]
-python-source = "python"
-features = ["pyo3/extension-module", "abi3-py310"]
+features = ["pyo3/extension-module"]
 module-name = "reality_stone._rust"
-exclude = [
-    "experiments/**",
-    "scripts/**",
-    "docs/**",
-    "examples/**",
-    "tests/**",
-    "*.md",
-    ".git/**",
-    ".github/**",
-    "src/layers/cuda/test_kernels.*",
-]
-
-[tool.pytest.ini_options]
-minversion = "6.0"
-testpaths = ["tests"]
-python_files = ["test_*.py"]
-addopts = "-v --tb=short"
-markers = [
-    "cuda: mark tests that require CUDA runtime and CUDA symbols",
-]
-
-[tool.ruff]
-line-length = 120
-target-version = "py38"
-
-[tool.ruff.lint]
-select = ["E", "F", "W", "I"]
-ignore = ["E501"]
+python-source = "python"

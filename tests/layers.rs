@@ -1,4 +1,5 @@
 use ndarray::{arr2, s, Array2};
+use numpy::PyArrayMethods;
 use _rust::bindings;
 use _rust::layers::{klein, lorentz, poincare, spline};
 use _rust::ops::mobius;
@@ -8,8 +9,8 @@ fn poincare_exp_log_inverse_local() {
     let c = 0.3_f32;
     let x = arr2(&[[0.05_f32, -0.02]]);
     let v = arr2(&[[0.01_f32, 0.015]]);
-    let y = poincare::poincare_exp_at(&x.view(), &v.view(), c);
-    let v_rec = poincare::poincare_log_at(&x.view(), &y.view(), c);
+    let y = poincare::poincare_exp_at(&x.view(), &v.view(), c, 1e-5);
+    let v_rec = poincare::poincare_log_at(&x.view(), &y.view(), c, 1e-5);
     let diff = (&v - &v_rec).mapv(f32::abs).sum();
     assert!(
         diff < 5e-4,
@@ -29,8 +30,8 @@ fn poincare_exp_log_inverse_origin_multiple() {
     ]);
     for i in 0..vs.nrows() {
         let v = vs.slice(s![i..i + 1, ..]).to_owned();
-        let y = poincare::poincare_exp_at(&x.view(), &v.view(), c);
-        let v_rec = poincare::poincare_log_at(&x.view(), &y.view(), c);
+        let y = poincare::poincare_exp_at(&x.view(), &v.view(), c, 1e-5);
+        let v_rec = poincare::poincare_log_at(&x.view(), &y.view(), c, 1e-5);
         let diff = (&v - &v_rec).mapv(f32::abs).sum();
         assert!(
             diff < 5e-4,
@@ -46,7 +47,7 @@ fn poincare_exp_zero_step_is_identity() {
     let c = 0.7_f32;
     let x = arr2(&[[0.05_f32, -0.02_f32], [0.1_f32, 0.1_f32]]);
     let v = arr2(&[[0.0_f32, 0.0_f32], [0.0_f32, 0.0_f32]]);
-    let y = poincare::poincare_exp_at(&x.view(), &v.view(), c);
+    let y = poincare::poincare_exp_at(&x.view(), &v.view(), c, 1e-5);
     let diff = (&x - &y).mapv(f32::abs).sum();
     assert!(
         diff < 1e-7,
@@ -60,7 +61,7 @@ fn poincare_euclidean_limit_matches() {
     let c = 1e-9_f32;
     let x = arr2(&[[0.2_f32, -0.1]]);
     let v = arr2(&[[0.03_f32, 0.02]]);
-    let y = poincare::poincare_exp_at(&x.view(), &v.view(), c);
+    let y = poincare::poincare_exp_at(&x.view(), &v.view(), c, 1e-5);
     let approx = &x + &v;
     let diff_exp = (&y - &approx).mapv(f32::abs).sum();
     assert!(
@@ -68,7 +69,7 @@ fn poincare_euclidean_limit_matches() {
         "Poincaré exp 유클리드 극한 실패: diff_exp={} (허용 1e-6)",
         diff_exp
     );
-    let v_rec = poincare::poincare_log_at(&x.view(), &y.view(), c);
+    let v_rec = poincare::poincare_log_at(&x.view(), &y.view(), c, 1e-5);
     let diff_log = (&v - &v_rec).mapv(f32::abs).sum();
     assert!(
         diff_log < 1e-6,
@@ -421,7 +422,7 @@ fn spline_forward_linearity_on_zero() {
     pyo3::Python::with_gil(|py| {
         use numpy::ToPyArray;
         let out = layer.forward(py, input.view().to_pyarray(py).readonly());
-        let out_arr = unsafe { out.as_array() };
+        let out_arr = unsafe { out.as_array_mut() };
         let max_abs = out_arr.iter().fold(0.0_f32, |acc, v| acc.max(v.abs()));
         assert!(
             max_abs < 1e-6,
@@ -453,7 +454,7 @@ fn poincare_distance_binding_matches_rust() {
         let x_py = x.to_pyarray(py).readonly();
         let y_py = y.to_pyarray(py).readonly();
         let out = bindings::poincare::poincare_distance_cpu(py, x_py, y_py, c, 1e-5);
-        let d_py = unsafe { out.as_array() };
+        let d_py = unsafe { out.as_array_mut() };
         let diff = (d_rust - d_py[0]).abs();
         assert!(
             diff < 1e-5,
@@ -483,7 +484,7 @@ fn lorentz_distance_binding_matches_rust() {
         let x_py1 = x.to_pyarray(py).readonly();
         let x_py2 = x.to_pyarray(py).readonly();
         let out = bindings::lorentz::lorentz_distance(py, x_py1, x_py2, c);
-        let d_py = unsafe { out.as_array() };
+        let d_py = unsafe { out.as_array_mut() };
         let diff = (d_rust - d_py[0]).abs();
         assert!(
             diff < 1e-5,
@@ -513,7 +514,7 @@ fn klein_distance_binding_matches_rust() {
         let x_py = x.to_pyarray(py).readonly();
         let y_py = y.to_pyarray(py).readonly();
         let out = bindings::klein::klein_distance(py, x_py, y_py, c);
-        let d_py = unsafe { out.as_array() };
+        let d_py = unsafe { out.as_array_mut() };
         let diff = (d_rust - d_py[0]).abs();
         assert!(
             diff < 1e-5,

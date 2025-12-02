@@ -41,6 +41,7 @@ impl PyRSULFLayer {
             gamma,
             seq_len,
             window,
+            calibration_samples: 1024,
         };
         
         let inner = RSULFLayer::from_transformer(
@@ -80,6 +81,7 @@ impl PyRSULFLayer {
             gamma,
             seq_len,
             window,
+            calibration_samples: 1024,
         };
 
         let inner = RSULFLayer::from_transformer_with_metric(
@@ -89,6 +91,53 @@ impl PyRSULFLayer {
             w2.as_array(),
             config,
             g_diag.as_array(),
+        );
+
+        Self { inner }
+    }
+    
+    #[staticmethod]
+    #[pyo3(signature = (wq, wk, w1, w2, u_basis, basis_rank, d_model=4096, r=1024, eta=0.01, alpha=0.02, beta=0.01, gamma=0.99, seq_len=128, window=8))]
+    pub fn new_with_basis(
+        wq: PyReadonlyArray2<f32>,
+        wk: PyReadonlyArray2<f32>,
+        w1: PyReadonlyArray2<f32>,
+        w2: PyReadonlyArray2<f32>,
+        u_basis: PyReadonlyArray2<f32>,
+        basis_rank: usize,
+        d_model: usize,
+        r: usize,
+        eta: f32,
+        alpha: f32,
+        beta: f32,
+        gamma: f32,
+        seq_len: usize,
+        window: usize,
+    ) -> Self {
+        let config = RSULFConfig {
+            d_model,
+            r,
+            eta,
+            alpha,
+            beta,
+            gamma,
+            seq_len,
+            window,
+            calibration_samples: 1024,
+        };
+        
+        let global_basis = crate::layers::rsulf::GlobalBasis {
+            u: u_basis.as_array().to_owned(),
+            rank: basis_rank,
+        };
+
+        let inner = RSULFLayer::from_transformer_with_basis(
+            wq.as_array(),
+            wk.as_array(),
+            w1.as_array(),
+            w2.as_array(),
+            config,
+            &global_basis,
         );
 
         Self { inner }
@@ -263,6 +312,7 @@ impl PyRSULFLayer {
             gamma,
             seq_len,
             window,
+            calibration_samples: 1024,
         };
         
         let inner = RSULFLayer::from_transformer_fast(
@@ -467,6 +517,72 @@ pub fn analyze_layer_py<'py>(
     dict
 }
 
+#[pyfunction(name = "extract_global_basis")]
+pub fn extract_global_basis_py<'py>(
+    py: Python<'py>,
+    layers_wq: Vec<PyReadonlyArray2<f32>>,
+    layers_wk: Vec<PyReadonlyArray2<f32>>,
+    target_rank: usize,
+) -> &'py PyDict {
+    let wq_views: Vec<_> = layers_wq.iter().map(|x| x.as_array()).collect();
+    let wk_views: Vec<_> = layers_wk.iter().map(|x| x.as_array()).collect();
+    
+    let basis = crate::layers::rsulf::extract_global_basis(&wq_views, &wk_views, target_rank);
+    
+    let dict = PyDict::new(py);
+    dict.set_item("u", basis.u.into_pyarray(py)).unwrap();
+    dict.set_item("rank", basis.rank).unwrap();
+    dict
+}
+
+#[pyfunction(name = "create_compression_plan")]
+pub fn create_compression_plan_py<'py>(
+    py: Python<'py>,
+    analyses: Vec<&PyDict>,
+    compression_ratio: f32,
+) -> &'py PyDict {
+    let mut layer_analyses = Vec::new();
+    
+    for d in analyses {
+        let layer_idx = d.get_item("layer_idx").unwrap().expect("layer_idx missing").extract::<usize>().unwrap_or(0);
+        let param_count = d.get_item("param_count").unwrap().expect("param_count missing").extract::<usize>().unwrap_or(0);
+        let spectral_decay = d.get_item("spectral_decay").unwrap().expect("spectral_decay missing").extract::<f32>().unwrap_or(0.0);
+        let condition_number = d.get_item("condition_number").unwrap().expect("condition_number missing").extract::<f32>().unwrap_or(0.0);
+        let recommended_rank = d.get_item("recommended_rank").unwrap().expect("recommended_rank missing").extract::<usize>().unwrap_or(1);
+        let expected_accuracy = d.get_item("expected_accuracy").unwrap().expect("expected_accuracy missing").extract::<f32>().unwrap_or(0.0);
+        
+        use crate::layers::rsulf::{LayerAnalysis, LayerType, CompressionStrategy};
+        
+        let strategy = CompressionStrategy::MetricSVD { 
+            target_rank: recommended_rank, 
+            expected_accuracy 
+        };
+        
+        layer_analyses.push(LayerAnalysis {
+            layer_idx,
+            layer_type: LayerType::Attention,
+            input_shape: (0, 0),
+            output_shape: (0, 0),
+            param_count,
+            spectral_decay,
+            condition_number,
+            recommended_rank,
+            expected_accuracy,
+            strategy
+        });
+    }
+    
+    let plan = crate::layers::rsulf::create_compression_plan(layer_analyses, compression_ratio);
+    
+    let dict = PyDict::new(py);
+    dict.set_item("total_original_params", plan.total_original_params).unwrap();
+    dict.set_item("total_compressed_params", plan.total_compressed_params).unwrap();
+    dict.set_item("expected_compression_ratio", plan.expected_compression_ratio).unwrap();
+    dict.set_item("min_expected_accuracy", plan.min_expected_accuracy).unwrap();
+    
+    dict
+}
+
 pub fn register(m: &PyModule) -> PyResult<()> {
     m.add_class::<PyRSULFLayer>()?;
     m.add_function(wrap_pyfunction!(fold_metric_svd, m)?)?;
@@ -476,5 +592,7 @@ pub fn register(m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fold_metric_optimized, m)?)?;
     m.add_function(wrap_pyfunction!(nystrom_metric, m)?)?;
     m.add_function(wrap_pyfunction!(analyze_layer_py, m)?)?;
+    m.add_function(wrap_pyfunction!(extract_global_basis_py, m)?)?;
+    m.add_function(wrap_pyfunction!(create_compression_plan_py, m)?)?;
     Ok(())
 }

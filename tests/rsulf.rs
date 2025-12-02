@@ -1,10 +1,9 @@
 use ndarray::{arr1, Array1, Array2};
 use _rust::layers::rsulf::{
-    RSULFConfig, RSULFLayer,
+    RSULFConfig, RSULFLayer, extract_global_basis,
     fold_dimension_svd, fold_ffn_svd, create_causal_laplacian,
     compute_curvature, verify_fold_consistency,
     analyze_layer, create_compression_plan, verify_compression_plan,
-    LayerType, CompressionStrategy,
 };
 
 fn silu(x: f32) -> f32 {
@@ -30,6 +29,7 @@ fn rsulf_메트릭_대각_양수() {
     let config = RSULFConfig {
         d_model: d,
         r: 16,
+        calibration_samples: 1024,
         ..Default::default()
     };
     
@@ -80,12 +80,8 @@ fn rsulf_메트릭_역행렬_정합성() {
 fn rsulf_포텐셜_비음수() {
     let d = 32;
     let batch = 4;
-    
-    let wq = Array2::<f32>::from_shape_fn((d, d), |_| rand::random::<f32>() * 0.1);
-    let wk = Array2::<f32>::from_shape_fn((d, d), |_| rand::random::<f32>() * 0.1);
     let w1 = Array2::<f32>::from_shape_fn((d * 4, d), |_| rand::random::<f32>() * 0.1);
     let w2 = Array2::<f32>::from_shape_fn((d, d * 4), |_| rand::random::<f32>() * 0.1);
-    
     let x = Array2::<f32>::from_shape_fn((batch, d), |_| rand::random::<f32>() * 2.0 - 1.0);
     let f_x = compute_ffn_output(&x, &w1, &w2);
     let phi = compute_phi(&f_x);
@@ -245,6 +241,7 @@ fn rsulf_forward_반복_안정성() {
         gamma: 0.99,
         seq_len: batch,
         window: 2,
+        calibration_samples: 1024,
     };
     
     let layer = RSULFLayer::from_transformer(wq.view(), wk.view(), w1.view(), w2.view(), config);
@@ -487,10 +484,7 @@ fn rsulf_폴딩_에너지_보존() {
     
     let wq = Array2::<f32>::from_shape_fn((d, d), |_| rand::random::<f32>() * 0.1);
     let wk = Array2::<f32>::from_shape_fn((d, d), |_| rand::random::<f32>() * 0.1);
-    
     let g = wq.t().dot(&wk);
-    let frob_g: f32 = g.iter().map(|x| x * x).sum();
-    
     let folded = fold_dimension_svd(wq.view(), wk.view(), r);
     let result = verify_fold_consistency(wq.view(), wk.view(), &folded);
     
@@ -564,6 +558,7 @@ fn rsulf_forward_재구성_오차() {
         gamma: 0.0,
         seq_len: batch,
         window: 2,
+        calibration_samples: 1024,
     };
     
     let layer = RSULFLayer::from_transformer(wq.view(), wk.view(), w1.view(), w2.view(), config);
@@ -602,7 +597,7 @@ fn rsulf_고압축_정확도() {
     };
     
     let layer = RSULFLayer::from_transformer(wq.view(), wk.view(), w1.view(), w2.view(), config);
-    let (compressed, original, ratio) = layer.param_count();
+    let (compressed, _, ratio) = layer.param_count();
     
     assert!(
         ratio >= 10.0,
@@ -722,6 +717,7 @@ fn rsulf_어텐션_포함_forward() {
         gamma: 0.99,
         seq_len: batch,
         window: 4,
+        calibration_samples: 1024,
     };
     
     let layer = RSULFLayer::from_transformer(wq.view(), wk.view(), w1.view(), w2.view(), config);
@@ -768,6 +764,7 @@ fn rsulf_지수맵_근사_정확도() {
         gamma: 0.99,
         seq_len: batch,
         window: 2,
+        calibration_samples: 1024,
     };
     
     let layer = RSULFLayer::from_transformer(wq.view(), wk.view(), w1.view(), w2.view(), config);
@@ -854,6 +851,7 @@ fn rsulf_인과적_어텐션_마스킹() {
         gamma: 0.99,
         seq_len: batch,
         window: 4,
+        calibration_samples: 1024,
     };
     
     let layer = RSULFLayer::from_transformer(wq.view(), wk.view(), w1.view(), w2.view(), config);
@@ -885,5 +883,60 @@ fn rsulf_인과적_어텐션_마스킹() {
     let diff_0: f32 = (&row_0 - &x_0).iter().map(|v| v.abs()).sum();
     
     assert!(diff_0 < 0.1, "첫 토큰 변화 과대: diff={}", diff_0);
+}
+
+#[test]
+fn rsulf_global_basis_extraction_test() {
+    let d = 32;
+    let r = 8;
+    let num_layers = 4;
+    
+    let mut wqs = Vec::new();
+    let mut wks = Vec::new();
+    
+    for _ in 0..num_layers {
+        wqs.push(Array2::<f32>::from_shape_fn((d, d), |_| rand::random::<f32>() * 0.1));
+        wks.push(Array2::<f32>::from_shape_fn((d, d), |_| rand::random::<f32>() * 0.1));
+    }
+    
+    let wq_views: Vec<_> = wqs.iter().map(|a| a.view()).collect();
+    let wk_views: Vec<_> = wks.iter().map(|a| a.view()).collect();
+    
+    let global_basis = extract_global_basis(&wq_views, &wk_views, r);
+    
+    assert_eq!(global_basis.rank, r);
+    assert_eq!(global_basis.u.nrows(), d);
+    assert_eq!(global_basis.u.ncols(), r);
+}
+
+#[test]
+fn rsulf_global_folding_test() {
+    let d = 32;
+    let d_ff = 64;
+    let r = 8;
+    
+    let wq = Array2::<f32>::from_shape_fn((d, d), |_| rand::random::<f32>() * 0.1);
+    let wk = Array2::<f32>::from_shape_fn((d, d), |_| rand::random::<f32>() * 0.1);
+    let w1 = Array2::<f32>::from_shape_fn((d_ff, d), |_| rand::random::<f32>() * 0.1);
+    let w2 = Array2::<f32>::from_shape_fn((d, d_ff), |_| rand::random::<f32>() * 0.1);
+    
+    let wq_views = vec![wq.view()];
+    let wk_views = vec![wk.view()];
+    let global_basis = extract_global_basis(&wq_views, &wk_views, r);
+    
+    let config = RSULFConfig {
+        d_model: d,
+        r,
+        ..Default::default()
+    };
+    
+    let layer = RSULFLayer::from_transformer_with_basis(
+        wq.view(), wk.view(), w1.view(), w2.view(), config, &global_basis
+    );
+    
+    assert_eq!(layer.u_metric.nrows(), d);
+    assert_eq!(layer.u_metric.ncols(), r);
+    let diff = (&layer.u_metric - &global_basis.u).mapv(|v| v.abs()).sum();
+    assert!(diff < 1e-6, "Layer U does not match Global U");
 }
 

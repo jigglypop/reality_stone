@@ -49,7 +49,7 @@ def main():
     
     # 3. 상태-행동-보상 시퀀스 시뮬레이션
     print("\n3. Simulating episodes...")
-    num_episodes = 10
+    num_episodes = 50  # Increased from 10 to 50 for better convergence
     max_steps = 50
     
     history = {
@@ -94,11 +94,11 @@ def main():
                 state,
                 next_state_env,
                 np.array([reward]),
-                learning_rate=0.01
+                learning_rate=0.001  # Reduced LR to prevent divergence
             )
             
             # 메트릭 업데이트
-            layer.update_metric(state, velocity, learning_rate=0.001)
+            layer.update_metric(state, velocity, learning_rate=0.0001)  # Reduced LR
             
             # 기록
             history['states'].append(state.copy())

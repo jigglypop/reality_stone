@@ -12,10 +12,14 @@
 **증명 (Sketch of Proof):**
 
 1.  **어텐션의 기하학적 분해**:
-    트랜스포머의 어텐션 항 $\Delta x_{attn} = W_O \text{softmax}(x^\top W_Q^\top W_K X) V X$에서, $B = W_Q^\top W_K$라 하자.
-    쌍선형 형식 $B$는 대칭 성분 $g$와 반대칭 성분 $A$로 유일하게 분해된다.
+    트랜스포머의 어텐션 항 $\Delta x_{attn} = W_O \text{softmax}(x^\top W_Q^\top W_K X) V X$에서, 
+    
+    $B = W_Q^\top W_K$라 하자.
+    
+    쌍선형 형식 $B$는 대칭 성분 $g$와 반대칭 성분 $A$로 유일하게 분해 가능하다.
     $$ g = \frac{1}{2}(B + B^\top), \quad A = \frac{1}{2}(B - B^\top) $$
     여기서 $g$를 리만 메트릭으로, $A$를 전자기장 텐서(Faraday Tensor) $F_{ij}$로 간주한다.
+
     입자의 운동 방정식은 $\nabla_{\dot{x}} \dot{x} = g^{\#}(A(\dot{x}, \cdot))$ 형태의 자기 지오데식 방정식(Magnetic Geodesic Equation)이 된다.
 
 2.  **FFN의 헬름홀츠 분해**:
@@ -25,7 +29,9 @@
     *   $\nabla \times \Psi(x)$: 비보존 회전력, 입자를 궤도에서 이탈시키지 않고 회전시키는 힘.
 
 3.  **통합 동역학**:
-    위 요소들을 라그랑지안 $L(x, \dot{x}) = \frac{1}{2} g_{ij} \dot{x}^i \dot{x}^j - \Phi(x) - A_i \dot{x}^i$에 대입하고 변분 원리를 적용하면, 트랜스포머의 잔차 업데이트(Residual Update)와 국소적으로 일치하는 운동 방정식이 유도된다. $\blacksquare$
+    위 요소들을 라그랑지안 $L(x, \dot{x}) = \frac{1}{2} g_{ij} \dot{x}^i \dot{x}^j - \Phi(x) - A_i \dot{x}^i$에 대입하고 변분 원리를 적용하면, 
+    
+    트랜스포머의 잔차 업데이트(Residual Update)와 국소적으로 일치하는 운동 방정식이 유도된다. $\blacksquare$
 
 ## 3. 압축 오차 상계 (Compression Error Bounds)
 
@@ -39,6 +45,7 @@ $$ | d_g(x, y) - d_{\tilde{g}}(x, y) | \le \int_\gamma \sqrt{\sum_{i=r+1}^d \sig
 **증명:**
 메트릭 텐서의 스펙트럼 분해 $g = \sum_{k=1}^d \sigma_k u_k u_k^\top$에서 상위 $r$개만 취한 근사 메트릭을 $\tilde{g}$라 하자.
 길이 범함수 $L(\gamma) = \int \sqrt{\dot{\gamma}^\top g \dot{\gamma}} dt$의 변분 $\delta L$은 $\delta g = g - \tilde{g}$에 의해 결정된다.
+
 $\delta g$의 스펙트럼 노름 $\|\delta g\|_2 = \sigma_{r+1}$이므로, 코시-슈바르츠 부등식에 의해 위 상계가 성립한다.
 
 ## 4. 곡률 보상 정리 (Curvature Compensation Theorem)

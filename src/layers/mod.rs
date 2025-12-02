@@ -9,6 +9,8 @@ pub mod klein;
 pub mod lorentz;
 pub mod poincare;
 pub mod spline;
+pub mod spline_cache;
+pub mod memory;
 pub mod riemann;
 pub mod suppression;
 pub mod bellman;

@@ -1,5 +1,5 @@
 use pyo3::prelude::*;
-use numpy::{PyArray4, PyReadonlyArray2, PyReadonlyArray3, PyReadonlyArray4, PyUntypedArrayMethods};
+use numpy::{PyArray4, PyReadonlyArray2, PyReadonlyArray3, PyReadonlyArray4};
 #[cfg(feature = "cuda")]
 use numpy::IntoPyArray;
 #[cfg(feature = "cuda")]

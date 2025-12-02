@@ -195,23 +195,58 @@ pub fn bellman_update(
     gamma: f32,
     learning_rate: f32,
 ) {
-    let v_x = value_fn.compute(x);
+    let batch_size = x.nrows();
+    let hidden_dim = value_fn.weights.ncols();
+
+    // 1. V(x) 계산 및 중간 값 저장 (Backprop을 위해)
+    let hidden_pre = x.dot(&value_fn.weights); // (batch, hidden)
+    let mut activations = Array2::zeros((batch_size, hidden_dim));
+    let mut v_x = Array1::zeros(batch_size);
+    
+    for b in 0..batch_size {
+        let mut sum_val = 0.0;
+        for h in 0..hidden_dim {
+             let val = hidden_pre[[b, h]] + value_fn.bias[h];
+             let act = val.tanh();
+             activations[[b, h]] = act;
+             sum_val += act;
+        }
+        v_x[b] = sum_val;
+    }
+
+    // 2. TD Error 계산
     let v_x_next = value_fn.compute(x_next);
+    let td_error = reward + &(&v_x_next * gamma) - &v_x; // (batch,)
     
-    let td_error = reward + &(&v_x_next * gamma) - &v_x;
+    // 3. 파라미터 업데이트 (Semi-gradient descent)
+    // Update rule: theta += alpha * td_error * ∇_theta V(x)
     
-    // SGD 업데이트 (단순화)
-    let batch_size = x.nrows() as f32;
-    let td_expanded = Array2::from_shape_fn((x.nrows(), 1), |(i, _)| td_error[i]);
-    let grad_w = x.t().dot(&td_expanded) * (learning_rate / batch_size);
-    
-    for i in 0..value_fn.weights.nrows() {
-        for j in 0..value_fn.weights.ncols() {
-            if j < grad_w.ncols() {
-                value_fn.weights[[i, j]] += grad_w[[i, j]];
-            }
+    // ∇_activations = (1 - tanh^2)
+    // delta[b, h] = td_error[b] * (1 - activation[b, h]^2)
+    let mut delta = Array2::zeros((batch_size, hidden_dim));
+    for b in 0..batch_size {
+        let err = td_error[b];
+        for h in 0..hidden_dim {
+            let act = activations[[b, h]];
+            delta[[b, h]] = err * (1.0 - act * act);
         }
     }
+
+    let lr_scaled = learning_rate / (batch_size as f32);
+
+    // Bias 업데이트
+    // ∇_bias[h] = sum_b(delta[b, h])
+    let bias_grad = delta.sum_axis(Axis(0));
+    // Gradient Clipping to prevent explosion
+    let bias_grad_clipped = bias_grad.mapv(|g| g.clamp(-1.0, 1.0));
+    value_fn.bias = &value_fn.bias + &(&bias_grad_clipped * lr_scaled);
+    
+    // Weights 업데이트
+    // ∇_weights = x^T @ delta
+    let weights_grad = x.t().dot(&delta);
+    // Gradient Clipping
+    let weights_grad_clipped = weights_grad.mapv(|g| g.clamp(-1.0, 1.0));
+    value_fn.weights = &value_fn.weights + &(&weights_grad_clipped * lr_scaled);
 }
 
 /// 에너지 구성 요소
@@ -281,7 +316,7 @@ mod tests {
 
     #[test]
     fn test_kinetic_energy() {
-        use super::super::metric::{DiagonalMetric, MetricTensor};
+        use super::super::metric::{DiagonalMetric};
         let metric = DiagonalMetric::new(3);
         let x = arr2(&[[0.1, 0.2, 0.3]]);
         let v = arr2(&[[1.0, 0.5, 0.2]]);

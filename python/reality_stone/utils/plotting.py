@@ -1,5 +1,10 @@
 import torch
-import matplotlib.pyplot as plt
+try:
+    import matplotlib.pyplot as plt
+    HAS_MATPLOTLIB = True
+except ImportError:
+    plt = None
+    HAS_MATPLOTLIB = False
 import numpy as np
 from typing import Dict, List, Optional
 
@@ -11,6 +16,10 @@ def plot_energy_history(history: Dict[str, List[float]], save_path: str = 'energ
         history: Dictionary containing lists for 'lagrangian', 'kinetic', 'potential'.
         save_path: Path to save the plot.
     """
+    if not HAS_MATPLOTLIB:
+        print("Note: matplotlib not available, skipping plot_energy_history")
+        return
+
     if not history:
         return
 
@@ -47,6 +56,10 @@ def plot_distance_distribution(intra_class: List[float], inter_class: List[float
     """
     Plots histograms of intra-class and inter-class distances.
     """
+    if not HAS_MATPLOTLIB:
+        print("Note: matplotlib not available, skipping plot_distance_distribution")
+        return
+
     plt.figure(figsize=(10, 6))
     plt.hist(intra_class, bins=30, alpha=0.6, label='Intra-class', color='blue')
     plt.hist(inter_class, bins=30, alpha=0.6, label='Inter-class', color='red')
@@ -63,6 +76,10 @@ def plot_embeddings_2d(embeddings: np.ndarray, labels: np.ndarray, save_path: st
     """
     Plots 2D PCA projection of embeddings.
     """
+    if not HAS_MATPLOTLIB:
+        print("Note: matplotlib not available, skipping plot_embeddings_2d")
+        return
+
     try:
         from sklearn.decomposition import PCA
     except ImportError:

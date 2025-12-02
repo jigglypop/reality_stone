@@ -52,6 +52,16 @@ Spectrum Analyzer 출력에 기반해, 실제 폴딩에 사용할 전역 랭크�
 
 이 단계의 핵심은 **실제 변환 전에 “몇 차원으로 접을 것인지”를 전역 정책으로 고정**하는 것이다. 이후 `Global Basis U` 추출과 레이어별 폴딩, `.rsu` 패킹은 이 `RankPlan`을 기준으로 수행된다.
 
+**현재 구현 노트 (RSULFTransformerConverter 기준)**
+
+- Rust `analyze_layer`는 각 레이어에 대해 `recommended_rank`, `expected_accuracy`를 포함한 분석 결과를 반환한다.
+- Python `RSULFTransformerConverter.convert_model`은 이 분석 결과를 수집한 뒤, 레이어별로 다음 규칙으로 실제 폴딩 랭크를 결정한다.
+  - `base_r^{(l)} = \text{recommended_rank}^{(l)}`
+  - `r_{\text{used}}^{(l)} = \min\{ d_{\text{model}}, r_{\text{global}}, base_r^{(l)} \}`
+- 따라서 사용자는 전역 상한 `r_{\text{global}}`(예: 1024)을 설정하고, 세부적인 레이어별 랭크는 Analyzer가 제안한 값을 그대로 따르되, 모델 차원과 전역 상한에 의해 자동으로 클리핑된다.
+
+이 구조 덕분에, 동일한 코드 경로에서 **보수적인 설정(r_global를 크게)** 과 **공격적인 압축(r_global를 작게)** 을 모두 실험할 수 있으며, 레이어별 스펙트럼 구조는 항상 Rank Planner에 의해 반영된다.
+
 ### 2.1 데이터 흐름
 1.  **Loader**: `.safetensors` 등에서 $W_Q, W_K, W_{FFN}$ 로드.
 2.  **Analyzer**: 전체 레이어 스캔 $\to$ 메트릭 통계 수집 $\to$ Global Basis ($U$) 추출.
@@ -93,9 +103,30 @@ GPU 상에서 고속으로 실행되는 핵심 연산 커널이다. (CUDA/Triton
     2.  (SRAM) $U$와 $g_{core}$를 이용해 로컬 메트릭 효과 계산.
     3.  (Compute) 포텐셜 그라디언트 $-\nabla \Phi$ 계산.
     4.  (Compute) 그래프 확산항 $\beta L x$ 계산.
-    5.  (Compute) 지수 맵 $\text{Exp}_x(v)$ 근사 계산 (Retraction).
-    6.  (Register) $x_{next}$ 업데이트.
+    5.  (Compute) 곡률 오차 보정 노름을 이용한 안정 스텝 크기 계산.
+    6.  (Compute) 지수 맵 $\text{Exp}_x(v)$ 근사 계산 (Retraction).
+    7.  (Register) $x_{next}$ 업데이트.
 *   **Output**: $x_{next}$.
+
+#### 3.1.1 안정 방정식: 곡률 오차 보정 노름의 활용
+
+실제 RS-ULF 레이어(`RSULFLayer::forward`)에서는, 압축으로부터 얻어진 곡률 $\kappa$와 현재 속도장 $v$의 노름을 이용해 **스텝 크기를 동적으로 안정화**한다.
+
+- 레이어별 곡률 노름: $\|\kappa\| = |\kappa|$ (SVD 잔차 에너지에서 유도)
+- 전역 속도 노름: $\|v\| = \sqrt{\frac{1}{B} \sum_{b=1}^B \|v_b\|^2}$
+- 안정 스케일링 계수:
+  $$
+  s_{\text{step}} = \frac{1}{1 + \|\kappa\| \cdot \|v\|}
+  $$
+  
+- 실제 업데이트에 사용되는 속도장은
+  $$
+  v_{\text{stable}} = s_{\text{step}} \cdot v
+  $$
+  
+  로 축소된 뒤, 곡률 기반 Christoffel 보정 항과 함께 지오데식 스텝에 사용된다.
+
+이 방식은 곡률이 크거나 속도장이 과도하게 커졌을 때 스텝 크기를 자동으로 줄여, **발산을 막고 안정적인 지오데식 흐름**을 보장한다. 반대로 곡률과 속도 노름이 작은 구간에서는 $s_{\text{step}} \approx 1$이 되어, 원래 설계된 동역학을 그대로 유지한다.
 
 ### 3.2 `SplineReconstructor` Kernel
 KV 캐시(제어점)로부터 현재 필요한 상태를 복원한다.

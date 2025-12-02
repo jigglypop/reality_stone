@@ -264,6 +264,10 @@ class RSULFTransformerConverter:
         print("Phase 4: Converting layers...")
         layers = []
         acc_by_idx = {a.get("layer_idx", i): a.get("expected_accuracy", 0.0) for i, a in enumerate(analyses)}
+        rank_by_idx = {
+            a.get("layer_idx", i): int(a.get("recommended_rank", self.r))
+            for i, a in enumerate(analyses)
+        }
         pbar_convert = tqdm(total=len(layer_weights), desc="Converting", unit="layer", disable=not self.verbose)
         for idx, weights in enumerate(layer_weights):
             if weights is None:
@@ -276,7 +280,8 @@ class RSULFTransformerConverter:
             
             try:
                 d_out, d_model = weights["WQ"].shape
-                best_r = int(max(1, min(d_model, self.r)))
+                base_r = rank_by_idx.get(idx, self.r)
+                best_r = int(max(1, min(d_model, self.r, base_r)))
                 
                 rsulf = RSULFLayerCUDA(
                     wq=weights["WQ"],

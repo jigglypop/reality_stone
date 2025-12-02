@@ -1075,25 +1075,29 @@ impl RSULFLayer {
             // Assumption: Input is flattened [Batch * SeqLen, D].
             // Attention should only happen within each sequence.
             
-            let seq_len = self.config.seq_len;
-            let num_seq = if seq_len > 0 { batch_total / seq_len } else { 1 };
-            let actual_seq_len = if seq_len > 0 { seq_len } else { batch_total };
-            
-            if batch_total % actual_seq_len != 0 {
-                // Fallback: treat as single large sequence or panic?
-                // For safety, treat as single sequence if mismatch
-                // But let's try to respect the structure.
+            let mut seq_len_cfg = self.config.seq_len;
+            if seq_len_cfg == 0 || seq_len_cfg > batch_total {
+                seq_len_cfg = batch_total;
             }
+            let num_seq = if seq_len_cfg > 0 {
+                (batch_total + seq_len_cfg - 1) / seq_len_cfg
+            } else {
+                1
+            };
 
             for s_idx in 0..num_seq {
-                let start_row = s_idx * actual_seq_len;
-                let mut attn_weights = Array2::<f32>::zeros((actual_seq_len, actual_seq_len));
-                for i in 0..actual_seq_len {
+                let start_row = s_idx * seq_len_cfg;
+                let end_row = (start_row + seq_len_cfg).min(batch_total);
+                let current_len = end_row.saturating_sub(start_row);
+                if current_len == 0 {
+                    continue;
+                }
+                let mut attn_weights = Array2::<f32>::zeros((current_len, current_len));
+                for i in 0..current_len {
                     let global_i = start_row + i;
                     let q_i = x_arr.row(global_i);
                     let mut max_val = f32::NEG_INFINITY;
                     
-                    // Causal Masking: j <= i
                     for j in 0..=i {
                         let global_j = start_row + j;
                         let k_j = x_arr.row(global_j);
@@ -1129,8 +1133,7 @@ impl RSULFLayer {
                     }
                 }
                 
-                // Apply weights to values
-                for i in 0..actual_seq_len {
+                for i in 0..current_len {
                     let global_i = start_row + i;
                     for j in 0..=i {
                         let w = attn_weights[[i, j]];
@@ -1213,28 +1216,52 @@ impl RSULFLayer {
             graph.mapv_inplace(|v| v * self.config.beta);
         }
         
-        // Total Velocity Field: V_total = V_attn + eta * V_ffn + V_graph
-        let v_total = &v_attn + self.config.eta * &v_ffn + &graph;
+        let mut v_total = &v_attn + self.config.eta * &v_ffn + &graph;
         
-        // 4. Geodesic Step (Retraction) with Curvature Correction
-        // Christoffel symbols correction: -0.5 * Gamma * v * v
-        // Simplified scalar curvature correction
+        let mut v_norm_global: f32 = 0.0;
+        if batch_total > 0 {
+            v_norm_global = v_total
+                .iter()
+                .map(|v| v * v)
+                .sum::<f32>()
+                .sqrt()
+                / (batch_total as f32).sqrt();
+        }
+        let curvature_norm = self.curvature.abs();
+        let mut step_scale = 1.0_f32;
+        if curvature_norm > 0.0 && v_norm_global > 0.0 {
+            let denom = 1.0 + curvature_norm * v_norm_global;
+            if denom.is_finite() && denom > 0.0 {
+                step_scale = 1.0 / denom;
+            }
+        }
+        if step_scale < 1.0 {
+            v_total.mapv_inplace(|val| val * step_scale);
+        }
         
         let mut christoffel = Array2::zeros((batch_total, d));
-        // Use the computed curvature parameter, limited for stability
-        let curv_scale = self.curvature.abs().min(1.0); // Removed arbitrary 0.1 limit, trust the physics or alpha
+        let curv_scale = curvature_norm.min(1.0);
         
         if curv_scale > 1e-8 {
-            // Check velocity magnitude for stability
-            let v_norm_global: f32 = v_total.iter().map(|v| v * v).sum::<f32>().sqrt() / (batch_total as f32).sqrt();
-            // If velocity is too high, the step size is too large for the curvature approximation
-            let stability_scale = if v_norm_global > 1.0 { 1.0 / v_norm_global } else { 1.0 };
+            let mut v_norm_global_scaled: f32 = 0.0;
+            if batch_total > 0 {
+                v_norm_global_scaled = v_total
+                    .iter()
+                    .map(|v| v * v)
+                    .sum::<f32>()
+                    .sqrt()
+                    / (batch_total as f32).sqrt();
+            }
+            let stability_scale = if v_norm_global_scaled > 1.0 {
+                1.0 / v_norm_global_scaled
+            } else {
+                1.0
+            };
 
             for i in 0..batch_total {
                 let v_row = v_total.row(i);
                 let x_row = x_arr.row(i);
                 
-                // Deviation term ~ - K * ||v||^2 * x
                 let v_norm_sq = v_row.dot(&v_row) * stability_scale * stability_scale;
                 let scale = -0.5 * curv_scale * v_norm_sq;
                 

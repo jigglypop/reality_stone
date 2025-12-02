@@ -106,3 +106,83 @@ def test_kv_spline_memory():
     val = mem.query(query_t)
     assert val.shape == (d_model,)
 
+
+@pytest.mark.skipif(not HAS_RUST, reason="Rust extension not available")
+def test_rsulf_converter_uses_rank_plan(monkeypatch):
+    import reality_stone.models.transformer_converter as conv_mod
+
+    class DummyLinear(torch.nn.Module):
+        def __init__(self, weight):
+            super().__init__()
+            self.weight = torch.nn.Parameter(weight)
+
+    class DummySelfAttn(torch.nn.Module):
+        def __init__(self, d_model):
+            super().__init__()
+            q_weight = torch.randn(d_model, d_model) * 0.01
+            k_weight = torch.randn(d_model, d_model) * 0.01
+            self.q_proj = DummyLinear(q_weight)
+            self.k_proj = DummyLinear(k_weight)
+
+    class DummyMLP(torch.nn.Module):
+        def __init__(self, d_model):
+            super().__init__()
+            ffn_dim = d_model * 4
+            fc1_weight = torch.randn(ffn_dim, d_model) * 0.01
+            fc2_weight = torch.randn(d_model, ffn_dim) * 0.01
+            self.fc1 = DummyLinear(fc1_weight)
+            self.fc2 = DummyLinear(fc2_weight)
+
+    class DummyLayer(torch.nn.Module):
+        def __init__(self, d_model):
+            super().__init__()
+            self.self_attn = DummySelfAttn(d_model)
+            self.mlp = DummyMLP(d_model)
+            self.input_layernorm = torch.nn.LayerNorm(d_model)
+
+    class DummyModel(torch.nn.Module):
+        def __init__(self, layers):
+            super().__init__()
+            self.layers = torch.nn.ModuleList(layers)
+
+    d_model = 16
+    r_global = 8
+
+    def fake_analyze_layer(wq, wk, w1, w2, layer_idx, target_rank):
+        if layer_idx == 0:
+            rec_rank = max(1, r_global // 2)
+        else:
+            rec_rank = r_global
+        param_count = int(wq.size + wk.size + w1.size + w2.size)
+        return {
+            "layer_idx": layer_idx,
+            "param_count": param_count,
+            "spectral_decay": 0.95,
+            "condition_number": 10.0,
+            "recommended_rank": rec_rank,
+            "expected_accuracy": 0.99,
+        }
+
+    monkeypatch.setattr(conv_mod, "analyze_layer", fake_analyze_layer)
+
+    layers = [DummyLayer(d_model) for _ in range(3)]
+    model = DummyModel(layers)
+
+    converter = conv_mod.RSULFTransformerConverter(
+        d_model=d_model,
+        r=r_global,
+        eta=0.01,
+        alpha=0.02,
+        beta=0.0,
+        gamma=0.99,
+        seq_len=4,
+        window=2,
+        verbose=False,
+    )
+
+    rsulf_model = converter.convert_model(model)
+    used_ranks = [layer.r for layer in rsulf_model.layers]
+
+    assert used_ranks[0] == r_global // 2
+    for r in used_ranks:
+        assert 1 <= r <= r_global

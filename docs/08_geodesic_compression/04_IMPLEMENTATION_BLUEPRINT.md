@@ -128,6 +128,15 @@ GPU 상에서 고속으로 실행되는 핵심 연산 커널이다. (CUDA/Triton
 
 이 방식은 곡률이 크거나 속도장이 과도하게 커졌을 때 스텝 크기를 자동으로 줄여, **발산을 막고 안정적인 지오데식 흐름**을 보장한다. 반대로 곡률과 속도 노름이 작은 구간에서는 $s_{\text{step}} \approx 1$이 되어, 원래 설계된 동역학을 그대로 유지한다.
 
+#### 3.1.2 RS-ULF CUDA Forward Kernels
+
+실제 구현에서는 FFN 기반 포텐셜/리만 그라디언트 흐름을 GPU에서 빠르게 실행하기 위해, RS-ULF 전용 CUDA 커널을 제공한다.
+
+- 단일 배치 토큰에 대한 RS-ULF 스텝: `rsulf_forward_cuda` (Python 바인딩: `rsulf_forward_cuda_py`)
+- 배치×시퀀스 토큰에 대한 RS-ULF 스텝: `rsulf_batch_forward_cuda` (Python 바인딩: `rsulf_batch_forward_cuda_py`)
+
+이 커널들은 접공간에서의 FFN 흐름과 메트릭 역행렬 $g^{-1}$을 이용한 Riemannian 업데이트를 한 번에 수행하며, CPU 구현과 동일한 안정 파라미터 $(\eta, \alpha, \gamma)$를 공유한다. 테스트 코드(`tests/test_rsulf_cuda.py`)는 Rust 확장과 CUDA 경로가 항상 유한한 출력과 올바른 텐서 형태를 유지하는지 검증한다.
+
 ### 3.2 `SplineReconstructor` Kernel
 KV 캐시(제어점)로부터 현재 필요한 상태를 복원한다.
 

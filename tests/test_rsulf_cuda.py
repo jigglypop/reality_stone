@@ -153,6 +153,45 @@ def test_rsulf_cpu_cuda_consistency():
     
     print("CPU-CUDA consistency check completed!")
 
+def test_rsulf_batch_forward_cuda():
+    if not HAS_RUST:
+        print("SKIP: Rust bindings not available")
+        return
+    if not HAS_CUDA_RSULF:
+        print("SKIP: CUDA RS-ULF bindings not available")
+        return
+    
+    np.random.seed(0)
+    d_model = 128
+    r = 32
+    batch = 2
+    seq_len = 4
+    ffn_dim = 256
+    
+    wq = np.random.randn(d_model, d_model).astype(np.float32) * 0.02
+    wk = np.random.randn(d_model, d_model).astype(np.float32) * 0.02
+    w1 = np.random.randn(ffn_dim, d_model).astype(np.float32) * 0.02
+    w2 = np.random.randn(d_model, ffn_dim).astype(np.float32) * 0.02
+    
+    u_metric, s_metric, v_metric, curvature = fold_metric_svd(wq, wk, r)
+    u1, s1, v1, u2, s2, v2 = fold_ffn(w1, w2, r)
+    
+    g_diag = np.abs(s_metric) + 1e-6
+    g_inv = 1.0 / g_diag
+    
+    x = np.random.randn(batch * seq_len, d_model).astype(np.float32) * 0.1
+    
+    x_out_cuda, v_out_cuda = rsulf_batch_forward_cuda_py(
+        x, v1, s1, u1, v2, s2, u2, g_inv, None,
+        eta=0.01, alpha=0.02, gamma_param=0.99,
+        batch=batch, seq_len=seq_len
+    )
+    
+    assert x_out_cuda.shape == (batch * seq_len, d_model)
+    assert v_out_cuda.shape == (batch * seq_len,)
+    assert np.isfinite(x_out_cuda).all()
+    assert np.isfinite(v_out_cuda).all()
+
 def test_rsulf_inference_pipeline():
     if not HAS_RUST:
         print("SKIP: Rust bindings not available")

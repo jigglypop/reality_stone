@@ -1,6 +1,7 @@
 import numpy as np
 import json
 import os
+import copy
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, field
 
@@ -18,6 +19,8 @@ except ImportError:
 
 from reality_stone.layers.rsulf_cuda import RSULFLayerCUDA, RSULFWrapperCUDA
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from tqdm import tqdm
 
 
@@ -46,6 +49,7 @@ class RSULFTransformerConverter:
         checkpoint_dir: Optional[str] = None,
         checkpoint_interval: int = 4,
         verbose: bool = False,
+        exact: bool = False,
     ):
         if not HAS_RUST:
             raise RuntimeError("reality_stone._rust not available")
@@ -61,6 +65,7 @@ class RSULFTransformerConverter:
         self.checkpoint_dir = checkpoint_dir
         self.checkpoint_interval = checkpoint_interval
         self.verbose = verbose
+        self.exact = exact
         self.stats = ConversionStats()
 
     def extract_weights(self, layer) -> Dict[str, np.ndarray]:
@@ -229,6 +234,56 @@ class RSULFTransformerConverter:
                 all_wk.append(np.zeros((self.d_model, self.d_model), dtype=np.float32))
                 layer_weights.append(None)
 
+        if self.exact:
+            print("Exact mode: disabling global basis and using full rank per layer")
+            layers = []
+            pbar_convert = tqdm(total=len(layer_weights), desc="Converting", unit="layer", disable=not self.verbose)
+            for idx, weights in enumerate(layer_weights):
+                if weights is None:
+                    self.stats.failed.append(idx)
+                    pbar_convert.set_postfix(idx=idx, status="skip")
+                    pbar_convert.update(1)
+                    continue
+                print(f"Processing layer {idx}...")
+                try:
+                    d_out, d_model = weights["WQ"].shape
+                    best_r = d_model
+                    rsulf = RSULFLayerCUDA(
+                        wq=weights["WQ"],
+                        wk=weights["WK"],
+                        w1=weights["W1"],
+                        w2=weights["W2"],
+                        d_model=self.d_model,
+                        r=best_r,
+                        eta=self.eta,
+                        alpha=self.alpha,
+                        beta=self.beta,
+                        gamma=self.gamma,
+                        seq_len=self.seq_len,
+                        window=self.window,
+                        global_basis=None
+                    )
+                    if "ln_1_weight" in weights:
+                        rsulf.ln_1_weight = weights["ln_1_weight"]
+                        rsulf.ln_1_bias = weights.get("ln_1_bias")
+                    compressed, original, ratio = rsulf.param_count()
+                    if self.verbose:
+                        print(f"[RSULF] layer {idx:02d}: ok ratio={ratio:.1f}x")
+                    layers.append(rsulf)
+                    self.stats.converted += 1
+                    self.stats.original_params += original
+                    self.stats.compressed_params += compressed
+                    pbar_convert.set_postfix(idx=idx, ratio=f"{ratio:.1f}x", status="ok")
+                except Exception as e:
+                    print(f"[RSULF] layer {idx:02d}: fail {e}")
+                    self.stats.failed.append(idx)
+                    self.stats.errors.append({"layer": idx, "error": str(e)})
+                    pbar_convert.set_postfix(idx=idx, status="fail")
+                if self.checkpoint_dir and (idx + 1) % self.checkpoint_interval == 0:
+                    self._save_checkpoint(layers, idx + 1)
+                pbar_convert.update(1)
+            pbar_convert.close()
+            return RSULFModel(layers, self.stats)
         print("Phase 1: Analyzing layers...")
         analyses = []
         pbar_analyze = tqdm(total=len(layer_weights), desc="Analyzing", unit="layer", disable=not self.verbose)
@@ -252,7 +307,6 @@ class RSULFTransformerConverter:
         print("Phase 3: Extracting Global Basis...")
         global_basis = None
         try:
-            # Filter out zero weights if any
             valid_wq = [w for w in all_wq if w.shape[0] > 0 and w.any()]
             valid_wk = [w for w in all_wk if w.shape[0] > 0 and w.any()]
             if valid_wq:
@@ -299,7 +353,6 @@ class RSULFTransformerConverter:
                     global_basis=global_basis
                 )
                 
-                # Attach LayerNorm params if available for Wrapper
                 if "ln_1_weight" in weights:
                     rsulf.ln_1_weight = weights["ln_1_weight"]
                     rsulf.ln_1_bias = weights.get("ln_1_bias")
@@ -394,3 +447,262 @@ class RSULFModel(torch.nn.Module):
         for wrapper in self.wrappers:
             wrapper.v_mem = None
 
+
+def convert_transformer_to_rsulf(
+    model: nn.Module,
+    d_model: int = 4096,
+    r: int = 1024,
+    eta: float = 0.01,
+    alpha: float = 0.02,
+    beta: float = 0.01,
+    gamma: float = 0.99,
+    seq_len: int = 128,
+    window: int = 8,
+    checkpoint_dir: Optional[str] = None,
+    checkpoint_interval: int = 4,
+    verbose: bool = False,
+    exact: bool = False,
+) -> RSULFModel:
+    converter = RSULFTransformerConverter(
+        d_model=d_model,
+        r=r,
+        eta=eta,
+        alpha=alpha,
+        beta=beta,
+        gamma=gamma,
+        seq_len=seq_len,
+        window=window,
+        checkpoint_dir=checkpoint_dir,
+        checkpoint_interval=checkpoint_interval,
+        verbose=verbose,
+        exact=exact,
+    )
+    return converter.convert_model(model)
+
+class FFNPotential(nn.Module):
+    def __init__(self, d_model: int, hidden_dim: int):
+        super().__init__()
+        self.d_model = d_model
+        self.P = nn.Parameter(torch.zeros(d_model, d_model))
+        self.net = nn.Sequential(
+            nn.Linear(d_model, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, 1),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        b, l, d = x.shape
+        x_flat = x.view(-1, d)
+        quad = 0.5 * (x_flat @ self.P * x_flat).sum(dim=-1, keepdim=True)
+        neu = self.net(x_flat)
+        phi = quad + neu
+        return phi.view(b, l)
+
+    def gradient(self, x: torch.Tensor) -> torch.Tensor:
+        x_in = x.detach().requires_grad_(True)
+        with torch.enable_grad():
+            phi = self.forward(x_in).sum()
+            grad = torch.autograd.grad(phi, x_in, create_graph=False)[0]
+        return grad
+
+
+class LowRankFFN(nn.Module):
+    def __init__(self, mlp: nn.Module, rank: int):
+        super().__init__()
+        if hasattr(mlp, 'c_fc'):
+            w1 = mlp.c_fc.weight.data
+            b1 = mlp.c_fc.bias.data if mlp.c_fc.bias is not None else None
+            w2 = mlp.c_proj.weight.data
+            b2 = mlp.c_proj.bias.data if mlp.c_proj.bias is not None else None
+        else:
+            raise ValueError("Unsupported MLP structure")
+        
+        d_model, ffn_dim = w1.shape
+        rank = min(rank, d_model, ffn_dim)
+        
+        u1, s1, v1 = torch.linalg.svd(w1, full_matrices=False)
+        u1_r = u1[:, :rank]
+        s1_r = s1[:rank]
+        v1_r = v1[:rank, :]
+        self.w1_a = nn.Parameter(u1_r * s1_r.unsqueeze(0))
+        self.w1_b = nn.Parameter(v1_r)
+        self.b1 = nn.Parameter(b1) if b1 is not None else None
+        
+        ffn_dim2, d_out = w2.shape
+        u2, s2, v2 = torch.linalg.svd(w2, full_matrices=False)
+        u2_r = u2[:, :rank]
+        s2_r = s2[:rank]
+        v2_r = v2[:rank, :]
+        self.w2_a = nn.Parameter(u2_r * s2_r.unsqueeze(0))
+        self.w2_b = nn.Parameter(v2_r)
+        self.b2 = nn.Parameter(b2) if b2 is not None else None
+        
+        self.act = nn.GELU(approximate='tanh')
+        self.rank = rank
+        self.d_model = d_model
+        self.ffn_dim = ffn_dim
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = x @ self.w1_a @ self.w1_b
+        if self.b1 is not None:
+            h = h + self.b1
+        h = self.act(h)
+        out = h @ self.w2_a @ self.w2_b
+        if self.b2 is not None:
+            out = out + self.b2
+        return out
+
+    def param_count(self):
+        original = self.ffn_dim * self.d_model * 2
+        compressed = 2 * (self.rank * self.d_model + self.rank * self.ffn_dim)
+        return compressed, original
+
+
+class StructuralRSULFLayer(nn.Module):
+    def __init__(self, block: nn.Module, d_model: int, rank: int):
+        super().__init__()
+        self.ln_1 = copy.deepcopy(block.ln_1)
+        self.ln_2 = copy.deepcopy(block.ln_2)
+        self.attn = copy.deepcopy(block.attn)
+        self.mlp = LowRankFFN(block.mlp, rank)
+        self.potential = FFNPotential(d_model, hidden_dim=rank)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        u = self.ln_1(x)
+        attn_outputs = self.attn(u)
+        attn_out = attn_outputs[0] if isinstance(attn_outputs, (tuple, list)) else attn_outputs
+        y = x + attn_out
+        w = self.ln_2(y)
+        ffn_out = self.mlp(w)
+        return y + ffn_out
+
+
+class StructuralRSULFModel(nn.Module):
+    def __init__(
+        self,
+        blocks: List[nn.Module],
+        d_model: int,
+        rank: Optional[int] = None,
+        hidden_dim: Optional[int] = None,
+    ):
+        super().__init__()
+        if rank is None:
+            if hidden_dim is not None:
+                rank = hidden_dim
+            else:
+                rank = d_model
+        self.layers = nn.ModuleList(
+            [StructuralRSULFLayer(block, d_model, rank) for block in blocks]
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        for layer in self.layers:
+            x = layer(x)
+        return x
+
+    @property
+    def wrappers(self) -> nn.ModuleList:
+        return self.layers
+
+
+class GlobalManifoldLearner(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        rank: int,
+        hidden_dim: int = 128,
+        depth: int = 2,
+        device: Optional[torch.device] = None,
+    ):
+        super().__init__()
+        self.d_model = d_model
+        self.rank = rank
+        self.device = device if device is not None else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        layers: List[nn.Module] = []
+        in_dim = 1
+        for _ in range(max(1, depth - 1)):
+            layers.append(nn.Linear(in_dim, hidden_dim))
+            layers.append(nn.SiLU())
+            in_dim = hidden_dim
+        layers.append(nn.Linear(in_dim, rank * rank))
+        self.net = nn.Sequential(*layers).to(self.device)
+        self.u_global: Optional[torch.Tensor] = None
+        self.c_targets: Optional[torch.Tensor] = None
+        self.num_layers: int = 0
+
+    def build_targets(
+        self,
+        u_global: np.ndarray,
+        layers_wq: List[np.ndarray],
+        layers_wk: List[np.ndarray],
+    ) -> None:
+        u = torch.from_numpy(u_global).to(self.device).float()
+        cores: List[torch.Tensor] = []
+        for wq_np, wk_np in zip(layers_wq, layers_wk):
+            if wq_np is None or wk_np is None:
+                continue
+            wq = torch.from_numpy(wq_np).to(self.device).float()
+            wk = torch.from_numpy(wk_np).to(self.device).float()
+            d_q, d_in = wq.shape
+            d_k, _ = wk.shape
+            if d_k < d_q and d_k > 0:
+                repeat = d_q // d_k
+                wk_expanded = wk.repeat(repeat, 1)
+            else:
+                wk_expanded = wk
+            g = wq.t().mm(wk_expanded)
+            g_sym = 0.5 * (g + g.t())
+            c = u.t().mm(g_sym).mm(u)
+            cores.append(c.view(-1))
+        if not cores:
+            raise RuntimeError("No valid layers for manifold targets")
+        targets = torch.stack(cores, dim=0)
+        self.u_global = u
+        self.c_targets = targets
+        self.num_layers = targets.shape[0]
+
+    def fit(self, epochs: int = 500, lr: float = 1e-3) -> float:
+        if self.c_targets is None:
+            raise RuntimeError("Targets not built; call build_targets first")
+        steps = self.num_layers
+        if steps <= 0:
+            raise RuntimeError("Number of layers must be positive")
+        t = torch.linspace(0.0, 1.0, steps=steps, device=self.device).unsqueeze(-1)
+        optimizer = torch.optim.Adam(self.net.parameters(), lr=lr)
+        loss_val = 0.0
+        for _ in range(epochs):
+            optimizer.zero_grad()
+            pred = self.net(t)
+            loss = F.mse_loss(pred, self.c_targets)
+            loss.backward()
+            optimizer.step()
+            loss_val = float(loss.detach().cpu().item())
+        return loss_val
+
+    def generate_core(self, layer_idx: int) -> torch.Tensor:
+        if self.u_global is None:
+            raise RuntimeError("Global basis not set")
+        if self.num_layers <= 0:
+            raise RuntimeError("No layers available")
+        idx = max(0, min(self.num_layers - 1, layer_idx))
+        if self.num_layers == 1:
+            t_val = 0.0
+        else:
+            t_val = float(idx) / float(self.num_layers - 1)
+        t = torch.tensor([[t_val]], device=self.device).float()
+        core_flat = self.net(t)[0]
+        core = core_flat.view(self.rank, self.rank)
+        return core
+
+    def project(self, x: torch.Tensor, layer_idx: int) -> torch.Tensor:
+        if self.u_global is None:
+            raise RuntimeError("Global basis not set")
+        u = self.u_global.to(x.device).type_as(x)
+        core = self.generate_core(layer_idx).to(x.device).type_as(x)
+        x_shape = x.shape
+        x_flat = x.view(-1, x_shape[-1])
+        xu = x_flat.mm(u)
+        xu_core = xu.mm(core)
+        y_flat = xu_core.mm(u.t())
+        y = y_flat.view(*x_shape)
+        return y

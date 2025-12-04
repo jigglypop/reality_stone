@@ -135,6 +135,7 @@ class RSULFWrapperCUDA(nn.Module):
         super().__init__()
         self.rsulf = rsulf_layer
         self.v_mem: Optional[torch.Tensor] = None
+        self.prev_x: Optional[torch.Tensor] = None
         
         self.geodesic_memory = PyGeodesicMemory(rsulf_layer.d_model, 0.05) if HAS_RUST else None
         self.spline_cache = SplineCache(rsulf_layer.curvature, rsulf_layer.d_model) if HAS_RUST else None
@@ -160,6 +161,7 @@ class RSULFWrapperCUDA(nn.Module):
         if self.spline_cache:
             self.spline_cache.clear()
         self.time_step = 0
+        self.prev_x = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.norm(x)
@@ -191,44 +193,27 @@ class RSULFWrapperCUDA(nn.Module):
             
             x_context = torch.from_numpy(x_context_np).to(device, dtype=dtype)
             
-            v_mem_context = None
-            if self.v_mem is not None:
-                current_v = self.v_mem.unsqueeze(0)
-                if self.v_mem.dim() == 1:
-                    current_v = self.v_mem.unsqueeze(0)
-                
-                pad_len = len(timestamps) - 1
-                if pad_len > 0:
-                    zeros = torch.zeros(pad_len, dim, device=device, dtype=dtype)
-                    v_mem_context = torch.cat([zeros, current_v], dim=0)
-                else:
-                    v_mem_context = current_v
-                    
-                v_mem_context = v_mem_context.view(-1, dim)
-                
-            out_window, v_new_window = self.rsulf(x_context, v_mem_context)
-            
+            out_window, v_new_window = self.rsulf(x_context, None)
+
             out = out_window[-1, :].view(batch, seq, -1)
-            v_new = v_new_window[-1, :]
-            self.v_mem = v_new
             
-            # Update Spline Cache with new point (state + velocity)
             if self.spline_cache:
-                out_np = out.detach().cpu().numpy().flatten().astype(np.float32)
-                v_np = v_new.detach().cpu().numpy().flatten().astype(np.float32)
+                out_vec = out.detach().view(-1)
+                out_np = out_vec.cpu().numpy().astype(np.float32)
+                if self.prev_x is None:
+                    v_np = np.zeros_like(out_np)
+                else:
+                    prev_np = self.prev_x.cpu().numpy().astype(np.float32)
+                    v_np = out_np - prev_np
+                self.prev_x = out_vec.detach()
                 self.spline_cache.add_point(float(self.time_step), out_np, v_np)
                 
             # 2. Graph Diffusion (Stabilize Output)
-            if self.diffusion:
-                if x.is_cuda:
-                    out_np = out.detach().cpu().numpy().astype(np.float32) # (1, dim)
-                    v_np = v_new.detach().cpu().numpy().astype(np.float32) # (1, dim)
-                    out_reshaped = out_np.reshape(1, -1)
-                    v_reshaped = v_np.reshape(1, -1)
-                    diffused_np = self.diffusion.step_cpu(out_reshaped, v_reshaped)
-                    out = torch.from_numpy(diffused_np).to(device, dtype=dtype).view(batch, seq, -1)
-                else:
-                    pass # CPU logic similar
+            if self.diffusion and x.is_cuda:
+                out_np = out.detach().cpu().numpy().astype(np.float32)
+                out_reshaped = out_np.reshape(1, -1)
+                diffused_np = self.diffusion.step_cpu(out_reshaped, out_reshaped)
+                out = torch.from_numpy(diffused_np).to(device, dtype=dtype).view(batch, seq, -1)
 
             self.time_step += 1
             return out
@@ -241,19 +226,18 @@ class RSULFWrapperCUDA(nn.Module):
                 for t in range(seq):
                     self.geodesic_memory.push(t, x_np[t])
             x_flat = x.view(-1, dim)
-            out, v_new = self.rsulf(x_flat, self.v_mem)
+            out, v_new = self.rsulf(x_flat, None)
             if self.spline_cache:
-                 out_np = out.detach().cpu().numpy().astype(np.float32)
-                 v_np = v_new.detach().cpu().numpy().astype(np.float32)
-                 for t in range(seq):
-                     self.spline_cache.add_point(float(t), out_np[t], v_np[t])
-            if self.diffusion:
-                if x.is_cuda:
-                    out_np = out.detach().cpu().numpy().astype(np.float32)
-                    v_np = v_new.detach().cpu().numpy().astype(np.float32)
-                    diffused_np = self.diffusion.step_cpu(out_np, v_np)
-                    out = torch.from_numpy(diffused_np).to(device, dtype=dtype)
-            self.v_mem = v_new.detach()[-1, :] # Keep last v
+                out_np = out.detach().cpu().numpy().astype(np.float32)
+                vel_np = np.zeros_like(out_np)
+                if seq > 1:
+                    vel_np[1:, :] = out_np[1:, :] - out_np[:-1, :]
+                for t in range(seq):
+                    self.spline_cache.add_point(float(t), out_np[t], vel_np[t])
+            if self.diffusion and x.is_cuda:
+                out_np = out.detach().cpu().numpy().astype(np.float32)
+                diffused_np = self.diffusion.step_cpu(out_np, out_np)
+                out = torch.from_numpy(diffused_np).to(device, dtype=dtype)
             self.time_step = seq
             return out.view(batch, seq, -1)
 

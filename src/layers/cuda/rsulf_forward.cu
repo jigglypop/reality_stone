@@ -633,6 +633,33 @@ __global__ void rsulf_unified_forward_kernel(
     }
     float v_norm_sq = s_reduce[0];
     
+    float local_v_max = 0.0f;
+    for (int i = tid; i < d; i += blockDim.x) {
+        float a = fabsf(s_velocity[i]);
+        if (a > local_v_max) {
+            local_v_max = a;
+        }
+    }
+    s_reduce[tid] = local_v_max;
+    __syncthreads();
+    
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (tid < stride) {
+            if (s_reduce[tid + stride] > s_reduce[tid]) {
+                s_reduce[tid] = s_reduce[tid + stride];
+            }
+        }
+        __syncthreads();
+    }
+    float max_vel = s_reduce[0];
+    if (max_vel > 5.0f) {
+        float scale = 5.0f / max_vel;
+        for (int i = tid; i < d; i += blockDim.x) {
+            s_velocity[i] *= scale;
+        }
+        __syncthreads();
+    }
+    
     for (int i = tid; i < d; i += blockDim.x) {
         float velocity = s_velocity[i];
         

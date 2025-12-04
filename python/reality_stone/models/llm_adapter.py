@@ -12,7 +12,11 @@ except ImportError:
 
 import reality_stone as rs
 from reality_stone.layers.poincare import project_to_ball
-from reality_stone.models.rsulf import RSULF, RSULFStack
+try:
+    from reality_stone.models.rsulf import RSULF, RSULFStack
+except ImportError:
+    RSULF = None
+    RSULFStack = None
 
 
 @dataclass

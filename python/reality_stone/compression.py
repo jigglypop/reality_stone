@@ -77,29 +77,8 @@ def convert_to_manifold_compressed(model: nn.Module, curvature: float = 0.01, co
     0을 채우는 마스킹이 아니라, 실제 행렬 크기를 줄입니다.
     """
     print(f"Starting Manifold Compression (Ratio: {compression_ratio*100}%)...")
-    
-    count = 0
-    # 주의: 차원을 줄이면 다음 레이어의 입력 차원과 불일치하게 되므로,
-    # 실제로는 전체 네트워크의 위상(Topology)을 재설계해야 합니다.
-    # 여기서는 '개별 레이어 압축'의 가능성을 보여주는 데 집중합니다.
-    # (실제 적용 시에는 Low-Rank Decomposition 형태가 안전함)
-    
-    for name, module in list(model.named_modules()):
-        if isinstance(module, nn.Linear):
-            # 마지막 헤드는 차원 유지해야 함 (vocab size)
-            if "lm_head" in name: continue
-            
-            # 일단은 데모를 위해 가중치 행렬을 실제로 줄이지는 않고,
-            # 내부적으로 압축 연산을 수행하는 래퍼로 교체
-            # (입출력 차원 유지를 위해 Projection -> Compress -> Expansion 구조 필요)
-            
-            # 여기서는 'Manifold Low-Rank Approximation'을 구현
-            # W ~= U @ V (U: [out, r], V: [r, in])
-            pass 
-            
     print("Note: 차원 축소는 모델 전체의 연결성을 고려해야 하므로,")
     print("Low-Rank Adaptation (LoRA) 스타일의 리만 압축을 적용합니다.")
-    
     return _apply_riemannian_lora(model, curvature, compression_ratio)
 
 def _apply_riemannian_lora(model, curvature, ratio):

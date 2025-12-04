@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 
 try:
     import reality_stone as rs
@@ -8,13 +9,14 @@ try:
         fold_ffn,
         build_causal_laplacian,
     )
+    from reality_stone.layers.rsulf_cuda import RSULFLayerCUDA, RSULFWrapperCUDA, RSULFLMHeadCUDA
     HAS_RUST = True
 except ImportError as e:
     HAS_RUST = False
     print(f"Rust bindings not available: {e}")
 
 try:
-    from reality_stone._rust import rsulf_forward_cuda_py, rsulf_batch_forward_cuda_py
+    from reality_stone._rust import rsulf_forward_cuda_py, rsulf_batch_forward_cuda_py, rsulf_unified_forward_cuda_py
     HAS_CUDA_RSULF = True
 except ImportError:
     HAS_CUDA_RSULF = False
@@ -192,27 +194,168 @@ def test_rsulf_batch_forward_cuda():
     assert np.isfinite(x_out_cuda).all()
     assert np.isfinite(v_out_cuda).all()
 
-def test_rsulf_inference_pipeline():
+def test_rsulf_unified_forward_cuda():
+    if not HAS_RUST:
+        print("SKIP: Rust bindings not available")
+        return
+    if not HAS_CUDA_RSULF:
+        print("SKIP: CUDA RS-ULF bindings not available")
+        return
+    
+    np.random.seed(1)
+    d_model = 64
+    r = 16
+    batch = 2
+    seq_len = 4
+    ffn_dim = 128
+    
+    wq = np.random.randn(d_model, d_model).astype(np.float32) * 0.02
+    wk = np.random.randn(d_model, d_model).astype(np.float32) * 0.02
+    w1 = np.random.randn(ffn_dim, d_model).astype(np.float32) * 0.02
+    w2 = np.random.randn(d_model, ffn_dim).astype(np.float32) * 0.02
+    
+    u_metric, s_metric, v_metric, curvature = fold_metric_svd(wq, wk, r)
+    u1, s1, v1, u2, s2, v2 = fold_ffn(w1, w2, r)
+    
+    g_diag = np.abs(s_metric) + 1e-6
+    g_inv = 1.0 / g_diag
+    
+    lap = build_causal_laplacian(seq_len, 2)
+    lap = np.array(lap, dtype=np.float32)
+    
+    x = np.random.randn(batch * seq_len, d_model).astype(np.float32) * 0.1
+    
+    x_out_cuda, v_out_cuda = rsulf_unified_forward_cuda_py(
+        x, v1, s1, u1, v2, s2, u2, g_inv, lap, None,
+        eta=0.01, alpha=0.02, beta=0.01, gamma_param=0.99,
+        curvature=float(curvature),
+        batch=batch, seq_len=seq_len, window=2
+    )
+    
+    assert x_out_cuda.shape == (batch * seq_len, d_model)
+    assert v_out_cuda.shape == (batch * seq_len,)
+    assert np.isfinite(x_out_cuda).all()
+    assert np.isfinite(v_out_cuda).all()
+
+def test_rsulf_wrapper_batch_mode():
     if not HAS_RUST:
         print("SKIP: Rust bindings not available")
         return
     
-    np.random.seed(42)
-    d_model = 512
-    r = 128
-    seq_len = 32
-    num_layers = 4
-    ffn_dim = 2048
+    np.random.seed(123)
+    torch.manual_seed(123)
     
-    layers = []
-    for i in range(num_layers):
+    d_model = 32
+    r = 8
+    batch = 2
+    seq_len = 4
+    ffn_dim = 64
+    
+    wq = np.random.randn(d_model, d_model).astype(np.float32) * 0.05
+    wk = np.random.randn(d_model, d_model).astype(np.float32) * 0.05
+    w1 = np.random.randn(ffn_dim, d_model).astype(np.float32) * 0.05
+    w2 = np.random.randn(d_model, ffn_dim).astype(np.float32) * 0.05
+    
+    rs_layer = RSULFLayerCUDA(
+        wq=wq,
+        wk=wk,
+        w1=w1,
+        w2=w2,
+        d_model=d_model,
+        r=r,
+        eta=0.01,
+        alpha=0.02,
+        beta=0.01,
+        gamma=0.99,
+        seq_len=seq_len,
+        window=2,
+    )
+    wrapper = RSULFWrapperCUDA(rs_layer)
+    
+    x = torch.randn(batch, seq_len, d_model, dtype=torch.float32)
+    y = wrapper(x)
+    
+    assert y.shape == (batch, seq_len, d_model)
+    assert torch.isfinite(y).all()
+    assert wrapper.time_step == seq_len
+
+def test_rsulf_wrapper_autoregressive_mode():
+    if not HAS_RUST:
+        print("SKIP: Rust bindings not available")
+        return
+    
+    np.random.seed(321)
+    torch.manual_seed(321)
+    
+    d_model = 32
+    r = 8
+    ffn_dim = 64
+    
+    wq = np.random.randn(d_model, d_model).astype(np.float32) * 0.05
+    wk = np.random.randn(d_model, d_model).astype(np.float32) * 0.05
+    w1 = np.random.randn(ffn_dim, d_model).astype(np.float32) * 0.05
+    w2 = np.random.randn(d_model, ffn_dim).astype(np.float32) * 0.05
+    
+    rs_layer = RSULFLayerCUDA(
+        wq=wq,
+        wk=wk,
+        w1=w1,
+        w2=w2,
+        d_model=d_model,
+        r=r,
+        eta=0.01,
+        alpha=0.02,
+        beta=0.01,
+        gamma=0.99,
+        seq_len=16,
+        window=4,
+    )
+    wrapper = RSULFWrapperCUDA(rs_layer)
+    wrapper.reset_memory()
+    
+    steps = 6
+    for t in range(steps):
+        x_t = torch.randn(1, 1, d_model, dtype=torch.float32)
+        y_t = wrapper(x_t)
+        assert y_t.shape == (1, 1, d_model)
+        assert torch.isfinite(y_t).all()
+    
+    assert wrapper.time_step == steps
+    if wrapper.geodesic_memory is not None:
+        stored, covered, ratio = wrapper.geodesic_memory.get_stats()
+        assert stored > 0
+        assert covered >= steps
+
+def test_rsulf_lm_head_cuda_pipeline():
+    if not HAS_RUST:
+        print("SKIP: Rust bindings not available")
+        return
+    if not HAS_CUDA_RSULF or not torch.cuda.is_available():
+        print("SKIP: CUDA RS-ULF or torch.cuda not available")
+        return
+    
+    np.random.seed(7)
+    torch.manual_seed(7)
+    
+    d_model = 64
+    r = 16
+    seq_len = 8
+    num_layers = 2
+    ffn_dim = 256
+    vocab_size = 101
+    
+    rs_layers = []
+    for _ in range(num_layers):
         wq = np.random.randn(d_model, d_model).astype(np.float32) * 0.02
         wk = np.random.randn(d_model, d_model).astype(np.float32) * 0.02
         w1 = np.random.randn(ffn_dim, d_model).astype(np.float32) * 0.02
         w2 = np.random.randn(d_model, ffn_dim).astype(np.float32) * 0.02
         
-        layer = PyRSULFLayer(
-            wq, wk, w1, w2,
+        rs_layer = RSULFLayerCUDA(
+            wq=wq,
+            wk=wk,
+            w1=w1,
+            w2=w2,
             d_model=d_model,
             r=r,
             eta=0.01,
@@ -220,38 +363,18 @@ def test_rsulf_inference_pipeline():
             beta=0.01,
             gamma=0.99,
             seq_len=seq_len,
-            window=8
+            window=2,
         )
-        layers.append(layer)
+        rs_layers.append(rs_layer)
     
-    x = np.random.randn(seq_len, d_model).astype(np.float32) * 0.1
-    v_mem = None
+    device = torch.device("cuda")
+    lm = RSULFLMHeadCUDA(rs_layers, hidden_size=d_model, vocab_size=vocab_size, device=device)
     
-    print(f"\nRS-ULF Inference Pipeline ({num_layers} layers)")
-    print(f"Input shape: {x.shape}")
-    print(f"d_model={d_model}, r={r}, compression={d_model/r:.1f}x")
+    x = torch.randn(1, seq_len, d_model, dtype=torch.float32, device=device)
+    logits = lm(x)
     
-    import time
-    start = time.time()
-    
-    for i, layer in enumerate(layers):
-        x, v_mem = layer.forward(x, v_mem)
-        print(f"Layer {i+1}: x_out mean={x.mean():.6f}, std={x.std():.6f}")
-    
-    elapsed = time.time() - start
-    
-    print(f"\nTotal inference time: {elapsed*1000:.2f}ms")
-    print(f"Time per layer: {elapsed*1000/num_layers:.2f}ms")
-    print(f"Output shape: {x.shape}")
-    
-    assert x.shape == (seq_len, d_model)
-    assert np.isfinite(x).all()
-    
-    compressed, original, ratio = layers[0].param_count()
-    print(f"\nParam count: {compressed:,} (compressed) vs {original:,} (original)")
-    print(f"Compression ratio: {ratio:.2f}x")
-    
-    print("\nRS-ULF Inference Pipeline test passed!")
+    assert logits.shape == (1, seq_len, vocab_size)
+    assert torch.isfinite(logits).all()
 
 if __name__ == "__main__":
     print("=" * 60)

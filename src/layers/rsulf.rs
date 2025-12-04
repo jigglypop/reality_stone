@@ -1,5 +1,7 @@
 use ndarray::{Array1, Array2, ArrayView2, ArrayView1, Axis, s};
-use faer::Mat;
+use faer::{Mat, MatRef};
+use faer::prelude::*;
+use rayon::prelude::*;
 
 pub struct RSULFConfig {
     pub d_model: usize,
@@ -103,54 +105,35 @@ use rand::Rng;
 pub fn randomized_svd(
     a: &Array2<f32>,
     k: usize,
-    n_oversamples: usize,
-    n_iter: usize,
+    _n_oversamples: usize,
+    _n_iter: usize,
 ) -> (Array2<f32>, Array1<f32>, Array2<f32>) {
+    let m = a.nrows();
     let n = a.ncols();
-    let l = k + n_oversamples;
     
-    let mut rng = rand::thread_rng();
-    let mut omega = Array2::<f32>::zeros((n, l));
-    for i in 0..n {
-        for j in 0..l {
-            omega[[i, j]] = rng.gen::<f32>() * 2.0 - 1.0;
-        }
-    }
+    // Use faer for high-performance SVD
+    let mat = Mat::from_fn(m, n, |i, j| a[[i, j]]);
+    let svd = mat.svd();
     
-    let mut y = a.dot(&omega);
+    let u_faer = svd.u();
+    let s_faer = svd.s_diagonal();
+    let v_faer = svd.v();
     
-    for _ in 0..n_iter {
-        let z = a.t().dot(&y);
-        y = a.dot(&z);
-    }
+    let k_actual = k.min(m).min(n).min(s_faer.nrows());
     
-    let (q, _) = qr_decomposition(&y);
-    
-    let b = q.t().dot(a);
-    
-    let b_faer = Mat::from_fn(b.nrows(), b.ncols(), |i, j| b[[i, j]]);
-    let svd_b = b_faer.svd();
-    let u_tilde = svd_b.u();
-    let s_diag = svd_b.s_diagonal();
-    let vt = svd_b.v();
-    
-    let k_actual = k.min(b.nrows()).min(b.ncols());
-    
-    let mut u_small = Array2::<f32>::zeros((b.nrows(), k_actual));
+    let mut u = Array2::<f32>::zeros((m, k_actual));
     let mut s = Array1::<f32>::zeros(k_actual);
     let mut v = Array2::<f32>::zeros((n, k_actual));
     
     for j in 0..k_actual {
-        for i in 0..b.nrows() {
-            u_small[[i, j]] = u_tilde.read(i, j);
+        s[j] = s_faer.read(j);
+        for i in 0..m {
+            u[[i, j]] = u_faer.read(i, j);
         }
-        s[j] = s_diag.read(j);
         for i in 0..n {
-            v[[i, j]] = vt.read(i, j);
+            v[[i, j]] = v_faer.read(i, j);
         }
     }
-    
-    let u = q.dot(&u_small);
     
     (u, s, v)
 }
@@ -158,29 +141,27 @@ pub fn randomized_svd(
 fn qr_decomposition(a: &Array2<f32>) -> (Array2<f32>, Array2<f32>) {
     let m = a.nrows();
     let n = a.ncols();
+    let mat = Mat::from_fn(m, n, |i, j| a[[i, j]]);
+    let qr = mat.qr();
+    
+    let q_faer = qr.compute_q();
+    let r_faer = qr.compute_r();
+    
+    let mut q = Array2::<f32>::zeros((m, m.min(n)));
+    let mut r = Array2::<f32>::zeros((m.min(n), n));
+    
     let k = m.min(n);
     
-    let mut q = a.clone();
-    let mut r = Array2::<f32>::zeros((k, n));
-    
     for j in 0..k {
-        let mut col_j = q.column(j).to_owned();
-        
-        for i in 0..j {
-            let col_i = q.column(i);
-            let dot: f32 = col_j.iter().zip(col_i.iter()).map(|(a, b)| a * b).sum();
-            r[[i, j]] = dot;
-            for l in 0..m {
-                col_j[l] -= dot * col_i[l];
-            }
+        for i in 0..m {
+            q[[i, j]] = q_faer.read(i, j);
         }
-        
-        let norm: f32 = col_j.iter().map(|x| x * x).sum::<f32>().sqrt();
-        r[[j, j]] = norm;
-        
-        if norm > 1e-10 {
-            for l in 0..m {
-                q[[l, j]] = col_j[l] / norm;
+    }
+    
+    for j in 0..n {
+        for i in 0..k {
+            if i <= j {
+               r[[i, j]] = r_faer.read(i, j);
             }
         }
     }
@@ -552,6 +533,30 @@ pub struct FoldedFFN {
     pub v2: Array2<f32>,
 }
 
+pub fn ffn_force_and_grad_row(
+    x: Array1<f32>,
+    w1: ArrayView2<f32>,
+    w2: ArrayView2<f32>,
+) -> (Array1<f32>, Array1<f32>) {
+    let a = w1.dot(&x);
+    let h_act = a.mapv(|v| {
+        let s = 1.0 / (1.0 + (-v).exp());
+        v * s
+    });
+    let f_x = w2.dot(&h_act);
+    let temp2 = w2.t().dot(&f_x);
+    let d_sigma = a.mapv(|v| {
+        let s = 1.0 / (1.0 + (-v).exp());
+        s + v * s * (1.0 - s)
+    });
+    let mut temp3 = temp2.clone();
+    for j in 0..d_sigma.len() {
+        temp3[j] *= d_sigma[j];
+    }
+    let grad = w1.t().dot(&temp3);
+    (f_x, grad)
+}
+
 pub fn fold_ffn_svd(
     w1: ArrayView2<f32>,
     w2: ArrayView2<f32>,
@@ -669,7 +674,7 @@ fn calibrate_eta_alpha(
     if ffn_dim == 0 {
         return;
     }
-    let num_samples = config.calibration_samples.max(128); // Enforce minimum samples
+    let num_samples = config.calibration_samples.max(64).min(256);
     let mut rng = rand::thread_rng();
     let mut x = Array2::<f32>::zeros((num_samples, d_model));
     for i in 0..num_samples {
@@ -677,34 +682,25 @@ fn calibrate_eta_alpha(
             x[[i, j]] = rng.gen::<f32>() * 2.0 - 1.0;
         }
     }
-    let mut f_all = Array2::<f32>::zeros((num_samples, d_model));
-    let mut grad_riem_all = Array2::<f32>::zeros((num_samples, d_model));
-    for i in 0..num_samples {
+
+    let results: Vec<_> = (0..num_samples).into_par_iter().map(|i| {
         let x_row = x.row(i);
-        let a = w1.dot(&x_row);
-        let h_act = a.mapv(|v| {
-            let s = 1.0 / (1.0 + (-v).exp());
-            v * s
-        });
-        let f_x = w2.dot(&h_act);
-        let temp2 = w2.t().dot(&f_x);
-        let d_sigma = a.mapv(|v| {
-            let s = 1.0 / (1.0 + (-v).exp());
-            s + v * s * (1.0 - s)
-        });
-        let mut temp3 = temp2.clone();
-        for j in 0..ffn_dim {
-            temp3[j] *= d_sigma[j];
-        }
-        let grad = w1.t().dot(&temp3);
+        let (f_x, grad) = ffn_force_and_grad_row(x_row.to_owned(), w1.view(), w2.view());
         let mut grad_riem = grad.clone();
         if g_inv.len() == d_model {
             for j in 0..d_model {
                 grad_riem[j] *= g_inv[j];
             }
         }
-        f_all.row_mut(i).assign(&f_x);
-        grad_riem_all.row_mut(i).assign(&grad_riem);
+        (f_x, grad_riem)
+    }).collect();
+
+    let mut f_all = Array2::<f32>::zeros((num_samples, d_model));
+    let mut grad_riem_all = Array2::<f32>::zeros((num_samples, d_model));
+
+    for (i, (f, g)) in results.into_iter().enumerate() {
+        f_all.row_mut(i).assign(&f);
+        grad_riem_all.row_mut(i).assign(&g);
     }
     let x_mean = x.mean_axis(Axis(0)).unwrap();
     let mut diff_all = Array2::<f32>::zeros((num_samples, d_model));
@@ -1217,7 +1213,18 @@ impl RSULFLayer {
         }
         
         let mut v_total = &v_attn + self.config.eta * &v_ffn + &graph;
-        
+        let mut max_vel = 0.0_f32;
+        for val in v_total.iter() {
+            let a = val.abs();
+            if a > max_vel {
+                max_vel = a;
+            }
+        }
+        if max_vel > 5.0 {
+            let scale = 5.0 / max_vel;
+            v_total.mapv_inplace(|val| val * scale);
+        }
+
         let mut v_norm_global: f32 = 0.0;
         if batch_total > 0 {
             v_norm_global = v_total

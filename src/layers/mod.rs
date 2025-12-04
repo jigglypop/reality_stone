@@ -23,6 +23,8 @@ pub mod bellman_lagrangian;
 pub mod diffusion;
 pub mod unified_riemannian;
 pub mod rsulf;
+pub mod hyper_metric;
+pub mod symplectic;
 
 pub use self::poincare::{
     poincare_ball_layer, poincare_ball_layer_backward, poincare_distance, poincare_exp_at,

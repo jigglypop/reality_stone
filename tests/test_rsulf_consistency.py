@@ -1,7 +1,7 @@
-import torch
 import pytest
 import numpy as np
-from reality_stone._rust import PyRSULFLayer, verify_metric_consistency
+import torch
+from reality_stone._rust import PyRSULFLayer, verify_metric_consistency, PyHyperMetric
 
 
 @pytest.fixture
@@ -124,3 +124,45 @@ def test_곡률():
     layer = PyRSULFLayer(wq, wk, w1, w2, d, r, 0.01, 0.02, 0.01, 0.99, 8, 4)
     
     assert layer.curvature >= 0.0
+
+
+def test_hypermetric_generate_core_identity():
+    r = 2
+    core_flat = np.array([1.0, 0.0, 0.0, 3.0], dtype=np.float32)
+    layer_emb = core_flat.copy()
+    input_dim = core_flat.shape[0]
+    hidden_dim = input_dim
+    output_dim = input_dim
+    w1 = np.eye(input_dim, dtype=np.float32)
+    b1 = np.zeros(hidden_dim, dtype=np.float32)
+    w2 = np.eye(hidden_dim, dtype=np.float32)
+    b2 = np.zeros(output_dim, dtype=np.float32)
+    u_global = np.eye(r, dtype=np.float32)
+    v_global = np.eye(r, dtype=np.float32)
+    hm = PyHyperMetric(u_global, v_global, w1, b1, w2, b2)
+    core = hm.generate_core(layer_emb)
+    assert core.shape == (r, r)
+    assert np.allclose(core.reshape(-1), core_flat)
+
+
+def test_hypermetric_project_forward_matches_uv():
+    r = 2
+    d = 2
+    core = np.array([[1.0, 0.0], [0.0, 2.0]], dtype=np.float32)
+    core_flat = core.reshape(-1)
+    layer_emb = core_flat.copy()
+    input_dim = core_flat.shape[0]
+    hidden_dim = input_dim
+    output_dim = input_dim
+    w1 = np.eye(input_dim, dtype=np.float32)
+    b1 = np.zeros(hidden_dim, dtype=np.float32)
+    w2 = np.eye(hidden_dim, dtype=np.float32)
+    b2 = np.zeros(output_dim, dtype=np.float32)
+    u_global = np.eye(d, dtype=np.float32)
+    v_global = np.eye(d, dtype=np.float32)
+    hm = PyHyperMetric(u_global, v_global, w1, b1, w2, b2)
+    x = np.array([[1.0, 2.0]], dtype=np.float32)
+    out = hm.project_forward(x, layer_emb)
+    expected = x.dot(core)
+    assert out.shape == expected.shape
+    assert np.allclose(out, expected, atol=1e-5)

@@ -1,6 +1,6 @@
 use ndarray::{arr1, Array1, Array2};
 use _rust::layers::rsulf::{
-    RSULFConfig, RSULFLayer, extract_global_basis,
+    RSULFConfig, RSULFLayer, extract_global_basis, ffn_force_and_grad_row,
     fold_dimension_svd, fold_ffn_svd, create_causal_laplacian,
     compute_curvature, verify_fold_consistency,
     analyze_layer, create_compression_plan, verify_compression_plan,
@@ -481,13 +481,10 @@ fn rsulf_폴딩_정확도_저랭크() {
 fn rsulf_폴딩_에너지_보존() {
     let d = 64;
     let r = 32;
-    
     let wq = Array2::<f32>::from_shape_fn((d, d), |_| rand::random::<f32>() * 0.1);
     let wk = Array2::<f32>::from_shape_fn((d, d), |_| rand::random::<f32>() * 0.1);
-    let g = wq.t().dot(&wk);
     let folded = fold_dimension_svd(wq.view(), wk.view(), r);
     let result = verify_fold_consistency(wq.view(), wk.view(), &folded);
-    
     assert!(
         result.fold_accuracy >= 0.0 && result.fold_accuracy <= 1.0,
         "fold_accuracy 범위 이상: {:.4}",
@@ -537,6 +534,43 @@ fn rsulf_ffn_폴딩_정확도() {
         "W2 폴딩 정확도 부족: {:.4}",
         accuracy_w2
     );
+}
+
+#[test]
+fn rsulf_ffn_포텐셜_그래디언트_수치_검증() {
+    let d = 8;
+    let ffn_dim = 16;
+    let w1 = Array2::<f32>::from_shape_fn((ffn_dim, d), |_| rand::random::<f32>() * 0.1);
+    let w2 = Array2::<f32>::from_shape_fn((d, ffn_dim), |_| rand::random::<f32>() * 0.1);
+    let x = Array2::<f32>::from_shape_fn((2, d), |_| rand::random::<f32>() * 0.5);
+    let eps = 1e-3_f32;
+    let tol = 1e-2_f32;
+    for i in 0..2 {
+        let x_row = x.row(i).to_owned();
+        let (f_x, grad_analytic) = ffn_force_and_grad_row(x_row.clone(), w1.view(), w2.view());
+        let phi = |v: &Array1<f32>| {
+            let (f_v, _) = ffn_force_and_grad_row(v.clone(), w1.view(), w2.view());
+            0.5_f32 * f_v.iter().map(|z| z * z).sum::<f32>()
+        };
+        let mut grad_num = Array1::<f32>::zeros(d);
+        for j in 0..d {
+            let mut v_plus = x_row.clone();
+            let mut v_minus = x_row.clone();
+            v_plus[j] += eps;
+            v_minus[j] -= eps;
+            let phi_plus = phi(&v_plus);
+            let phi_minus = phi(&v_minus);
+            grad_num[j] = (phi_plus - phi_minus) / (2.0 * eps);
+        }
+        let diff = (&grad_analytic - &grad_num).mapv(|z| z.abs()).mean().unwrap();
+        let f_norm: f32 = f_x.iter().map(|z| z * z).sum::<f32>().sqrt();
+        assert!(
+            diff < tol * (1.0 + f_norm),
+            "FFN 포텐셜 그래디언트 수치 오차 과대: diff={} f_norm={}",
+            diff,
+            f_norm
+        );
+    }
 }
 
 #[test]
@@ -597,7 +631,7 @@ fn rsulf_고압축_정확도() {
     };
     
     let layer = RSULFLayer::from_transformer(wq.view(), wk.view(), w1.view(), w2.view(), config);
-    let (compressed, _, ratio) = layer.param_count();
+    let (__, _, ratio) = layer.param_count();
     
     assert!(
         ratio >= 10.0,
@@ -939,4 +973,6 @@ fn rsulf_global_folding_test() {
     let diff = (&layer.u_metric - &global_basis.u).mapv(|v| v.abs()).sum();
     assert!(diff < 1e-6, "Layer U does not match Global U");
 }
+
+
 

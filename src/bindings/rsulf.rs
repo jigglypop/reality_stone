@@ -1,6 +1,8 @@
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, IntoPyArray};
+use numpy::PyUntypedArrayMethods;
+use ndarray::Array2;
 use crate::layers::rsulf::{
     RSULFLayer, RSULFConfig, RSULFComponents, 
     fold_dimension_svd, fold_ffn_svd, create_causal_laplacian,
@@ -53,6 +55,32 @@ mod rsulf_cuda_ffi {
             d: i32,
             r: i32,
             ffn_dim: i32,
+            x_out: *mut f32,
+            v_out: *mut f32,
+        );
+
+        pub fn rsulf_unified_forward_cuda(
+            x: *const f32,
+            v1: *const f32,
+            s1: *const f32,
+            u1: *const f32,
+            v2: *const f32,
+            s2: *const f32,
+            u2: *const f32,
+            g_inv: *const f32,
+            laplacian: *const f32,
+            v_mem: *const f32,
+            eta: f32,
+            alpha: f32,
+            beta: f32,
+            gamma_param: f32,
+            curvature: f32,
+            batch: i32,
+            seq_len: i32,
+            d: i32,
+            r: i32,
+            ffn_dim: i32,
+            window: i32,
             x_out: *mut f32,
             v_out: *mut f32,
         );
@@ -381,7 +409,11 @@ impl PyRSULFLayer {
     }
 }
 
-#[pyfunction]
+#[pyfunction(signature = (
+    x, v1, s1, u1, v2, s2, u2, g_inv,
+    v_mem=None,
+    eta=0.01, alpha=0.02, gamma_param=0.99
+))]
 pub fn rsulf_forward_cuda_py<'py>(
     py: Python<'py>,
     x: PyReadonlyArray2<f32>,
@@ -408,7 +440,7 @@ pub fn rsulf_forward_cuda_py<'py>(
     #[cfg(feature = "cuda")]
     {
         use crate::bindings::rsulf::rsulf_cuda_ffi::*;
-        use numpy::{PyArray1, PyArray2};
+        use numpy::{PyArray1};
         use pyo3::exceptions::PyRuntimeError;
         use pyo3::PyErr;
         use std::ffi::c_void;
@@ -540,8 +572,9 @@ pub fn rsulf_forward_cuda_py<'py>(
                 let _ = cudaFree(ptr_raw);
             }
 
-            let x_out = PyArray2::from_shape_vec(py, (batch as usize, d as usize), x_host)
+            let x_arr = Array2::from_shape_vec((batch as usize, d as usize), x_host)
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            let x_out = x_arr.into_pyarray(py);
             let v_out = PyArray1::from_vec(py, v_host);
 
             Ok((x_out, v_out))
@@ -549,7 +582,12 @@ pub fn rsulf_forward_cuda_py<'py>(
     }
 }
 
-#[pyfunction]
+#[pyfunction(signature = (
+    x, v1, s1, u1, v2, s2, u2, g_inv,
+    v_mem=None,
+    eta=0.01, alpha=0.02, gamma_param=0.99,
+    batch=1, seq_len=1
+))]
 pub fn rsulf_batch_forward_cuda_py<'py>(
     py: Python<'py>,
     x: PyReadonlyArray2<f32>,
@@ -581,7 +619,7 @@ pub fn rsulf_batch_forward_cuda_py<'py>(
     #[cfg(feature = "cuda")]
     {
         use crate::bindings::rsulf::rsulf_cuda_ffi::*;
-        use numpy::{PyArray1, PyArray2};
+        use numpy::{PyArray1};
         use pyo3::exceptions::PyRuntimeError;
         use pyo3::PyErr;
         use std::ffi::c_void;
@@ -714,12 +752,212 @@ pub fn rsulf_batch_forward_cuda_py<'py>(
                 let _ = cudaFree(ptr_raw);
             }
 
-            let x_out = PyArray2::from_shape_vec(
-                py,
-                (total_tokens, d as usize),
-                x_host,
-            )
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            let x_arr = Array2::from_shape_vec((total_tokens, d as usize), x_host)
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            let x_out = x_arr.into_pyarray(py);
+            let v_out = PyArray1::from_vec(py, v_host);
+
+            Ok((x_out, v_out))
+        }
+    }
+}
+
+#[pyfunction(signature = (
+    x, v1, s1, u1, v2, s2, u2, g_inv, laplacian,
+    v_mem=None,
+    eta=0.01, alpha=0.02, beta=0.0, gamma_param=0.99, curvature=0.0,
+    batch=1, seq_len=1, window=1
+))]
+pub fn rsulf_unified_forward_cuda_py<'py>(
+    py: Python<'py>,
+    x: PyReadonlyArray2<f32>,
+    v1: PyReadonlyArray2<f32>,
+    s1: PyReadonlyArray1<f32>,
+    u1: PyReadonlyArray2<f32>,
+    v2: PyReadonlyArray2<f32>,
+    s2: PyReadonlyArray1<f32>,
+    u2: PyReadonlyArray2<f32>,
+    g_inv: PyReadonlyArray1<f32>,
+    laplacian: PyReadonlyArray2<f32>,
+    v_mem: Option<PyReadonlyArray1<f32>>,
+    eta: f32,
+    alpha: f32,
+    beta: f32,
+    gamma_param: f32,
+    curvature: f32,
+    batch: i32,
+    seq_len: i32,
+    window: i32,
+) -> PyResult<(&'py PyArray2<f32>, &'py PyArray1<f32>)> {
+    #[cfg(not(feature = "cuda"))]
+    {
+        let _ = (
+            &py, &x, &v1, &s1, &u1, &v2, &s2, &u2, &g_inv, &laplacian, &v_mem, eta, alpha, beta,
+            gamma_param, curvature, batch, seq_len, window,
+        );
+        return Err(pyo3::exceptions::PyRuntimeError::new_err(
+            "CUDA support not enabled. Rebuild with --features cuda",
+        ));
+    }
+
+    #[cfg(feature = "cuda")]
+    {
+        use crate::bindings::rsulf::rsulf_cuda_ffi::*;
+        use numpy::{PyArray1};
+        use pyo3::exceptions::PyRuntimeError;
+        use pyo3::PyErr;
+        use std::ffi::c_void;
+        use std::ptr;
+        use std::slice;
+
+        let x_shape = x.shape();
+        if x_shape.len() != 2 {
+            return Err(PyRuntimeError::new_err("x must be 2D array"));
+        }
+        let d = x_shape[1] as i32;
+        let r = s1.shape()[0] as i32;
+        let ffn_dim = v2.shape()[0] as i32;
+
+        unsafe fn alloc_and_copy(src: &[f32]) -> Result<*mut f32, PyErr> {
+            let mut ptr_raw: *mut c_void = ptr::null_mut();
+            let size = src.len() * std::mem::size_of::<f32>();
+            let err = cudaMallocManaged(&mut ptr_raw as *mut *mut c_void, size, 1);
+            if err != 0 {
+                return Err(PyRuntimeError::new_err(format!(
+                    "cudaMallocManaged failed: {}",
+                    err
+                )));
+            }
+            let dst = ptr_raw as *mut f32;
+            ptr::copy_nonoverlapping(src.as_ptr(), dst, src.len());
+            Ok(dst)
+        }
+
+        unsafe fn alloc_zeroed(len: usize) -> Result<*mut f32, PyErr> {
+            let mut ptr_raw: *mut c_void = ptr::null_mut();
+            let size = len * std::mem::size_of::<f32>();
+            let err = cudaMallocManaged(&mut ptr_raw as *mut *mut c_void, size, 1);
+            if err != 0 {
+                return Err(PyRuntimeError::new_err(format!(
+                    "cudaMallocManaged failed: {}",
+                    err
+                )));
+            }
+            let dst = ptr_raw as *mut f32;
+            for i in 0..len {
+                ptr::write(dst.add(i), 0.0);
+            }
+            Ok(dst)
+        }
+
+        let x_slice = x.as_slice()?;
+        let v1_slice = v1.as_slice()?;
+        let s1_slice = s1.as_slice()?;
+        let u1_slice = u1.as_slice()?;
+        let v2_slice = v2.as_slice()?;
+        let s2_slice = s2.as_slice()?;
+        let u2_slice = u2.as_slice()?;
+        let g_inv_slice = g_inv.as_slice()?;
+        let lap_slice = laplacian.as_slice()?;
+        let v_mem_slice = v_mem.as_ref().map(|v| v.as_slice().ok()).flatten();
+
+        unsafe {
+            let mut to_free: Vec<*mut c_void> = Vec::new();
+
+            let x_dev = alloc_and_copy(x_slice)?;
+            to_free.push(x_dev as *mut c_void);
+            let v1_dev = alloc_and_copy(v1_slice)?;
+            to_free.push(v1_dev as *mut c_void);
+            let s1_dev = alloc_and_copy(s1_slice)?;
+            to_free.push(s1_dev as *mut c_void);
+            let u1_dev = alloc_and_copy(u1_slice)?;
+            to_free.push(u1_dev as *mut c_void);
+            let v2_dev = alloc_and_copy(v2_slice)?;
+            to_free.push(v2_dev as *mut c_void);
+            let s2_dev = alloc_and_copy(s2_slice)?;
+            to_free.push(s2_dev as *mut c_void);
+            let u2_dev = alloc_and_copy(u2_slice)?;
+            to_free.push(u2_dev as *mut c_void);
+
+            let d_usize = d as usize;
+            let g_inv_host: Vec<f32> = if g_inv_slice.len() >= d_usize {
+                g_inv_slice[..d_usize].to_vec()
+            } else {
+                let mut v = vec![1.0_f32; d_usize];
+                for (i, val) in g_inv_slice.iter().enumerate() {
+                    v[i] = *val;
+                }
+                v
+            };
+            let g_inv_dev = alloc_and_copy(&g_inv_host)?;
+            to_free.push(g_inv_dev as *mut c_void);
+            let lap_dev = alloc_and_copy(lap_slice)?;
+            to_free.push(lap_dev as *mut c_void);
+
+            let v_mem_dev = if let Some(slice_v) = v_mem_slice {
+                let ptr_vm = alloc_and_copy(slice_v)?;
+                to_free.push(ptr_vm as *mut c_void);
+                ptr_vm
+            } else {
+                ptr::null_mut()
+            };
+
+            let total_tokens = (batch as usize) * (seq_len as usize);
+            let total_x = total_tokens * (d as usize);
+            let x_out_dev = alloc_zeroed(total_x)?;
+            to_free.push(x_out_dev as *mut c_void);
+
+            let v_out_dev = alloc_zeroed(total_tokens)?;
+            to_free.push(v_out_dev as *mut c_void);
+
+            rsulf_unified_forward_cuda(
+                x_dev,
+                v1_dev,
+                s1_dev,
+                u1_dev,
+                v2_dev,
+                s2_dev,
+                u2_dev,
+                g_inv_dev,
+                lap_dev,
+                v_mem_dev,
+                eta,
+                alpha,
+                beta,
+                gamma_param,
+                curvature,
+                batch,
+                seq_len,
+                d,
+                r,
+                ffn_dim,
+                window,
+                x_out_dev,
+                v_out_dev,
+            );
+
+            let sync_err = cudaDeviceSynchronize();
+            if sync_err != 0 {
+                for ptr_raw in to_free {
+                    let _ = cudaFree(ptr_raw);
+                }
+                return Err(PyRuntimeError::new_err(format!(
+                    "cudaDeviceSynchronize failed: {}",
+                    sync_err
+                )));
+            }
+
+            let total_tokens_usize = total_tokens;
+            let x_host = slice::from_raw_parts(x_out_dev, total_x).to_vec();
+            let v_host = slice::from_raw_parts(v_out_dev, total_tokens_usize).to_vec();
+
+            for ptr_raw in to_free {
+                let _ = cudaFree(ptr_raw);
+            }
+
+            let x_arr = Array2::from_shape_vec((total_tokens_usize, d as usize), x_host)
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            let x_out = x_arr.into_pyarray(py);
             let v_out = PyArray1::from_vec(py, v_host);
 
             Ok((x_out, v_out))
@@ -998,6 +1236,7 @@ pub fn register(m: &PyModule) -> PyResult<()> {
     {
         m.add_function(wrap_pyfunction!(rsulf_forward_cuda_py, m)?)?;
         m.add_function(wrap_pyfunction!(rsulf_batch_forward_cuda_py, m)?)?;
+        m.add_function(wrap_pyfunction!(rsulf_unified_forward_cuda_py, m)?)?;
     }
     Ok(())
 }

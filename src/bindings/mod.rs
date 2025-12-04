@@ -2,6 +2,7 @@ pub mod memory;
 pub mod spline;
 pub mod spline_cache;
 pub mod rsulf;
+pub mod hyper_metric;
 
 pub mod bellman;
 pub mod diffusion;
@@ -25,6 +26,7 @@ pub fn _rust(py: Python, m: &PyModule) -> PyResult<()> {
     spline::register_spline_module(py, m)?;
     m.add_class::<spline_cache::PySplineCache>()?;
     m.add_class::<memory::PyGeodesicMemory>()?;
-    
+    diffusion::register(m)?;
+    hyper_metric::register(m)?;
     Ok(())
 }

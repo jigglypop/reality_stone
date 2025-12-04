@@ -214,6 +214,7 @@ class RSULFTransformerConverter:
         all_wq = []
         all_wk = []
         layer_weights = []
+        original_blocks = []
         
         for idx, layer in enumerate(transformer_layers):
             try:
@@ -223,16 +224,19 @@ class RSULFTransformerConverter:
                     all_wq.append(weights["WQ"])
                     all_wk.append(weights["WK"])
                     layer_weights.append(weights)
+                    original_blocks.append(layer)
                 else:
                     print(f"Skipping layer {idx} due to invalid weights: {check['issues']}")
                     all_wq.append(np.zeros((self.d_model, self.d_model), dtype=np.float32))
                     all_wk.append(np.zeros((self.d_model, self.d_model), dtype=np.float32))
                     layer_weights.append(None)
+                    original_blocks.append(None)
             except Exception as e:
                 print(f"Error extracting layer {idx}: {e}")
                 all_wq.append(np.zeros((self.d_model, self.d_model), dtype=np.float32))
                 all_wk.append(np.zeros((self.d_model, self.d_model), dtype=np.float32))
                 layer_weights.append(None)
+                original_blocks.append(None)
 
         if self.exact:
             print("Exact mode: disabling global basis and using full rank per layer")
@@ -248,6 +252,7 @@ class RSULFTransformerConverter:
                 try:
                     d_out, d_model = weights["WQ"].shape
                     best_r = d_model
+                    orig_block = original_blocks[idx] if idx < len(original_blocks) else None
                     rsulf = RSULFLayerCUDA(
                         wq=weights["WQ"],
                         wk=weights["WK"],
@@ -261,7 +266,8 @@ class RSULFTransformerConverter:
                         gamma=self.gamma,
                         seq_len=self.seq_len,
                         window=self.window,
-                        global_basis=None
+                        global_basis=None,
+                        original_block=orig_block,
                     )
                     if "ln_1_weight" in weights:
                         rsulf.ln_1_weight = weights["ln_1_weight"]
@@ -336,6 +342,7 @@ class RSULFTransformerConverter:
                 d_out, d_model = weights["WQ"].shape
                 base_r = rank_by_idx.get(idx, self.r)
                 best_r = int(max(1, min(d_model, self.r, base_r)))
+                orig_block = original_blocks[idx] if idx < len(original_blocks) else None
                 
                 rsulf = RSULFLayerCUDA(
                     wq=weights["WQ"],
@@ -350,7 +357,8 @@ class RSULFTransformerConverter:
                     gamma=self.gamma,
                     seq_len=self.seq_len,
                     window=self.window,
-                    global_basis=global_basis
+                    global_basis=global_basis,
+                    original_block=orig_block,
                 )
                 
                 if "ln_1_weight" in weights:

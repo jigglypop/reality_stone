@@ -14,12 +14,17 @@
 
 ### 2.1 가중치 텐서의 함수적 표현
 $L$개의 레이어를 갖는 트랜스포머 모델을 고려하자. 각 레이어 $l \in \{1, \dots, L\}$의 가중치 행렬 $W^{(l)} \in \mathbb{R}^{d \times d}$는 서로 독립적인 이산적 점들이 아니라, 매끄러운 곡선(Smooth Curve) $\gamma: [0, 1] \to \mathbb{R}^{d \times d}$ 상의 샘플링 포인트로 간주할 수 있다.
-$$ W^{(l)} = \gamma(t_l), \quad t_l = \frac{l}{L} $$
+
+$$ 
+W^{(l)} = \gamma(t_l), \quad t_l = \frac{l}{L} 
+$$
 
 ### 2.2 구조적 분해 (Structural Decomposition)
 이 곡선 $\gamma(t)$는 전역적인 기하학적 구조(Global Geometry)와 국소적인 변동(Local Variation)으로 분해된다. 우리는 이를 다음과 같은 함수형 폼(Functional Form)으로 정의한다.
 
-$$ W(t) \approx U_{global} \cdot \phi_\theta(t) \cdot V_{global}^\top $$
+$$ 
+W(t) \approx U_{global} \cdot \phi_\theta(t) \cdot V_{global}^\top 
+$$
 
 여기서:
 *   **$U_{global}, V_{global} \in \mathbb{R}^{d \times r}$ (Global Basis)**:
@@ -40,7 +45,10 @@ $$ W(t) \approx U_{global} \cdot \phi_\theta(t) \cdot V_{global}^\top $$
 이 문제를 해결하기 위해, 우리는 시스템을 **위상 공간(Phase Space) $T^*\mathcal{M} \cong \mathbb{R}^{2d}$**로 확장(Lifting)한다. 상태 변수를 위치 $q$와 운동량 $p$로 분리하고, 트랜스포머의 업데이트를 해밀토니안 시스템의 **심플렉틱 맵(Symplectic Map)**으로 재정의한다.
 
 해밀토니안 $H(q, p)$를 다음과 같이 정의한다.
-$$ H(q, p) = \frac{1}{2} p^\top M^{-1} p + V(q) $$
+
+$$ 
+H(q, p) = \frac{1}{2} p^\top M^{-1} p + V(q) 
+$$
 
 여기에 FFN을 운동량에 작용하는 **비보존적 킥(Non-conservative Kick)**으로 모델링한다.
 
@@ -66,7 +74,11 @@ $$
 
 ### 4.1 매끄러움에 의한 오차 상계
 함수 $\phi(t)$가 $L$-Lipschitz 연속이라 가정하면, 하이퍼네트워크 근사 오차 $\delta$는 다음과 같이 상계된다.
-$$ \| W^{(l)} - \tilde{W}^{(l)} \|_F \le C \cdot \frac{1}{N_{params}^\alpha} $$
+
+$$ 
+\| W^{(l)} - \tilde{W}^{(l)} \|_F \le C \cdot \frac{1}{N_{params}^\alpha} 
+$$
+
 여기서 $N_{params}$는 하이퍼네트워크의 파라미터 수이며, $\alpha$는 근사 차수다. 이는 파라미터 수를 늘릴수록 오차가 다항식적으로(Polynomially) 감소함을 의미한다.
 
 ### 4.2 동역학적 안정성

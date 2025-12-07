@@ -37,6 +37,7 @@ pyo3 = { version = "0.21.2", features = ["extension-module"] }
 ndarray = { version = "0.15", features = ["rayon", "approx"] }
 numpy = "0.21.0"
 rayon = "1.8.0"
+indicatif = "0.17"
 num-traits = "0.2"
 num-integer = "0.1"
 num-rational = "0.4"

@@ -1,12 +1,21 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.cuda.amp import autocast
 from reality_stone.models.transformer_converter import FFNPotential, StructuralRSULFModel
 
 try:
     from tqdm.auto import tqdm as _tqdm
 except Exception:
     _tqdm = None
+
+
+def _use_amp(device):
+    if isinstance(device, torch.device):
+        device_type = device.type
+    else:
+        device_type = str(device)
+    return torch.cuda.is_available() and device_type == "cuda"
 
 
 def build_structural_rsulf_model(original_model, hidden_dim: int = None):
@@ -48,6 +57,12 @@ def distill_structural_potentials(
     vocab_size = tokenizer.vocab_size
     teacher_blocks = list(original_model.transformer.h)
     num_layers = min(len(structural_model.layers), len(teacher_blocks))
+    use_amp = _use_amp(device)
+    wte = original_model.transformer.wte
+    wpe = original_model.transformer.wpe
+    pos = torch.arange(seq_len, dtype=torch.long, device=device)
+    pos_emb = wpe(pos)
+    total_tokens = steps * batch_size * seq_len
     if _tqdm is not None:
         iterator = _tqdm(range(steps), desc="[structural_potential]", leave=False)
     else:
@@ -55,9 +70,7 @@ def distill_structural_potentials(
     for step in iterator:
         input_ids = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
         with torch.no_grad():
-            tok_emb = original_model.transformer.wte(input_ids)
-            pos = torch.arange(seq_len, dtype=torch.long, device=device)
-            pos_emb = original_model.transformer.wpe(pos)
+            tok_emb = wte(input_ids)
             x0 = tok_emb + pos_emb
         x_s = x0
         force_loss = 0.0
@@ -71,8 +84,11 @@ def distill_structural_potentials(
             y = x_s + attn_out
             w = layer_s.ln_2(y)
             with torch.no_grad():
-                f_teacher = block_t.mlp(w)
-                e_teacher = 0.5 * (f_teacher ** 2).sum(dim=-1)
+                with autocast(enabled=use_amp):
+                    f_teacher = block_t.mlp(w)
+                    e_teacher = 0.5 * (f_teacher ** 2).sum(dim=-1)
+                f_teacher = f_teacher.to(dtype=x_s.dtype)
+                e_teacher = e_teacher.to(dtype=x_s.dtype)
             f_student = -layer_s.potential.gradient(w)
             phi_student = layer_s.potential(w)
             force_loss = force_loss + F.mse_loss(f_student, f_teacher)
@@ -84,8 +100,13 @@ def distill_structural_potentials(
         torch.nn.utils.clip_grad_norm_(potentials_params, 1.0)
         optimizer.step()
         if _tqdm is not None:
-            iterator.set_postfix(step=step + 1, total=steps, loss=float(loss.item()))
-        print(f"[structural_potential] step={step+1}/{steps} loss={loss.item():.4f}")
+            processed_tokens = (step + 1) * batch_size * seq_len
+            iterator.set_postfix(
+                step=step + 1,
+                total_steps=steps,
+                tokens=f"{processed_tokens}/{total_tokens}",
+                loss=float(loss.item()),
+            )
     structural_model.eval()
 
 
@@ -136,22 +157,34 @@ def distill_gpt2_to_rsulf(
     original_model.eval()
     rs_model.eval()
     vocab_size = tokenizer.vocab_size
-    for step in range(steps):
+    use_amp = _use_amp(device)
+    wte = original_model.transformer.wte
+    wpe = original_model.transformer.wpe
+    ln_f = original_model.transformer.ln_f
+    lm_head = original_model.transformer.lm_head
+    pos = torch.arange(seq_len, dtype=torch.long, device=device)
+    pos_emb = wpe(pos)
+    total_tokens = steps * batch_size * seq_len
+    if _tqdm is not None:
+        iterator = _tqdm(range(steps), desc="[distill_rsulf]", leave=False)
+    else:
+        iterator = range(steps)
+    for step in iterator:
         input_ids = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
         attention_mask = torch.ones_like(input_ids, device=device)
         with torch.no_grad():
-            teacher_out = original_model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                output_hidden_states=True,
-                use_cache=False,
-            )
-            teacher_hidden = list(teacher_out.hidden_states)
-            teacher_logits = teacher_out.logits
-            tok_emb = original_model.transformer.wte(input_ids)
-            pos = torch.arange(seq_len, dtype=torch.long, device=device)
-            pos_emb = original_model.transformer.wpe(pos)
-            x0 = tok_emb + pos_emb
+            with autocast(enabled=use_amp):
+                teacher_out = original_model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    output_hidden_states=True,
+                    use_cache=False,
+                )
+                tok_emb = wte(input_ids)
+                x0 = tok_emb + pos_emb
+            teacher_hidden = [h.float() for h in teacher_out.hidden_states]
+            teacher_logits = teacher_out.logits.float()
+            x0 = x0.float()
         rs_hiddens = adapter.forward_hidden(x0)
         proj_hiddens = adapter.project_layers(rs_hiddens)
         num_layers = min(len(proj_hiddens), len(teacher_hidden) - 1)
@@ -173,8 +206,6 @@ def distill_gpt2_to_rsulf(
             force_loss = force_loss + F.mse_loss(force_student, f_teacher)
             energy_loss = energy_loss + F.mse_loss(phi_student, phi_teacher)
         last_student = proj_hiddens[num_layers - 1]
-        ln_f = original_model.transformer.ln_f
-        lm_head = original_model.transformer.lm_head
         student_logits = lm_head(ln_f(last_student))
         logit_loss = F.mse_loss(student_logits, teacher_logits)
         loss = layer_loss_weight * layer_loss + logit_loss_weight * logit_loss + force_loss + 0.1 * energy_loss
@@ -182,8 +213,14 @@ def distill_gpt2_to_rsulf(
         loss.backward()
         torch.nn.utils.clip_grad_norm_(adapter.parameters(), 1.0)
         optimizer.step()
-        if (step + 1) % 10 == 0:
-            print(f"[distill] step={step+1}/{steps} loss={loss.item():.4f}")
+        if _tqdm is not None:
+            processed_tokens = (step + 1) * batch_size * seq_len
+            iterator.set_postfix(
+                step=step + 1,
+                total_steps=steps,
+                tokens=f"{processed_tokens}/{total_tokens}",
+                loss=float(loss.item()),
+            )
     return adapter
 
 
@@ -236,22 +273,31 @@ def distill_syntax_head(
     lm_head = original_model.transformer.lm_head
     original_model.eval()
     rs_model_stack.eval()
-    for step in range(steps):
+    use_amp = _use_amp(device)
+    pos = torch.arange(seq_len, dtype=torch.long, device=device)
+    pos_emb = wpe(pos)
+    total_tokens = steps * batch_size * seq_len
+    if _tqdm is not None:
+        iterator = _tqdm(range(steps), desc="[syntax_head]", leave=False)
+    else:
+        iterator = range(steps)
+    for step in iterator:
         input_ids = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
         attention_mask = torch.ones_like(input_ids, device=device)
         with torch.no_grad():
-            teacher_out = original_model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                output_hidden_states=False,
-                use_cache=False,
-                return_dict=True,
-            )
-            teacher_logits = teacher_out.logits
-            tok_emb = wte(input_ids)
-            pos = torch.arange(seq_len, dtype=torch.long, device=device)
-            pos_emb = wpe(pos)
-            x0 = tok_emb + pos_emb
+            with autocast(enabled=use_amp):
+                teacher_out = original_model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    output_hidden_states=False,
+                    use_cache=False,
+                    return_dict=True,
+                )
+                teacher_logits = teacher_out.logits
+                tok_emb = wte(input_ids)
+                x0 = tok_emb + pos_emb
+            teacher_logits = teacher_logits.float()
+            x0 = x0.float()
         h_core = forward_rsulf_core(rs_model_stack, x0)
         h_syn = head(h_core)
         h_last = ln_f(h_syn)
@@ -261,7 +307,13 @@ def distill_syntax_head(
         loss.backward()
         torch.nn.utils.clip_grad_norm_(head.parameters(), 1.0)
         optimizer.step()
-        if (step + 1) % 10 == 0:
-            print(f"[syntax_head] step={step+1}/{steps} loss={loss.item():.4f}")
+        if _tqdm is not None:
+            processed_tokens = (step + 1) * batch_size * seq_len
+            iterator.set_postfix(
+                step=step + 1,
+                total_steps=steps,
+                tokens=f"{processed_tokens}/{total_tokens}",
+                loss=float(loss.item()),
+            )
     head.eval()
     return head

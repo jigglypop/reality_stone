@@ -1,7 +1,6 @@
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, IntoPyArray};
-use numpy::PyUntypedArrayMethods;
 use crate::layers::rsulf::{
     RSULFLayer, RSULFConfig, RSULFComponents, 
     fold_dimension_svd, fold_ffn_svd, create_causal_laplacian,

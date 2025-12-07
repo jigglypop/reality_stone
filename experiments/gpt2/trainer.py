@@ -1,13 +1,23 @@
 import time
+import threading
 import numpy as np
 import torch
 import torch.nn.functional as F
+from torch.cuda.amp import autocast
 from reality_stone._rust import laplace_beltrami_matrix, PyRiemannianDecoder
 
 try:
     from tqdm.auto import tqdm as _tqdm
 except Exception:
     _tqdm = None
+
+
+def _use_amp(device):
+    if isinstance(device, torch.device):
+        device_type = device.type
+    else:
+        device_type = str(device)
+    return torch.cuda.is_available() and device_type == "cuda"
 
 
 def _generate_binary_curriculum_prompts(
@@ -27,8 +37,10 @@ def _generate_binary_curriculum_prompts(
     pos = torch.arange(seq_len, dtype=torch.long, device=device)
     pos_emb = wpe(pos)
     x = embeds + pos_emb
-    outputs = original_model.transformer(inputs_embeds=x)
-    hidden_last = outputs.last_hidden_state
+    use_amp = _use_amp(device)
+    with autocast(enabled=use_amp):
+        outputs = original_model.transformer(inputs_embeds=x)
+    hidden_last = outputs.last_hidden_state.float()
     activation_norm = hidden_last.norm(dim=-1).mean()
     grad = torch.autograd.grad(activation_norm, embeds, create_graph=False)[0]
     epsilon = 0.1 * embeds.std().item()
@@ -68,21 +80,24 @@ def _collect_decoder_data(
     total_samples = all_inputs.size(0)
     start = time.time()
     total_batches = (total_samples + batch_size - 1) // batch_size
+    total_tokens = total_samples * seq_len
     indices = range(0, total_samples, batch_size)
     if _tqdm is not None:
         iterator = _tqdm(indices, total=total_batches, desc="[BACD] collect", leave=False)
     else:
         iterator = indices
+    use_amp = _use_amp(device)
+    pos = torch.arange(seq_len, dtype=torch.long, device=device)
+    pos_emb = wpe(pos)
     with torch.no_grad():
         for b, i in enumerate(iterator, 1):
             batch_embeds = all_inputs[i : i + batch_size]
-            pos = torch.arange(seq_len, dtype=torch.long, device=device)
-            pos_emb = wpe(pos)
             x = batch_embeds + pos_emb
-            outputs = original_model.transformer(inputs_embeds=x, output_hidden_states=True)
-            teacher_hidden_last = outputs.hidden_states[-1]
-            t_last = ln_f(teacher_hidden_last)
-            t_logits = lm_head(t_last)
+            with autocast(enabled=use_amp):
+                outputs = original_model.transformer(inputs_embeds=x, output_hidden_states=True)
+                teacher_hidden_last = outputs.hidden_states[-1]
+                t_last = ln_f(teacher_hidden_last)
+                t_logits = lm_head(t_last)
             h_rs = x
             for wrapper in rs_model.wrappers:
                 h_rs = wrapper(h_rs)
@@ -91,8 +106,14 @@ def _collect_decoder_data(
             logits_t_list.append(t_logits.reshape(-1, t_logits.size(-1)).cpu())
             current_norm = h_rs.norm(dim=-1).mean().item()
             if _tqdm is not None:
-                iterator.set_postfix(batch=b, total=total_batches, norm=current_norm)
-            print(f"[BACD] batch={b}/{total_batches} norm={current_norm:.2f}")
+                processed_samples = min(i + batch_size, total_samples)
+                processed_tokens = processed_samples * seq_len
+                iterator.set_postfix(
+                    batch=b,
+                    total_batches=total_batches,
+                    tokens=f"{processed_tokens}/{total_tokens}",
+                    norm=current_norm,
+                )
     elapsed = time.time() - start
     H_rs = torch.cat(h_rs_list, dim=0).numpy().astype(np.float32)
     H_t = torch.cat(h_t_list, dim=0).numpy().astype(np.float32)
@@ -139,8 +160,8 @@ def fit_riemannian_decoder(
         C = H_rs
     H_mean = H_t.mean(axis=0, keepdims=True)
     H_centered = H_t - H_mean
-    lambda_lb = 0.1
-    lambda_ridge = 1e-3
+    lambda_lb = 0.0
+    lambda_ridge = 1e-5
     use_gpu = device.type == "cuda" or (
         hasattr(torch.backends, "mps") and torch.backends.mps.is_available() and device.type == "mps"
     )
@@ -148,7 +169,19 @@ def fit_riemannian_decoder(
     try:
         C_float = C.astype(np.float32)
         print(f"[BACD] Computing Laplace-Beltrami matrix (samples={C_float.shape[0]})...")
+        lb_done = {"v": False, "start": time.time()}
+
+        def _lb_spinner():
+            while not lb_done["v"]:
+                elapsed = time.time() - lb_done["start"]
+                print(f"[BACD] LB running... {elapsed:.1f}s", flush=True)
+                time.sleep(5.0)
+
+        spinner = threading.Thread(target=_lb_spinner, daemon=True)
+        spinner.start()
         lb_mat_np = laplace_beltrami_matrix(C_float, "diagonal", 0.0, 0.5, 1e-6)
+        lb_done["v"] = True
+        spinner.join(timeout=0.1)
         print("[BACD] LB matrix computed.")
 
         if use_gpu:

@@ -8,7 +8,8 @@ try:
         analyze_layer,
         extract_global_basis,
         create_compression_plan,
-        PyRSULFLayer
+        PyRSULFLayer,
+        laplace_beltrami_matrix,
     )
     HAS_RUST = True
 except ImportError:
@@ -105,6 +106,14 @@ def test_kv_spline_memory():
     query_t = 10.5
     val = mem.query(query_t)
     assert val.shape == (d_model,)
+
+
+@pytest.mark.skipif(not HAS_RUST, reason="Rust extension not available")
+def test_laplace_beltrami_matrix_basic():
+    x = np.array([[0.0, 0.0], [1.0, 0.0], [0.5, 0.5]], dtype=np.float32)
+    l = laplace_beltrami_matrix(x, "diagonal", 0.0, 0.5, 1e-6)
+    assert l.shape == (3, 3)
+    assert np.allclose(l.sum(axis=1), np.zeros(3), atol=1e-4)
 
 
 @pytest.mark.skipif(not HAS_RUST, reason="Rust extension not available")

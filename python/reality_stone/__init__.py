@@ -97,7 +97,11 @@ except Exception:
     geodesic_topk_attention = None  # type: ignore
     batched_cholesky = None  # type: ignore
 
-from .conversion import convert_to_full_riemannian, convert_to_hyperbolic
+try:
+    from .conversion import convert_to_full_riemannian, convert_to_hyperbolic
+except Exception:
+    convert_to_full_riemannian = None  # type: ignore
+    convert_to_hyperbolic = None  # type: ignore
 from .losses import HyperbolicSupConLoss, BellmanConsistencyLoss, laplacian_same_label, poincare_kinetic_energy
 
 from . import optim

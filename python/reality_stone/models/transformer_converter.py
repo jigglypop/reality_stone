@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 
 try:
     from reality_stone._rust import (
-        PyRSULFLayer,
         verify_metric_consistency,
         analyze_layer,
         create_compression_plan,
@@ -70,32 +69,22 @@ class RSULFTransformerConverter:
 
     def extract_weights(self, layer) -> Dict[str, np.ndarray]:
         weights = {}
-        # Check for GPT-2 style (Conv1D)
         if hasattr(layer, 'attn') and hasattr(layer.attn, 'c_attn'):
-            # GPT-2 c_attn weights are [hidden_size, 3*hidden_size]
-            # We need to transpose to [3*hidden_size, hidden_size] to match Linear(in, out).weight which is [out, in]
             c_attn = layer.attn.c_attn.weight.detach().cpu().numpy().astype(np.float32).T
             c_attn = np.ascontiguousarray(c_attn)
-            
             hidden_size = c_attn.shape[1]
-            # Split into Q, K, V
-            # c_attn is [Q, K, V]
             weights["WQ"] = np.ascontiguousarray(c_attn[:hidden_size, :])
             weights["WK"] = np.ascontiguousarray(c_attn[hidden_size:2*hidden_size, :])
-            
-            # MLP
-            # c_fc is [hidden, 4*hidden] -> Transpose to [4*hidden, hidden] (W1 - up projection)
             w1 = layer.mlp.c_fc.weight.detach().cpu().numpy().astype(np.float32).T
             weights["W1"] = np.ascontiguousarray(w1)
-            # c_proj is [4*hidden, hidden] -> Transpose to [hidden, 4*hidden] (W2 - down projection)
             w2 = layer.mlp.c_proj.weight.detach().cpu().numpy().astype(np.float32).T
             weights["W2"] = np.ascontiguousarray(w2)
-            
-            # Extract LayerNorms if available
             if hasattr(layer, 'ln_1'):
                 weights["ln_1_weight"] = layer.ln_1.weight.detach().cpu().numpy().astype(np.float32)
                 weights["ln_1_bias"] = layer.ln_1.bias.detach().cpu().numpy().astype(np.float32)
-            
+            if hasattr(layer, 'ln_2'):
+                weights["ln_2_weight"] = layer.ln_2.weight.detach().cpu().numpy().astype(np.float32)
+                weights["ln_2_bias"] = layer.ln_2.bias.detach().cpu().numpy().astype(np.float32)
             return weights
 
         # Llama / Mistral / Standard Linear
@@ -252,7 +241,6 @@ class RSULFTransformerConverter:
                 try:
                     d_out, d_model = weights["WQ"].shape
                     best_r = d_model
-                    orig_block = original_blocks[idx] if idx < len(original_blocks) else None
                     rsulf = RSULFLayerCUDA(
                         wq=weights["WQ"],
                         wk=weights["WK"],
@@ -267,11 +255,11 @@ class RSULFTransformerConverter:
                         seq_len=self.seq_len,
                         window=self.window,
                         global_basis=None,
-                        original_block=orig_block,
                     )
                     if "ln_1_weight" in weights:
-                        rsulf.ln_1_weight = weights["ln_1_weight"]
-                        rsulf.ln_1_bias = weights.get("ln_1_bias")
+                        rsulf.set_ln1(weights["ln_1_weight"], weights.get("ln_1_bias"))
+                    if "ln_2_weight" in weights:
+                        rsulf.set_ln2(weights["ln_2_weight"], weights.get("ln_2_bias"))
                     compressed, original, ratio = rsulf.param_count()
                     if self.verbose:
                         print(f"[RSULF] layer {idx:02d}: ok ratio={ratio:.1f}x")
@@ -317,6 +305,7 @@ class RSULFTransformerConverter:
             valid_wk = [w for w in all_wk if w.shape[0] > 0 and w.any()]
             if valid_wq:
                 global_basis = extract_global_basis(valid_wq, valid_wk, self.r)
+                self.global_basis = global_basis
                 print(f"Global Basis extracted: rank={global_basis['rank']}")
         except Exception as e:
             print(f"Global Basis extraction failed: {e}. Falling back to local.")
@@ -358,12 +347,12 @@ class RSULFTransformerConverter:
                     seq_len=self.seq_len,
                     window=self.window,
                     global_basis=global_basis,
-                    original_block=orig_block,
                 )
                 
                 if "ln_1_weight" in weights:
-                    rsulf.ln_1_weight = weights["ln_1_weight"]
-                    rsulf.ln_1_bias = weights.get("ln_1_bias")
+                    rsulf.set_ln1(weights["ln_1_weight"], weights.get("ln_1_bias"))
+                if "ln_2_weight" in weights:
+                    rsulf.set_ln2(weights["ln_2_weight"], weights.get("ln_2_bias"))
                 
                 compressed, original, ratio = rsulf.param_count()
             
@@ -527,7 +516,6 @@ class LowRankFFN(nn.Module):
         
         d_model, ffn_dim = w1.shape
         rank = min(rank, d_model, ffn_dim)
-        
         u1, s1, v1 = torch.linalg.svd(w1, full_matrices=False)
         u1_r = u1[:, :rank]
         s1_r = s1[:rank]
@@ -535,8 +523,6 @@ class LowRankFFN(nn.Module):
         self.w1_a = nn.Parameter(u1_r * s1_r.unsqueeze(0))
         self.w1_b = nn.Parameter(v1_r)
         self.b1 = nn.Parameter(b1) if b1 is not None else None
-        
-        ffn_dim2, d_out = w2.shape
         u2, s2, v2 = torch.linalg.svd(w2, full_matrices=False)
         u2_r = u2[:, :rank]
         s2_r = s2[:rank]

@@ -25,6 +25,7 @@ pub mod unified_riemannian;
 pub mod rsulf;
 pub mod hyper_metric;
 pub mod symplectic;
+pub mod decoder;
 
 pub use self::poincare::{
     poincare_ball_layer, poincare_ball_layer_backward, poincare_distance, poincare_exp_at,
@@ -41,3 +42,4 @@ pub use self::bellman_lagrangian::{
     bellman_potential, kinetic_energy, representation_flow,
 };
 pub use self::diffusion::RiemannianDiffusion; // Export diffusion
+pub use self::decoder::RiemannianDecoder;

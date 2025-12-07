@@ -248,11 +248,40 @@ pub fn geodesic_interpolate<'py>(
     Ok(result.into_pyarray(py))
 }
 
+#[pyfunction(name = "laplace_beltrami_matrix")]
+pub fn laplace_beltrami_matrix_py<'py>(
+    py: Python<'py>,
+    x: PyReadonlyArray2<f32>,
+    metric_type: &str,
+    curvature: f32,
+    sigma: f32,
+    eps: f32,
+) -> PyResult<&'py PyArray2<f32>> {
+    use crate::layers::metric::*;
+    let metric_enum = match metric_type {
+        "poincare" => MetricType::Poincare(PoincareMetric::new(curvature)),
+        "lorentz" => MetricType::Lorentz(LorentzMetric::new(curvature)),
+        "klein" => MetricType::Klein(KleinMetric::new(curvature)),
+        "diagonal" => MetricType::Diagonal(DiagonalMetric::new(x.shape()[1])),
+        _ => return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            format!("Unknown metric type: {}", metric_type)
+        )),
+    };
+    let mat = crate::layers::unified_riemannian::laplace_beltrami_matrix(
+        &metric_enum,
+        &x.as_array(),
+        sigma,
+        eps,
+    );
+    Ok(mat.into_pyarray(py))
+}
+
 pub fn register(m: &PyModule) -> PyResult<()> {
     m.add_class::<PyUnifiedRiemannianLayer>()?;
     m.add_function(wrap_pyfunction!(compute_metric, m)?)?;
     m.add_function(wrap_pyfunction!(geodesic_distance, m)?)?;
     m.add_function(wrap_pyfunction!(geodesic_interpolate, m)?)?;
+    m.add_function(wrap_pyfunction!(laplace_beltrami_matrix_py, m)?)?;
     Ok(())
 }
 

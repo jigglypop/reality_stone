@@ -32,45 +32,10 @@ except ImportError:
     RSULFTransformerConverter = None
     convert_transformer_to_rsulf = None
 
-try:
-    from .llm_adapter import (
-        LLMAdapterConfig,
-        RSULFLLMAdapter,
-    )
-    _HAS_ADAPTER = True
-except ImportError:
-    _HAS_ADAPTER = False
-    LLMAdapterConfig = None
-    RSULFLLMAdapter = None
-
-from .spd_operations import (
-    spd_barycenter,
-    spd_log,
-    spd_exp,
-    spd_distance,
-    SPDBarycentricMixer,
-    CrossLevelMetricMixer,
-)
-
-from .riemannian_aggregation import (
-    RiemannianAggregation,
-)
-
-from .product_manifold import (
-    ProductManifold,
-    ProductManifoldLayer,
-)
+from .riemannian_aggregation import RiemannianAggregation
 
 __all__ = [
-    "spd_barycenter",
-    "spd_log",
-    "spd_exp",
-    "spd_distance",
-    "SPDBarycentricMixer",
-    "CrossLevelMetricMixer",
     "RiemannianAggregation",
-    "ProductManifold",
-    "ProductManifoldLayer",
     "HierarchicalLLMConfig",
     "HierarchicalSentenceTopicLLM",
     "SentenceTopicHead",
@@ -81,9 +46,6 @@ __all__ = [
     "RSULFConfig",
     "RSULFTransformerConverter",
     "convert_transformer_to_rsulf",
-    "LLMAdapterConfig",
-    "RSULFLLMAdapter",
     "_HAS_LLM",
     "_HAS_CONVERTER",
-    "_HAS_ADAPTER",
 ]

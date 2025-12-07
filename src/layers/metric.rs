@@ -98,7 +98,8 @@ impl MetricTensor for DiagonalMetric {
     
     fn determinant(&self, x: &ArrayView2<f32>) -> Array1<f32> {
         let weights = self.compute_weights(x);
-        weights.axis_iter(ndarray::Axis(1))
+        weights
+            .axis_iter(Axis(0))
             .map(|row| row.iter().product())
             .collect()
     }

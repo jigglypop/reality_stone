@@ -346,12 +346,14 @@ pub fn register(m: &PyModule) -> PyResult<()> {
     sub.add_function(wrap_pyfunction!(poincare_ball_layer_layerwise_cpu, sub)?)?;
     sub.add_function(wrap_pyfunction!(poincare_ball_layer_layerwise_backward_cpu, sub)?)?;
 
-    // CUDA bindings
     #[cfg(feature = "cuda")]
     {
         sub.add_function(wrap_pyfunction!(poincare_distance_cuda, sub)?)?;
         sub.add_function(wrap_pyfunction!(poincare_ball_layer_cuda, sub)?)?;
         sub.add_function(wrap_pyfunction!(poincare_ball_layer_backward_cuda, sub)?)?;
+        m.add_function(wrap_pyfunction!(poincare_distance_cuda, m)?)?;
+        m.add_function(wrap_pyfunction!(poincare_ball_layer_cuda, m)?)?;
+        m.add_function(wrap_pyfunction!(poincare_ball_layer_backward_cuda, m)?)?;
     }
 
     m.add_submodule(sub)?;

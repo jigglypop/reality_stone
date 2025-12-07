@@ -2,7 +2,6 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, IntoPyArray};
 use numpy::PyUntypedArrayMethods;
-use ndarray::Array2;
 use crate::layers::rsulf::{
     RSULFLayer, RSULFConfig, RSULFComponents, 
     fold_dimension_svd, fold_ffn_svd, create_causal_laplacian,
@@ -10,6 +9,7 @@ use crate::layers::rsulf::{
     block_lanczos_svd, nystrom_approximation, adaptive_rank_svd,
     analyze_layer,
 };
+use crate::layers::decoder::RiemannianDecoder;
 
 #[cfg(feature = "cuda")]
 mod rsulf_cuda_ffi {
@@ -406,6 +406,74 @@ impl PyRSULFLayer {
         );
         
         Self { inner }
+    }
+}
+
+#[pyclass]
+pub struct PyRiemannianDecoder {
+    inner: RiemannianDecoder,
+}
+
+#[pymethods]
+impl PyRiemannianDecoder {
+    #[new]
+    pub fn new(
+        u_basis: PyReadonlyArray2<f32>,
+        a: PyReadonlyArray2<f32>,
+        bt: PyReadonlyArray2<f32>,
+        bias: PyReadonlyArray1<f32>,
+    ) -> Self {
+        let u = u_basis.as_array().to_owned();
+        let a_mat = a.as_array().to_owned();
+        let bt_mat = bt.as_array().to_owned();
+        let b_vec = bias.as_array().to_owned();
+        let inner = RiemannianDecoder::new(u, a_mat, bt_mat, b_vec);
+        Self { inner }
+    }
+
+    #[staticmethod]
+    pub fn from_lm_head(
+        w_lm: PyReadonlyArray2<f32>,
+        b_lm: PyReadonlyArray1<f32>,
+        u_basis: PyReadonlyArray2<f32>,
+        basis_rank: usize,
+        target_rank: usize,
+    ) -> Self {
+        let global_basis = crate::layers::rsulf::GlobalBasis {
+            u: u_basis.as_array().to_owned(),
+            rank: basis_rank,
+        };
+        let inner = RiemannianDecoder::from_lm_head(
+            w_lm.as_array(),
+            b_lm.as_array(),
+            &global_basis,
+            target_rank,
+        );
+        Self { inner }
+    }
+
+    pub fn forward<'py>(
+        &self,
+        py: Python<'py>,
+        x: PyReadonlyArray2<f32>,
+    ) -> &'py PyArray2<f32> {
+        let logits = self.inner.forward(x.as_array());
+        logits.into_pyarray(py)
+    }
+
+    #[getter]
+    pub fn d_model(&self) -> usize {
+        self.inner.d_model
+    }
+
+    #[getter]
+    pub fn rank(&self) -> usize {
+        self.inner.r
+    }
+
+    #[getter]
+    pub fn vocab_size(&self) -> usize {
+        self.inner.vocab
     }
 }
 
@@ -1238,5 +1306,6 @@ pub fn register(m: &PyModule) -> PyResult<()> {
         m.add_function(wrap_pyfunction!(rsulf_batch_forward_cuda_py, m)?)?;
         m.add_function(wrap_pyfunction!(rsulf_unified_forward_cuda_py, m)?)?;
     }
+    m.add_class::<PyRiemannianDecoder>()?;
     Ok(())
 }

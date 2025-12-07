@@ -278,6 +278,69 @@ impl UnifiedRiemannianLayer {
     }
 }
 
+pub fn laplace_beltrami_matrix(
+    metric: &MetricType,
+    x: &ArrayView2<f32>,
+    sigma: f32,
+    eps: f32,
+) -> Array2<f32> {
+    use ndarray::s;
+    let n = x.nrows();
+    let dim = x.ncols();
+    let metric_trait = metric.as_trait();
+    let mut dist_sq = Array2::<f32>::zeros((n, n));
+    for i in 0..n {
+        let xi = x.slice(s![i..i + 1, 0..dim]);
+        for j in 0..n {
+            if i == j {
+                continue;
+            }
+            let xj = x.slice(s![j..j + 1, 0..dim]);
+            let d_arr = metric_trait.distance(&xi.view(), &xj.view());
+            let d = d_arr[0];
+            dist_sq[[i, j]] = d * d;
+        }
+    }
+    let det = metric_trait.determinant(x);
+    let mut vol = det.clone();
+    for v in vol.iter_mut() {
+        let a = v.abs().sqrt();
+        if a < eps {
+            *v = eps;
+        } else {
+            *v = a;
+        }
+    }
+    let mut w = Array2::<f32>::zeros((n, n));
+    let denom = 2.0 * sigma * sigma.max(eps);
+    for i in 0..n {
+        for j in 0..n {
+            if i == j {
+                continue;
+            }
+            let d2 = dist_sq[[i, j]];
+            let mut value = (-d2 / denom).exp();
+            let scale = 1.0 / (vol[i] * vol[j]);
+            value *= scale;
+            w[[i, j]] = value;
+        }
+    }
+    let mut l = Array2::<f32>::zeros((n, n));
+    for i in 0..n {
+        let mut sum = 0.0f32;
+        for j in 0..n {
+            sum += w[[i, j]];
+        }
+        l[[i, i]] = sum;
+        for j in 0..n {
+            if i != j {
+                l[[i, j]] = -w[[i, j]];
+            }
+        }
+    }
+    l
+}
+
 /// 레이어 출력
 pub struct LayerOutput {
     pub output: Array2<f32>,

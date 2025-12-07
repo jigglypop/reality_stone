@@ -15,13 +15,11 @@ try:
 except Exception:
     HAS_CUDA_KERNEL = False
 
-
 class SPDMetric(nn.Module):
     def __init__(self, hidden_size: int, rank: int = 0, init_u_scale: float = 1e-3) -> None:
         super().__init__()
         self.hidden_size = hidden_size
         self.rank = int(rank) if rank is not None else 0
-
         self.log_diag = nn.Parameter(torch.zeros(hidden_size))
         if self.rank > 0:
             u = torch.randn(hidden_size, self.rank) * float(init_u_scale)
@@ -71,11 +69,9 @@ def normalize(scores: Tensor, method: str = "softmax", tau: float = 1.0) -> Tens
     if method == "softmax":
         return torch.softmax(scores / max(tau, 1e-6), dim=-1)
     if method in {"entmax", "entmax15", "sparsemax"}:
-        # Dependency-free substitute; use sparsemax as a robust sparse normalizer.
         return _sparsemax(scores, dim=-1)
     if method == "sinkhorn":
         return _sinkhorn(scores, iters=20, tau=tau)
-    # Fallback
     return torch.softmax(scores / max(tau, 1e-6), dim=-1)
 
 
@@ -272,25 +268,18 @@ class MetricAttention(nn.Module):
             B, H, T, Dh = qs.shape
             S = ks.shape[-2]
             K = idx.shape[-1]
-            
-            # 🚀 CUDA Fast Path: Fused Geodesic Top-k Attention
-            if HAS_CUDA_KERNEL and qs.is_cuda and metric_keys:
-                # Get Cholesky factor from metric keys
-                l_factor = self._cholesky_from_keys(
-                    metric_keys, masses, Dh
-                ).to(qs.device)
-                
+            if HAS_CUDA_KERNEL and qs.is_cuda:
+                if metric_keys:
+                    l_factor = self._cholesky_from_keys(metric_keys, masses, Dh).to(qs.device)
+                else:
+                    diag = F.softplus(self.metric.log_diag).to(qs.device)
+                    l_factor = torch.diag(diag.sqrt())
                 c_used = float(self.c_default if c is None else c)
-                
-                # Call fused CUDA kernel (6x faster!)
                 try:
-                    y = geodesic_topk_attention(
-                        qs, ks, v, idx, l_factor, c_used, self.tau
-                    )
+                    y = geodesic_topk_attention(qs, ks, v, idx, l_factor, c_used, self.tau)
                     return y
-                except Exception as e:
-                    # Fallback to Python if CUDA fails
-                    print(f"CUDA kernel failed ({e}), falling back to Python")
+                except Exception:
+                    pass
             
             # Python fallback (original implementation)
             # Flatten and gather selected keys: (B*H, S, Dh) -> (B*H, T*K, Dh)

@@ -1,11 +1,11 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from typing import Optional, Tuple, Dict
 import numpy as np
 
 try:
-    # Try importing from the package level first (where __init__ logic ran)
-    from reality_stone import _rust
+    from reality_stone import _rust, build_causal_laplacian
     if _rust is not None:
         PyRSULFLayer = _rust.PyRSULFLayer
         PyGeodesicMemory = _rust.PyGeodesicMemory
@@ -16,8 +16,7 @@ try:
         HAS_RUST = False
 except ImportError:
     try:
-        # Fallback: direct import
-        from reality_stone._rust import PyRSULFLayer, PyGeodesicMemory, SplineCache, PyRiemannianDiffusion
+        from reality_stone._rust import PyRSULFLayer, PyGeodesicMemory, SplineCache, PyRiemannianDiffusion, build_causal_laplacian
         HAS_RUST = True
     except ImportError:
         HAS_RUST = False
@@ -66,39 +65,131 @@ class RSULFLayerCUDA(nn.Module):
         self.d_model = d_model
         self.r = r
         self.seq_len = seq_len
+        self.window = window
         self.original_block = original_block
+        self._cuda_available = False
+        self._components = self._layer.export_components()
+        
+        self._ffn_u1 = np.asarray(self._components["ffn_u1"], dtype=np.float32)
+        self._ffn_s1 = np.asarray(self._components["ffn_s1"], dtype=np.float32)
+        self._ffn_v1 = np.asarray(self._components["ffn_v1"], dtype=np.float32)
+        self._ffn_u2 = np.asarray(self._components["ffn_u2"], dtype=np.float32)
+        self._ffn_s2 = np.asarray(self._components["ffn_s2"], dtype=np.float32)
+        self._ffn_v2 = np.asarray(self._components["ffn_v2"], dtype=np.float32)
+        self._curvature = float(self._components["curvature"])
+        self._g_inv = torch.from_numpy(np.asarray(self._components["g_inv"], dtype=np.float32))
+        
+        self.runtime_batch: Optional[int] = None
+        self.runtime_seq_len: Optional[int] = None
+
+        self.ln1_weight = nn.Parameter(torch.ones(d_model))
+        self.ln1_bias = nn.Parameter(torch.zeros(d_model))
+        self.ln2_weight = nn.Parameter(torch.ones(d_model))
+        self.ln2_bias = nn.Parameter(torch.zeros(d_model))
+        
+        self.wq = nn.Parameter(torch.from_numpy(wq).float(), requires_grad=False)
+        self.wk = nn.Parameter(torch.from_numpy(wk).float(), requires_grad=False)
+        self.wv = nn.Parameter(torch.eye(d_model).float(), requires_grad=False)
+        self.wo = nn.Parameter(torch.eye(d_model).float(), requires_grad=False)
+        
+        self.bq = nn.Parameter(torch.zeros(d_model), requires_grad=False)
+        self.bk = nn.Parameter(torch.zeros(d_model), requires_grad=False)
+        self.bv = nn.Parameter(torch.zeros(d_model), requires_grad=False)
+        self.bo = nn.Parameter(torch.zeros(d_model), requires_grad=False)
+        
+        self.ffn_u1 = nn.Parameter(torch.from_numpy(self._ffn_u1).float(), requires_grad=False)
+        self.ffn_s1 = nn.Parameter(torch.from_numpy(self._ffn_s1).float(), requires_grad=False)
+        self.ffn_v1 = nn.Parameter(torch.from_numpy(self._ffn_v1).float(), requires_grad=False)
+        self.ffn_u2 = nn.Parameter(torch.from_numpy(self._ffn_u2).float(), requires_grad=False)
+        self.ffn_s2 = nn.Parameter(torch.from_numpy(self._ffn_s2).float(), requires_grad=False)
+        self.ffn_v2 = nn.Parameter(torch.from_numpy(self._ffn_v2).float(), requires_grad=False)
+        self.g_inv_param = nn.Parameter(self._g_inv, requires_grad=False)
+        
+        self.b1 = nn.Parameter(torch.zeros(self._ffn_u1.shape[0]), requires_grad=False)
+        self.b2 = nn.Parameter(torch.zeros(d_model), requires_grad=False)
+        
+        self.use_hybrid_mode = True
+
+    def set_ln1(self, weight, bias=None):
+        self.ln1_weight.data = torch.from_numpy(weight).float()
+        if bias is not None:
+            self.ln1_bias.data = torch.from_numpy(bias).float()
+
+    def set_ln2(self, weight, bias=None):
+        self.ln2_weight.data = torch.from_numpy(weight).float()
+        if bias is not None:
+            self.ln2_bias.data = torch.from_numpy(bias).float()
+
+    def set_attention_weights(self, wv, wo):
+        self.wv.data = torch.from_numpy(wv).float()
+        self.wo.data = torch.from_numpy(wo).float()
+
+    def set_biases(self, bq=None, bk=None, bv=None, bo=None, b1=None, b2=None):
+        if bq is not None: self.bq.data = torch.from_numpy(bq).float()
+        if bk is not None: self.bk.data = torch.from_numpy(bk).float()
+        if bv is not None: self.bv.data = torch.from_numpy(bv).float()
+        if bo is not None: self.bo.data = torch.from_numpy(bo).float()
+        if b1 is not None: self.b1.data = torch.from_numpy(b1).float()
+        if b2 is not None: self.b2.data = torch.from_numpy(b2).float()
 
     def forward(
         self,
         x: torch.Tensor,
         v_mem: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        device = x.device
-        dtype = x.dtype
+        batch, seq_len, dim = x.shape
+
+        u = F.layer_norm(x, (dim,), self.ln1_weight, self.ln1_bias)
+
+        q = F.linear(u, self.wq, self.bq)
+        k = F.linear(u, self.wk, self.bk)
+        v = F.linear(u, self.wv, self.bv)
+
+        q = q.unsqueeze(1)
+        k = k.unsqueeze(1)
+        v = v.unsqueeze(1)
+
+        attn_out = F.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            is_causal=True,
+        )
+        attn_out = attn_out.squeeze(1)
         
-        # Ensure input is on CPU and float32 for Rust backend
-        if x.is_cuda:
-            x_np = x.detach().cpu().numpy().astype(np.float32)
-        else:
-            x_np = x.detach().numpy().astype(np.float32)
+        attn_out = F.linear(attn_out, self.wo, self.bo)
         
-        v_np = None
-        if v_mem is not None:
-            if v_mem.is_cuda:
-                v_np = v_mem.detach().cpu().numpy().astype(np.float32)
-            else:
-                v_np = v_mem.detach().numpy().astype(np.float32)
+        x_mid = x + attn_out
         
-        try:
-            out_np, v_new_np = self._layer.forward(x_np, v_np)
-        except Exception as e:
-            print(f"[RSULFLayerCUDA] Rust forward error: {e}")
-            print(f"  x_shape: {x_np.shape}, v_shape: {v_np.shape if v_np is not None else 'None'}")
-            raise e
+        w = F.layer_norm(x_mid, (dim,), self.ln2_weight, self.ln2_bias)
         
-        out = torch.from_numpy(out_np).to(device=device, dtype=dtype)
-        v_new = torch.from_numpy(v_new_np).to(device=device, dtype=dtype)
-        return out, v_new
+        w_flat = w.reshape(-1, dim)
+        
+        h = w_flat @ self.ffn_v1
+        h = h * self.ffn_s1.unsqueeze(0)
+        h = h @ self.ffn_u1.T
+        
+        h = h + self.b1.unsqueeze(0)
+        
+        h = F.gelu(h)
+        
+        out = h @ self.ffn_v2
+        out = out * self.ffn_s2.unsqueeze(0)
+        out = out @ self.ffn_u2.T
+        
+        out = out + self.b2.unsqueeze(0)
+        
+        ffn_out = out.view(batch, seq_len, dim)
+        
+        # g_inv scaling removed to match GPT-2 Euclidean fidelity
+        # g_inv = self.g_inv_param.unsqueeze(0)
+        # ffn_out = ffn_out * g_inv
+        
+        ffn_out = ffn_out * 1.0 
+        
+        x_out = x_mid + ffn_out
+        
+        return x_out, None
 
     def param_count(self) -> Tuple[int, int, float]:
         return self._layer.param_count()
@@ -150,13 +241,8 @@ class RSULFWrapperCUDA(nn.Module):
                 out = out[0]
             return out
         
-        batch, seq, dim = x.shape
-        device = x.device
-        dtype = x.dtype
-        
-        x_flat = x.view(-1, dim)
-        out, _ = self.rsulf(x_flat, None)
-        return out.view(batch, seq, -1)
+        out, _ = self.rsulf(x, None)
+        return out
 
 
 class RSULFLMHeadCUDA(nn.Module):
@@ -181,4 +267,3 @@ class RSULFLMHeadCUDA(nn.Module):
         for wrapper in self.rsulf_wrappers:
             x = wrapper(x)
         return self.lm_head(x)
-

@@ -1,6 +1,5 @@
 use ndarray::{Array1, Array2, ArrayView2, ArrayView1, Axis, s};
-use faer::{Mat, MatRef};
-use faer::prelude::*;
+use faer::{Mat};
 use rayon::prelude::*;
 
 pub struct RSULFConfig {

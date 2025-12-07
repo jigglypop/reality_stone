@@ -1972,6 +1972,201 @@ g = stabilize_metric_symmetric(g, eps=1e-4)
 
 ---
 
+## 부록 C: 마지막 레이어 + LM Head 변환 방정식 초안
+
+> 목적: GPT‑2/GPT‑계열처럼 **LM Head까지 포함된 마지막 블록**을 RS‑ULF 동역학 식으로 정확하게 재표현하기 위한 “1차 수식 초안”.
+
+### C.1 전체 구조 요약
+
+- 시퀀스 길이: \(n\), hidden 차원: \(d\), 블록 수: \(L\)
+- 블록 출력:
+  \[
+  x^{(\ell+1)} = x^{(\ell)} + \Delta x_{\text{attn}}^{(\ell)} + \Delta x_{\text{ffn}}^{(\ell)}
+  \]
+- 마지막 블록 + LM Head:
+  \[
+  x^{(L)} = x^{(L-1)} + \Delta x_{\text{attn}}^{(L-1)} + \Delta x_{\text{ffn}}^{(L-1)},\quad
+  z = W_{\text{out}}\operatorname{LN}\big(x^{(L)}\big)
+  \]
+- RS‑ULF 레이어 기본식:
+  \[
+  x_{t+1}
+  = \exp_{x_t}\Big[
+    -\eta g^{-1}\nabla\Phi(x_t)
+    + \alpha\Delta_g x_t
+    + \beta L x_t
+    + \gamma V_t
+  \Big]
+  \]
+
+목표는 **모든 레이어**에 대해
+\(x^{(\ell)}_{\text{RS}} \approx x^{(\ell)}_{\text{TF}}\) 이고,
+특히 마지막 레이어에서
+\(z_{\text{RS}} \approx z_{\text{TF}}\) 를 만족하도록
+각 항을 정의하는 것이다.
+
+### C.2 중간 레이어(0…L‑2)의 RS‑ULF 방정식
+
+한 블록 \(\ell < L-1\) 에 대해:
+
+1. **메트릭 추출 (Q/K → \(g_\ell\))**
+   \[
+   B_\ell := W_Q^{(\ell)\top} W_K^{(\ell)}
+   \]
+   \[
+   S_\ell = \tfrac12(B_\ell + B_\ell^\top),\quad
+   A_\ell = \tfrac12(B_\ell - B_\ell^\top)
+   \]
+   \[
+   g_\ell := \operatorname{Diag}\big(\operatorname{diag}(S_\ell)\big)
+   \]
+   정합 조건:
+   \[
+   (W_Q x_i)^\top (W_K x_j)
+   \approx x_i^\top g_\ell x_j
+   \]
+
+2. **포텐셜 정의 (FFN → \(\Phi_\ell\))**
+   \[
+   f_\ell(x) = W_2^{(\ell)}\sigma\big(W_1^{(\ell)} x\big)
+   \]
+   \[
+   \Phi_\ell(x) = \tfrac12\|f_\ell(x)\|^2,\quad
+   \nabla\Phi_\ell(x) = J_{f_\ell}(x)^\top f_\ell(x)
+   \]
+
+3. **그래프 라플라시안 (어텐션 → \(L_\ell\))**
+   - 시퀀스 그래프 \(G_\ell=(V,E_\ell)\) 를 어텐션 패턴(윈도우/마스크)로부터 구성
+   - 인접행렬 \(A_\ell\), 차수행렬 \(D_\ell\)
+   - 라플라시안:
+     \[
+     L_\ell = D_\ell - A_\ell
+     \]
+
+4. **업데이트 식**
+   \[
+   x^{(\ell+1)} =
+   \exp_{x^{(\ell)}}\Big[
+     -\eta_\ell g_\ell^{-1}\nabla\Phi_\ell(x^{(\ell)})
+     + \alpha_\ell\big(x^{(\ell)} - \bar x^{(\ell)}\big)
+     + \beta_\ell L_\ell x^{(\ell)}
+     + \gamma_\ell V_t
+   \Big]
+   \]
+
+여기서 \(\bar x^{(\ell)}\) 는 시퀀스 평균이고,
+두 번째 항은 단순 Riemannian Laplacian 근사이다.
+
+### C.3 마지막 레이어 + LM Head용 통합 포텐셜
+
+마지막 블록에서는 FFN 포텐셜만으로는 부족하고,
+**LM Head의 민감한 방향**까지 한 번에 포텐셜로 묶어야 한다.
+
+1. **마지막 블록 FFN 포텐셜**
+   \[
+   \Phi_L(x)
+   := \tfrac12\|f_L(x)\|^2
+   = \tfrac12\big\|W_2^{(L-1)}\sigma(W_1^{(L-1)}x)\big\|^2
+   \]
+
+2. **LM Head 포텐셜**
+   \[
+   \Phi_{\text{LM}}(x)
+   := \tfrac12\big\|W_{\text{out}}\operatorname{LN}(x)\big\|^2
+   \]
+
+3. **통합 포텐셜**
+   \[
+   \Phi_L^{\text{total}}(x)
+   :=
+   \Phi_L(x)
+   + \lambda\,\Phi_{\text{LM}}(x)
+   \]
+
+4. **그라디언트**
+   \[
+   \nabla\Phi_L^{\text{total}}(x)
+   =
+   \nabla\Phi_L(x)
+   + \lambda\,\nabla\Phi_{\text{LM}}(x)
+   \]
+   \[
+   \nabla\Phi_{\text{LM}}(x)
+   =
+   J_{\operatorname{LN}}(x)^\top
+   W_{\text{out}}^\top W_{\text{out}}\,
+   \operatorname{LN}(x)
+   \]
+
+이렇게 두면 마지막 레이어의 힘 항 안에
+\(W_{\text{out}}^\top W_{\text{out}}\) 이 명시적으로 들어가며,
+이는 “logit‑weighted SVD/메트릭” 직관을 방정식 레벨로 올린 것이다.
+
+### C.4 마지막 레이어 메트릭 \(g_L\): Q/K + LM Head 기반
+
+마지막 레이어의 메트릭은 단순히 Q/K 기반 \(g_L^{\text{attn}}\) 이 아니라,
+LM Head의 중요 방향까지 반영한 **통합 메트릭**으로 둔다.
+
+1. **어텐션 기반 메트릭**
+   \[
+   g_L^{\text{attn}}
+   :=
+   \operatorname{Diag}\big(
+     \operatorname{diag}(W_Q^{(L-1)\top}W_K^{(L-1)})
+   \big)
+   \]
+
+2. **LM Head 기반 메트릭**
+   \[
+   g_L^{\text{lm}}
+   :=
+   W_{\text{out}}^\top W_{\text{out}}
+   \]
+
+3. **통합 메트릭**
+   \[
+   g_L
+   :=
+   g_L^{\text{attn}}
+   + \mu\,g_L^{\text{lm}}
+   \]
+
+여기서 \(\mu\) 는 LM Head의 기여를 조절하는 스칼라이다.
+실제 구현에서는 수치 안정을 위해 대각/저랭크 근사를 사용한다.
+
+### C.5 마지막 레이어 RS‑ULF 방정식 (초안)
+
+위 정의를 모으면, 마지막 RS‑ULF 레이어의 업데이트 식은:
+
+\[
+x^{(L)} =
+\exp_{x^{(L-1)}}\Big[
+  -\eta_L g_L^{-1}
+    \nabla\Phi_L^{\text{total}}(x^{(L-1)})
+  + \alpha_L\big(x^{(L-1)} - \bar x^{(L-1)}\big)
+  + \beta_L L_L x^{(L-1)}
+  + \gamma_L V_t
+\Big]
+\]
+
+- \(\nabla\Phi_L^{\text{total}}\) 안에
+  \(W_{\text{out}}^\top W_{\text{out}}\) 가 들어 있으므로,
+  마지막 레이어는 **“FFN + LM Head 방향까지 포함한 통합 포텐셜 기반 지오데식 업데이트”** 로 재해석된다.
+- 이 방정식을 먼저 고정한 뒤,
+  그 안에 등장하는 선형 연산자들
+  (\(g_L,\nabla\Phi_L^{\text{total}},L_L\) 등)을
+  SVD/폴딩하는 순서로 구현·압축을 진행해야
+  큰 Transformer 전환에서 마지막 레이어 붕괴를 피할 수 있다.
+
+이 부록은 GPT‑2 실험에서 관측된
+“마지막 레이어만 레이어‑wise cos가 붕괴하는” 현상을
+수식 레벨에서 설명하고,
+향후 Mistral/Qwen 등 큰 모델 전환 시
+마지막 블록/LM Head를 어떻게 RS‑ULF 방정식으로 다뤄야 하는지에 대한
+기준 초안으로 사용한다.
+
+---
+
 **문서 버전**: 1.0
 **최종 수정**: 2025-01-XX
 **작성자**: Reality Stone Team

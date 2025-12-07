@@ -13,7 +13,7 @@ from reality_stone.layers.lorentz import from_poincare, lorentz_distance
 from reality_stone.layers.suppression import HyperbolicSuppressionField
 from reality_stone.models.semantic_preservation import SemanticPreservationLoss
 from .pretrained_backbone import PretrainedBackbone
-from reality_stone.utils.pre_segmenter import PreSegmenter, TreeNode, DocumentTree
+from reality_stone.utils.pre_segmenter import DocumentTree
 
 try:
     from reality_stone.data import SentenceTopicDataset, collate_batch
@@ -837,7 +837,7 @@ class _DecoderBlock(nn.Module):
         self.q_proj = nn.Linear(d_model, d_model)
         self.k_proj = nn.Linear(d_model, d_model)
         self.v_proj = nn.Linear(d_model, d_model)
-        
+
         self.lambda_p = nn.Parameter(torch.tensor(0.5))
         self.lambda_l = nn.Parameter(torch.tensor(0.5))
         # geodesic product attention 용 MetricAttention (SPDMetric만 재사용)
@@ -846,7 +846,7 @@ class _DecoderBlock(nn.Module):
             normalizer="softmax",
             rank=2,
             tau=1.0,
-            mode="dot",  # 점수는 아래에서 geodesic 으로 직접 계산
+            mode="geodesic",  # 점수는 아래에서 geodesic 으로 직접 계산
             manifold=manifold,
             c=abs(float(c)) if c is not None else 1e-3,
         )
@@ -869,130 +869,50 @@ class _DecoderBlock(nn.Module):
         B, S, _ = x.shape
         H = self.n_head
         d_h = self.d_model // H
-
         q = self.q_proj(x).view(B, S, H, d_h).transpose(1, 2)
         k = self.k_proj(x).view(B, S, H, d_h).transpose(1, 2)
         v = self.v_proj(x).view(B, S, H, d_h).transpose(1, 2)
-
-        q = self.attn.metric.scale_q(q)
-        k = self.attn.metric.scale_k(k)
-        
         if metric_ctx is not None:
             d_ctx = metric_ctx.size(-1)
             if d_ctx == d_h:
                 q_perm = q.transpose(1, 2)
                 k_perm = k.transpose(1, 2)
-                
                 q_perm = torch.einsum("bsij,bshj->bshi", metric_ctx, q_perm)
                 k_perm = torch.einsum("bsij,bshj->bshi", metric_ctx, k_perm)
-                
                 q = q_perm.transpose(1, 2)
                 k = k_perm.transpose(1, 2)
             elif d_ctx < d_h:
                 q_perm = q.transpose(1, 2)
                 k_perm = k.transpose(1, 2)
-                
                 q_sub = q_perm[..., :d_ctx]
                 k_sub = k_perm[..., :d_ctx]
-                
                 q_sub = torch.einsum("bsij,bshj->bshi", metric_ctx, q_sub)
                 k_sub = torch.einsum("bsij,bshj->bshi", metric_ctx, k_sub)
-                
                 q_perm = torch.cat([q_sub, q_perm[..., d_ctx:]], dim=-1)
                 k_perm = torch.cat([k_sub, k_perm[..., d_ctx:]], dim=-1)
-                
                 q = q_perm.transpose(1, 2)
                 k = k_perm.transpose(1, 2)
-
-        BH = B * H
-        q_flat = q.reshape(BH, S, d_h)
-        k_flat = k.reshape(BH, S, d_h)
-
         device = x.device
-
         if topo_idx is not None:
             idx = topo_idx
-            K = idx.shape[-1]
         else:
-            K = S
             idx = torch.arange(S, device=device).view(1, 1, S).expand(B, S, S)
-
+        K = idx.shape[-1]
         arange_s = torch.arange(S, device=device).view(1, S, 1)
         idx_causal = torch.where(idx > arange_s, arange_s.expand_as(idx), idx)
-
-        # gather keys by idx_causal
-        idx_flat = idx_causal.view(B, S * K)            # [B,S*K]
-        idx_flat_bh = idx_flat.unsqueeze(1).expand(B, H, S * K).reshape(BH, S * K)  # [BH,S*K]
-
-        k_sel = k_flat.gather(
-            dim=1,
-            index=idx_flat_bh.unsqueeze(-1).expand(BH, S * K, d_h),
-        )  # [BH,S*K,d_h]
-
-        # replicate queries per K
-        q_rep = q_flat.unsqueeze(2).expand(BH, S, K, d_h).reshape(BH, S * K, d_h)  # [BH,S*K,d_h]
-
-        # ----- Geodesic distances on Poincaré & Lorentz -----
-        # reshape to [N,d_h]
-        N_pairs = BH * S * K
-        q_pairs = q_rep.reshape(N_pairs, d_h)
-        k_pairs = k_sel.reshape(N_pairs, d_h)
-
-        # Poincaré: project to ball and compute distance
-        c_p = 1e-3  # 사용 중인 기본 곡률 (config 와 동일하게)
-        q_p = project_to_ball(q_pairs)
-        k_p = project_to_ball(k_pairs)
-        d_p = poincare_distance(q_p, k_p, c_p)  # [N_pairs]
-
-        # Lorentz: Poincaré 좌표를 hyperboloid 로 올린 뒤 거리
-        c_l = abs(float(self.c)) if self.c is not None else c_p
-        q_l = from_poincare(q_p, c=c_p)
-        k_l = from_poincare(k_p, c=c_p)
-        d_l = lorentz_distance(q_l, k_l, c_l)  # [N_pairs]
-
-        # Product manifold distance^2 = λ_p d_p^2 + λ_l d_l^2
-        # 논문 Section 3.3 & 9.5: 학습 가능한 manifold 가중치
-        lambda_p = torch.sigmoid(self.lambda_p)
-        lambda_l = torch.sigmoid(self.lambda_l)
-        lambda_sum = lambda_p + lambda_l + 1e-8
-        lambda_p_norm = lambda_p / lambda_sum
-        lambda_l_norm = lambda_l / lambda_sum
-        d2_total = lambda_p_norm * (d_p ** 2) + lambda_l_norm * (d_l ** 2)
-        d2 = d2_total.reshape(B, H, S, K)  # [B,H,S,K]
-
-        # scores = -d^2 / τ
-        tau = max(self.attn.tau, 1e-6)
-        scores = -d2 / tau  # [B,H,S,K]
-        # Low-rank auxiliary term to ensure gradient flows to SPDMetric.U
-        qu = self.attn.metric.lowrank_proj(q)
-        ku = self.attn.metric.lowrank_proj(k)
-        if qu is not None and ku is not None:
-            s_lr_full = torch.einsum("bhtr,bhsr->bhts", qu, ku)  # [B,H,S,S]
-            idx_bhs = idx_causal.unsqueeze(1).expand(B, H, S, K)  # [B,H,S,K]
-            s_lr = s_lr_full.gather(dim=3, index=idx_bhs)  # [B,H,S,K]
-            scores = scores + 1e-3 * s_lr
-
-        # softmax over K (Top‑k 이웃들)
-        a = torch.softmax(scores, dim=-1)  # [B,H,S,K]
-
-        # values gather & aggregation
-        # v: [B,H,S,d_h], idx_causal: [B,S,K]
-        v_flat = v  # 그대로 사용
-        BH, S_v, Dh_v = BH, S, d_h
-        v_flat2 = v_flat.reshape(BH, S_v, Dh_v)
-        idx_flat2 = idx_causal.unsqueeze(1).expand(B, H, S, K).reshape(BH, S * K)
-        v_g = v_flat2.gather(
-            dim=1,
-            index=idx_flat2.unsqueeze(-1).expand(BH, S * K, Dh_v),
-        )  # [BH,S*K,Dh_v]
-        v_sel = v_g.reshape(B, H, S, K, Dh_v)  # [B,H,S,K,Dh_v]
-
-        y = (a.unsqueeze(-1) * v_sel).sum(dim=3)  # [B,H,S,Dh_v]
-
-        # 합쳐서 출력 proj
+        topo_dict = {"neighbor": idx_causal}
+        topk_cfg = {"neighbor": K}
+        c_used = abs(float(self.c)) if self.c is not None else 1e-3
+        y = self.attn(
+            q,
+            k,
+            v,
+            topo_idx=topo_dict,
+            topk_cfg=topk_cfg,
+            c=c_used,
+        )
         y = y.transpose(1, 2).contiguous().view(B, S, self.d_model)
         y = self.out_proj(y)
-
         x = x + y
         x = self.ln1(x)
         x = x + self.mlp(x)

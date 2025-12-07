@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 
 import torch
 from transformers import GPT2Tokenizer
@@ -11,7 +12,8 @@ if CURRENT_DIR not in sys.path:
     sys.path.append(CURRENT_DIR)
 
 from encoder import build_structural_rsulf_model, distill_structural_potentials
-from decoder import fit_riemannian_decoder, rsulf_generate_text
+from decoder import rsulf_generate_text
+from trainer import fit_riemannian_decoder
 from status import analyze_layer_fidelity, analyze_layer_fidelity_blockwise
 
 
@@ -68,6 +70,7 @@ def run_rsulf_rank_sweep(original_model, tokenizer, device, prompt):
     current_r = start_r
     while current_r >= 1:
         print(f"\n--- Testing with rank r={current_r} ---")
+        rank_start = time.time()
         config = {
             "d_model": original_model.config.n_embd,
             "r": current_r,
@@ -80,10 +83,16 @@ def run_rsulf_rank_sweep(original_model, tokenizer, device, prompt):
             "verbose": True,
             "exact": True,
         }
+        print(f"[r={current_r}] build converter")
         converter = RSULFTransformerConverter(**config)
+        convert_start = time.time()
         rs_layers = converter.convert_model(original_model)
+        convert_time = time.time() - convert_start
+        print(f"[r={current_r}] convert_model done in {convert_time:.2f}s")
         rs_layers = rs_layers.to(device)
         basis = getattr(converter, "global_basis", None)
+        print(f"[r={current_r}] fit decoder (BACD data collection + SVD)")
+        fit_start = time.time()
         decoder = fit_riemannian_decoder(
             original_model,
             rs_layers,
@@ -91,11 +100,15 @@ def run_rsulf_rank_sweep(original_model, tokenizer, device, prompt):
             device,
             basis,
             target_rank=current_r,
-            num_batches=4,
+            num_batches=64,
             batch_size=4,
             seq_len=32,
         )
+        fit_time = time.time() - fit_start
+        print(f"[r={current_r}] decoder fit done in {fit_time:.2f}s")
+        print(f"[r={current_r}] analyze layer fidelity")
         analyze_layer_fidelity(original_model, rs_layers, tokenizer, prompt, device)
+        print(f"[r={current_r}] analyze layer fidelity (block-wise)")
         rs_text, rs_time = rsulf_generate_text(
             original_model,
             rs_layers,
@@ -104,8 +117,9 @@ def run_rsulf_rank_sweep(original_model, tokenizer, device, prompt):
             prompt,
             decoder=decoder,
         )
-        print(f"   [RS-ULF r={current_r}]: {rs_text}")
-        print(f"   Time: {rs_time:.4f}s")
+        rank_time = time.time() - rank_start
+        print(f"\n   [RS-ULF r={current_r}]: {rs_text}")
+        print(f"   [r={current_r}] gen_time={rs_time:.4f}s, total_rank_time={rank_time:.2f}s")
         if current_r == 1:
             break
         current_r = current_r // 2
@@ -116,7 +130,7 @@ def run_rsulf_rank_sweep(original_model, tokenizer, device, prompt):
 def test_gpt2_conversion():
     print("=== [Reality Stone] GPT-2 변환 테스트 ===")
     device = select_device()
-    print("\n1. Loading Original GPT-2...")
+    print("\n  GPT-2 원본 로딩")
     model_name = "gpt2"
     tokenizer, original_model = load_gpt2_components(model_name, device)
     prompt = "The secret of the universe is"

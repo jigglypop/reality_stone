@@ -3,6 +3,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from reality_stone.models.transformer_converter import FFNPotential, StructuralRSULFModel
 
+try:
+    from tqdm.auto import tqdm as _tqdm
+except Exception:
+    _tqdm = None
+
 
 def build_structural_rsulf_model(original_model, hidden_dim: int = None):
     if hidden_dim is None:
@@ -43,7 +48,11 @@ def distill_structural_potentials(
     vocab_size = tokenizer.vocab_size
     teacher_blocks = list(original_model.transformer.h)
     num_layers = min(len(structural_model.layers), len(teacher_blocks))
-    for step in range(steps):
+    if _tqdm is not None:
+        iterator = _tqdm(range(steps), desc="[structural_potential]", leave=False)
+    else:
+        iterator = range(steps)
+    for step in iterator:
         input_ids = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
         with torch.no_grad():
             tok_emb = original_model.transformer.wte(input_ids)
@@ -74,8 +83,9 @@ def distill_structural_potentials(
         loss.backward()
         torch.nn.utils.clip_grad_norm_(potentials_params, 1.0)
         optimizer.step()
-        if (step + 1) % 10 == 0:
-            print(f"[structural_potential] step={step+1}/{steps} loss={loss.item():.4f}")
+        if _tqdm is not None:
+            iterator.set_postfix(step=step + 1, total=steps, loss=float(loss.item()))
+        print(f"[structural_potential] step={step+1}/{steps} loss={loss.item():.4f}")
     structural_model.eval()
 
 
@@ -164,7 +174,7 @@ def distill_gpt2_to_rsulf(
             energy_loss = energy_loss + F.mse_loss(phi_student, phi_teacher)
         last_student = proj_hiddens[num_layers - 1]
         ln_f = original_model.transformer.ln_f
-        lm_head = original_model.lm_head
+        lm_head = original_model.transformer.lm_head
         student_logits = lm_head(ln_f(last_student))
         logit_loss = F.mse_loss(student_logits, teacher_logits)
         loss = layer_loss_weight * layer_loss + logit_loss_weight * logit_loss + force_loss + 0.1 * energy_loss

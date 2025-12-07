@@ -19,7 +19,6 @@ except ImportError:
 from reality_stone.layers.rsulf_cuda import RSULFLayerCUDA, RSULFWrapperCUDA
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from tqdm import tqdm
 
 
@@ -237,10 +236,12 @@ class RSULFTransformerConverter:
                     pbar_convert.set_postfix(idx=idx, status="skip")
                     pbar_convert.update(1)
                     continue
-                print(f"Processing layer {idx}...")
                 try:
                     d_out, d_model = weights["WQ"].shape
+                    if self.verbose:
+                        print(f"[RSULF] layer {idx:02d}: start")
                     best_r = d_model
+                    orig_block = transformer_layers[idx] if idx < len(transformer_layers) else None
                     rsulf = RSULFLayerCUDA(
                         wq=weights["WQ"],
                         wk=weights["WK"],
@@ -255,6 +256,7 @@ class RSULFTransformerConverter:
                         seq_len=self.seq_len,
                         window=self.window,
                         global_basis=None,
+                        original_block=orig_block if idx == len(layer_weights) - 1 else None,
                     )
                     if "ln_1_weight" in weights:
                         rsulf.set_ln1(weights["ln_1_weight"], weights.get("ln_1_bias"))
@@ -310,7 +312,6 @@ class RSULFTransformerConverter:
         except Exception as e:
             print(f"Global Basis extraction failed: {e}. Falling back to local.")
 
-        print("Phase 4: Converting layers...")
         layers = []
         acc_by_idx = {a.get("layer_idx", i): a.get("expected_accuracy", 0.0) for i, a in enumerate(analyses)}
         rank_by_idx = {
@@ -324,15 +325,12 @@ class RSULFTransformerConverter:
                 pbar_convert.set_postfix(idx=idx, status="skip")
                 pbar_convert.update(1)
                 continue
-                
-            print(f"Processing layer {idx}...")
-            
             try:
                 d_out, d_model = weights["WQ"].shape
                 base_r = rank_by_idx.get(idx, self.r)
                 best_r = int(max(1, min(d_model, self.r, base_r)))
-                orig_block = original_blocks[idx] if idx < len(original_blocks) else None
-                
+                if self.verbose:
+                    print(f"[RSULF] layer {idx:02d}: start")
                 rsulf = RSULFLayerCUDA(
                     wq=weights["WQ"],
                     wk=weights["WK"],
@@ -348,7 +346,6 @@ class RSULFTransformerConverter:
                     window=self.window,
                     global_basis=global_basis,
                 )
-                
                 if "ln_1_weight" in weights:
                     rsulf.set_ln1(weights["ln_1_weight"], weights.get("ln_1_bias"))
                 if "ln_2_weight" in weights:
@@ -404,7 +401,6 @@ class RSULFTransformerConverter:
                 else:
                     layer_data[k] = v
             data["layers"].append(layer_data)
-        
         with open(path, "w") as f:
             json.dump(data, f)
 
@@ -597,106 +593,3 @@ class StructuralRSULFModel(nn.Module):
     @property
     def wrappers(self) -> nn.ModuleList:
         return self.layers
-
-
-class GlobalManifoldLearner(nn.Module):
-    def __init__(
-        self,
-        d_model: int,
-        rank: int,
-        hidden_dim: int = 128,
-        depth: int = 2,
-        device: Optional[torch.device] = None,
-    ):
-        super().__init__()
-        self.d_model = d_model
-        self.rank = rank
-        self.device = device if device is not None else torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        layers: List[nn.Module] = []
-        in_dim = 1
-        for _ in range(max(1, depth - 1)):
-            layers.append(nn.Linear(in_dim, hidden_dim))
-            layers.append(nn.SiLU())
-            in_dim = hidden_dim
-        layers.append(nn.Linear(in_dim, rank * rank))
-        self.net = nn.Sequential(*layers).to(self.device)
-        self.u_global: Optional[torch.Tensor] = None
-        self.c_targets: Optional[torch.Tensor] = None
-        self.num_layers: int = 0
-
-    def build_targets(
-        self,
-        u_global: np.ndarray,
-        layers_wq: List[np.ndarray],
-        layers_wk: List[np.ndarray],
-    ) -> None:
-        u = torch.from_numpy(u_global).to(self.device).float()
-        cores: List[torch.Tensor] = []
-        for wq_np, wk_np in zip(layers_wq, layers_wk):
-            if wq_np is None or wk_np is None:
-                continue
-            wq = torch.from_numpy(wq_np).to(self.device).float()
-            wk = torch.from_numpy(wk_np).to(self.device).float()
-            d_q, d_in = wq.shape
-            d_k, _ = wk.shape
-            if d_k < d_q and d_k > 0:
-                repeat = d_q // d_k
-                wk_expanded = wk.repeat(repeat, 1)
-            else:
-                wk_expanded = wk
-            g = wq.t().mm(wk_expanded)
-            g_sym = 0.5 * (g + g.t())
-            c = u.t().mm(g_sym).mm(u)
-            cores.append(c.view(-1))
-        if not cores:
-            raise RuntimeError("No valid layers for manifold targets")
-        targets = torch.stack(cores, dim=0)
-        self.u_global = u
-        self.c_targets = targets
-        self.num_layers = targets.shape[0]
-
-    def fit(self, epochs: int = 500, lr: float = 1e-3) -> float:
-        if self.c_targets is None:
-            raise RuntimeError("Targets not built; call build_targets first")
-        steps = self.num_layers
-        if steps <= 0:
-            raise RuntimeError("Number of layers must be positive")
-        t = torch.linspace(0.0, 1.0, steps=steps, device=self.device).unsqueeze(-1)
-        optimizer = torch.optim.Adam(self.net.parameters(), lr=lr)
-        loss_val = 0.0
-        for _ in range(epochs):
-            optimizer.zero_grad()
-            pred = self.net(t)
-            loss = F.mse_loss(pred, self.c_targets)
-            loss.backward()
-            optimizer.step()
-            loss_val = float(loss.detach().cpu().item())
-        return loss_val
-
-    def generate_core(self, layer_idx: int) -> torch.Tensor:
-        if self.u_global is None:
-            raise RuntimeError("Global basis not set")
-        if self.num_layers <= 0:
-            raise RuntimeError("No layers available")
-        idx = max(0, min(self.num_layers - 1, layer_idx))
-        if self.num_layers == 1:
-            t_val = 0.0
-        else:
-            t_val = float(idx) / float(self.num_layers - 1)
-        t = torch.tensor([[t_val]], device=self.device).float()
-        core_flat = self.net(t)[0]
-        core = core_flat.view(self.rank, self.rank)
-        return core
-
-    def project(self, x: torch.Tensor, layer_idx: int) -> torch.Tensor:
-        if self.u_global is None:
-            raise RuntimeError("Global basis not set")
-        u = self.u_global.to(x.device).type_as(x)
-        core = self.generate_core(layer_idx).to(x.device).type_as(x)
-        x_shape = x.shape
-        x_flat = x.view(-1, x_shape[-1])
-        xu = x_flat.mm(u)
-        xu_core = xu.mm(core)
-        y_flat = xu_core.mm(u.t())
-        y = y_flat.view(*x_shape)
-        return y

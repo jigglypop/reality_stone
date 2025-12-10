@@ -246,7 +246,15 @@ pub mod cuda {
         out_features: i32,
     ) {
         unsafe {
-            ffi::spline_forward_cuda(input, control_points, output, batch_size, k, in_features, out_features);
+            ffi::spline_forward_cuda(
+                input,
+                control_points,
+                output,
+                batch_size,
+                k,
+                in_features,
+                out_features,
+            );
         }
     }
 
@@ -260,7 +268,15 @@ pub mod cuda {
         out_features: i32,
     ) {
         unsafe {
-            ffi::spline_backward_cuda(grad_output, input, grad_control_points, batch_size, k, in_features, out_features);
+            ffi::spline_backward_cuda(
+                grad_output,
+                input,
+                grad_control_points,
+                batch_size,
+                k,
+                in_features,
+                out_features,
+            );
         }
     }
 }

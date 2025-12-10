@@ -16,19 +16,29 @@ impl PySplineCache {
         }
     }
 
-    pub fn add_point(&mut self, time: f32, state: PyReadonlyArray1<f32>, velocity: PyReadonlyArray1<f32>) {
-        self.inner.add_point(time, state.as_array(), velocity.as_array());
+    pub fn add_point(
+        &mut self,
+        time: f32,
+        state: PyReadonlyArray1<f32>,
+        velocity: PyReadonlyArray1<f32>,
+    ) {
+        self.inner
+            .add_point(time, state.as_array(), velocity.as_array());
     }
 
     pub fn reconstruct<'py>(&self, py: Python<'py>, t: f32) -> Option<&'py PyArray1<f32>> {
         self.inner.reconstruct(t).map(|arr| arr.to_pyarray(py))
     }
-    
-    pub fn batch_reconstruct<'py>(&self, py: Python<'py>, timestamps: PyReadonlyArray1<f32>) -> &'py PyArray2<f32> {
+
+    pub fn batch_reconstruct<'py>(
+        &self,
+        py: Python<'py>,
+        timestamps: PyReadonlyArray1<f32>,
+    ) -> &'py PyArray2<f32> {
         let arr = self.inner.batch_reconstruct(timestamps.as_array());
         arr.to_pyarray(py)
     }
-    
+
     pub fn clear(&mut self) {
         self.inner.clear();
     }
@@ -40,4 +50,3 @@ pub fn register_spline_cache_module(py: Python, parent_module: &PyModule) -> PyR
     parent_module.add_submodule(m)?;
     Ok(())
 }
-

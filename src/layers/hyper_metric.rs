@@ -18,14 +18,19 @@ impl TinyMLP {
         }
     }
 
-    pub fn from_weights(w1: Array2<f32>, b1: Array1<f32>, w2: Array2<f32>, b2: Array1<f32>) -> Self {
+    pub fn from_weights(
+        w1: Array2<f32>,
+        b1: Array1<f32>,
+        w2: Array2<f32>,
+        b2: Array1<f32>,
+    ) -> Self {
         Self { w1, b1, w2, b2 }
     }
 
     pub fn forward(&self, x: &Array1<f32>) -> Array1<f32> {
         let h = x.dot(&self.w1) + &self.b1;
         let h_act = h.mapv(|v| v.max(0.0));
-        
+
         h_act.dot(&self.w2) + &self.b2
     }
 }
@@ -41,9 +46,9 @@ pub struct HyperMetric {
 
 impl HyperMetric {
     pub fn new(d_model: usize, r: usize, hyper_hidden: usize) -> Self {
-        let hyper_input_dim = 64; 
+        let hyper_input_dim = 64;
         let output_dim = r * r;
-        
+
         Self {
             u_global: Array2::zeros((d_model, r)),
             v_global: Array2::zeros((d_model, r)),
@@ -76,10 +81,10 @@ impl HyperMetric {
 
     pub fn project_forward(&self, x: &Array2<f32>, layer_emb: &Array1<f32>) -> Array2<f32> {
         let core = self.generate_core(layer_emb);
-        
+
         let x_proj = x.dot(&self.u_global);
         let x_core = x_proj.dot(&core);
-        
+
         x_core.dot(&self.v_global.t())
     }
 }

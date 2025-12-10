@@ -20,15 +20,10 @@ pub fn extract_metric_cuda_py<'py>(
         extraction::extract_metric_cuda(w_view, calib_view, target_dim, num_steps, curvature, lr)
     });
 
-    (
-        u.into_pyarray(py),
-        g.into_pyarray(py),
-        v.into_pyarray(py),
-    )
+    (u.into_pyarray(py), g.into_pyarray(py), v.into_pyarray(py))
 }
 
 pub fn register(m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(extract_metric_cuda_py, m)?)?;
     Ok(())
 }
-

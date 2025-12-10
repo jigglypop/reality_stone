@@ -68,7 +68,7 @@ fn main() {
 
             // Use cc::Build for compiling CUDA files
             let mut build = cc::Build::new();
-            
+
             build
                 .cuda(true)
                 .flag(&format!("-arch={}", arch))

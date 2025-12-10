@@ -10,11 +10,10 @@ pub fn compute_dynamic_suppression(
     scale: f32,
 ) -> Array2<f32> {
     let mut out = Array2::<f32>::zeros((x.nrows(), x.ncols()));
-    
+
     Zip::from(&mut out).and(x).par_for_each(|y, &val| {
         *y = base + linear * val + hyp * (scale * val).tanh();
     });
-    
+
     out
 }
-

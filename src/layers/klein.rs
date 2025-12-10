@@ -35,15 +35,15 @@ pub fn klein_distance(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32) -> Array
 pub fn klein_add(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32) -> Array2<f32> {
     let u_norm_sq = norm_sq_batched(u).insert_axis(Axis(1));
     let uv = dot_batched(u, v).insert_axis(Axis(1));
-    
+
     let gamma_u = (1.0 - c * &u_norm_sq).mapv(|val| 1.0 / safe_sqrt(val));
     let denom = 1.0 + c * &uv;
     let denom_inv = denom.mapv(|val| 1.0 / val.max(EPS));
-    
+
     let coeff_v = &gamma_u.mapv(|g| 1.0 / g); // 1/gamma_u = sqrt(1-c|u|^2)
     let coeff_u_part = (c * &gamma_u * &uv) / (1.0 + &gamma_u);
     let coeff_u = 1.0 + &coeff_u_part;
-    
+
     // Result = denom_inv * (coeff_u * u + coeff_v * v)
     let mut result = u * &coeff_u;
     result = &result + &(v * coeff_v);
@@ -60,58 +60,61 @@ pub fn klein_add_vjp(
     // Forward 중간값 재계산
     let u_norm_sq = norm_sq_batched(u).insert_axis(Axis(1));
     let uv = dot_batched(u, v).insert_axis(Axis(1));
-    
+
     let gamma_u = (1.0 - c * &u_norm_sq).mapv(|val| 1.0 / safe_sqrt(val));
     let denom = 1.0 + c * &uv;
     let denom_inv = denom.mapv(|val| 1.0 / val.max(EPS));
-    
+
     let inv_gamma_u = gamma_u.mapv(|g| 1.0 / g); // 1/gamma_u
     let coeff_u_part = (c * &gamma_u * &uv) / (1.0 + &gamma_u);
     let coeff_u = 1.0 + &coeff_u_part;
-    
+
     let num = u * &coeff_u + v * &inv_gamma_u; // 분자
-    // output = num / denom
-    
+                                               // output = num / denom
+
     // 그라디언트 계산
     // dL/dNum = grad_output / denom
     let grad_num = grad_output * &denom_inv;
-    
+
     // dL/dDenom = - <grad_output, num> / denom^2 = - <grad_output, output> / denom
     let output = &num * &denom_inv;
-    let grad_denom = -(grad_output * &output).sum_axis(Axis(1)).insert_axis(Axis(1)) * &denom_inv;
-    
+    let grad_denom = -(grad_output * &output)
+        .sum_axis(Axis(1))
+        .insert_axis(Axis(1))
+        * &denom_inv;
+
     // Denom = 1 + c <u,v>
     // dL/du += c * grad_denom * v
     // dL/dv += c * grad_denom * u
     let mut grad_u = v * (&grad_denom * c);
     let mut grad_v = u * (&grad_denom * c);
-    
+
     // Num = coeff_u * u + inv_gamma_u * v
     // dL/du += coeff_u * grad_num
     // dL/dv += inv_gamma_u * grad_num
     grad_u = &grad_u + &(&grad_num * &coeff_u);
     grad_v = &grad_v + &(&grad_num * &inv_gamma_u);
-    
+
     // dL/d_coeff_u = <grad_num, u>
     let grad_coeff_u = (&grad_num * u).sum_axis(Axis(1)).insert_axis(Axis(1));
     // dL/d_inv_gamma_u = <grad_num, v>
     let grad_inv_gamma_u = (&grad_num * v).sum_axis(Axis(1)).insert_axis(Axis(1));
-    
+
     // inv_gamma_u = sqrt(1 - c|u|^2)
     // d_inv_gamma_u / du = -c * gamma_u * u
     grad_u = &grad_u - &(u * (&grad_inv_gamma_u * c * &gamma_u));
-    
+
     // coeff_u 미분
     let d_coeff_u_d_uv = c * &gamma_u / (1.0 + &gamma_u);
     let d_coeff_u_d_gamma_u = (c * &uv) / ((1.0 + &gamma_u) * (1.0 + &gamma_u));
-    
+
     let grad_uv = &grad_coeff_u * &d_coeff_u_d_uv;
     grad_u = &grad_u + &(v * &grad_uv);
     grad_v = &grad_v + &(u * &grad_uv);
-    
+
     let grad_gamma_u = &grad_coeff_u * &d_coeff_u_d_gamma_u;
     grad_u = &grad_u + &(u * (&grad_gamma_u * c * &gamma_u * &gamma_u * &gamma_u));
-    
+
     (grad_u, grad_v)
 }
 
@@ -168,7 +171,6 @@ pub fn klein_scalar_vjp(
     let grad_x = grad_output * &scale + (grad_norm_component * d_scale_d_norm / &norm_clamped) * x;
     grad_x
 }
-
 
 /// 클라인 모델의 순전파 레이어
 pub fn klein_layer_forward(

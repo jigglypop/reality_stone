@@ -1,14 +1,13 @@
+use crate::layers::decoder::RiemannianDecoder;
+use crate::layers::human_decoder::{HumanStyleDecoder, StageWeights};
+use crate::layers::rsulf::{
+    adaptive_rank_svd, analyze_layer, block_lanczos_svd, create_causal_laplacian,
+    fold_dimension_svd, fold_ffn_svd, nystrom_approximation, verify_fold_consistency,
+    RSULFComponents, RSULFConfig, RSULFLayer,
+};
+use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, IntoPyArray};
-use crate::layers::rsulf::{
-    RSULFLayer, RSULFConfig, RSULFComponents, 
-    fold_dimension_svd, fold_ffn_svd, create_causal_laplacian,
-    verify_fold_consistency, 
-    block_lanczos_svd, nystrom_approximation, adaptive_rank_svd,
-    analyze_layer,
-};
-use crate::layers::decoder::RiemannianDecoder;
 
 #[cfg(feature = "cuda")]
 mod rsulf_cuda_ffi {
@@ -124,7 +123,7 @@ impl PyRSULFLayer {
             window,
             calibration_samples: 1024,
         };
-        
+
         let inner = RSULFLayer::from_transformer(
             wq.as_array(),
             wk.as_array(),
@@ -132,7 +131,7 @@ impl PyRSULFLayer {
             w2.as_array(),
             config,
         );
-        
+
         Self { inner }
     }
 
@@ -176,7 +175,7 @@ impl PyRSULFLayer {
 
         Self { inner }
     }
-    
+
     #[staticmethod]
     #[pyo3(signature = (wq, wk, w1, w2, u_basis, basis_rank, d_model=4096, r=1024, eta=0.01, alpha=0.02, beta=0.01, gamma=0.99, seq_len=128, window=8))]
     pub fn new_with_basis(
@@ -206,7 +205,7 @@ impl PyRSULFLayer {
             window,
             calibration_samples: 1024,
         };
-        
+
         let global_basis = crate::layers::rsulf::GlobalBasis {
             u: u_basis.as_array().to_owned(),
             rank: basis_rank,
@@ -223,7 +222,7 @@ impl PyRSULFLayer {
 
         Self { inner }
     }
-    
+
     pub fn forward<'py>(
         &self,
         py: Python<'py>,
@@ -234,51 +233,51 @@ impl PyRSULFLayer {
         let (output, v_new) = self.inner.forward(x.as_array(), v_view);
         (output.into_pyarray(py), v_new.into_pyarray(py))
     }
-    
+
     pub fn param_count(&self) -> (usize, usize, f32) {
         self.inner.param_count()
     }
-    
+
     #[getter]
     pub fn curvature(&self) -> f32 {
         self.inner.curvature
     }
-    
+
     #[getter]
     pub fn d_model(&self) -> usize {
         self.inner.config.d_model
     }
-    
+
     #[getter]
     pub fn r(&self) -> usize {
         self.inner.config.r
     }
-    
+
     #[getter]
     pub fn eta(&self) -> f32 {
         self.inner.config.eta
     }
-    
+
     #[getter]
     pub fn alpha(&self) -> f32 {
         self.inner.config.alpha
     }
-    
+
     #[getter]
     pub fn beta(&self) -> f32 {
         self.inner.config.beta
     }
-    
+
     #[getter]
     pub fn gamma(&self) -> f32 {
         self.inner.config.gamma
     }
-    
+
     #[getter]
     pub fn g_inv<'py>(&self, py: Python<'py>) -> &'py PyArray1<f32> {
         self.inner.g_inv.clone().into_pyarray(py)
     }
-    
+
     #[getter]
     pub fn g_diag<'py>(&self, py: Python<'py>) -> &'py PyArray1<f32> {
         self.inner.g_diag.clone().into_pyarray(py)
@@ -295,21 +294,33 @@ impl PyRSULFLayer {
         dict.set_item("gamma", comp.gamma).unwrap();
         dict.set_item("seq_len", comp.seq_len).unwrap();
         dict.set_item("window", comp.window).unwrap();
-        dict.set_item("g_diag", comp.g_diag.into_pyarray(py)).unwrap();
+        dict.set_item("g_diag", comp.g_diag.into_pyarray(py))
+            .unwrap();
         dict.set_item("g_inv", comp.g_inv.into_pyarray(py)).unwrap();
         dict.set_item("g_sym", comp.g_sym.into_pyarray(py)).unwrap();
-        dict.set_item("a_antisym", comp.a_antisym.into_pyarray(py)).unwrap();
-        dict.set_item("u_metric", comp.u_metric.into_pyarray(py)).unwrap();
-        dict.set_item("v_metric", comp.v_metric.into_pyarray(py)).unwrap();
-        dict.set_item("g_core", comp.g_core.into_pyarray(py)).unwrap();
-        dict.set_item("a_core", comp.a_core.into_pyarray(py)).unwrap();
+        dict.set_item("a_antisym", comp.a_antisym.into_pyarray(py))
+            .unwrap();
+        dict.set_item("u_metric", comp.u_metric.into_pyarray(py))
+            .unwrap();
+        dict.set_item("v_metric", comp.v_metric.into_pyarray(py))
+            .unwrap();
+        dict.set_item("g_core", comp.g_core.into_pyarray(py))
+            .unwrap();
+        dict.set_item("a_core", comp.a_core.into_pyarray(py))
+            .unwrap();
         dict.set_item("curvature", comp.curvature).unwrap();
-        dict.set_item("ffn_u1", comp.ffn_u1.into_pyarray(py)).unwrap();
-        dict.set_item("ffn_s1", comp.ffn_s1.into_pyarray(py)).unwrap();
-        dict.set_item("ffn_v1", comp.ffn_v1.into_pyarray(py)).unwrap();
-        dict.set_item("ffn_u2", comp.ffn_u2.into_pyarray(py)).unwrap();
-        dict.set_item("ffn_s2", comp.ffn_s2.into_pyarray(py)).unwrap();
-        dict.set_item("ffn_v2", comp.ffn_v2.into_pyarray(py)).unwrap();
+        dict.set_item("ffn_u1", comp.ffn_u1.into_pyarray(py))
+            .unwrap();
+        dict.set_item("ffn_s1", comp.ffn_s1.into_pyarray(py))
+            .unwrap();
+        dict.set_item("ffn_v1", comp.ffn_v1.into_pyarray(py))
+            .unwrap();
+        dict.set_item("ffn_u2", comp.ffn_u2.into_pyarray(py))
+            .unwrap();
+        dict.set_item("ffn_s2", comp.ffn_s2.into_pyarray(py))
+            .unwrap();
+        dict.set_item("ffn_v2", comp.ffn_v2.into_pyarray(py))
+            .unwrap();
         dict
     }
 
@@ -395,7 +406,7 @@ impl PyRSULFLayer {
             window,
             calibration_samples: 1024,
         };
-        
+
         let inner = RSULFLayer::from_transformer_fast(
             wq.as_array(),
             wk.as_array(),
@@ -403,7 +414,7 @@ impl PyRSULFLayer {
             w2.as_array(),
             config,
         );
-        
+
         Self { inner }
     }
 }
@@ -451,11 +462,7 @@ impl PyRiemannianDecoder {
         Self { inner }
     }
 
-    pub fn forward<'py>(
-        &self,
-        py: Python<'py>,
-        x: PyReadonlyArray2<f32>,
-    ) -> &'py PyArray2<f32> {
+    pub fn forward<'py>(&self, py: Python<'py>, x: PyReadonlyArray2<f32>) -> &'py PyArray2<f32> {
         let logits = self.inner.forward(x.as_array());
         logits.into_pyarray(py)
     }
@@ -473,6 +480,78 @@ impl PyRiemannianDecoder {
     #[getter]
     pub fn vocab_size(&self) -> usize {
         self.inner.vocab
+    }
+}
+
+#[pyclass]
+pub struct PyHumanDecoder {
+    inner: HumanStyleDecoder,
+}
+
+#[pymethods]
+impl PyHumanDecoder {
+    #[new]
+    #[pyo3(signature=(
+        embeddings,
+        skeleton_ids,
+        relation_ids,
+        object_ids,
+        alpha_logit=1.0,
+        alpha_cos=0.4,
+        beta_logit=1.0,
+        beta_cos=0.8,
+        beta_geo=0.3,
+        curvature=1e-3
+    ))]
+    pub fn new(
+        embeddings: PyReadonlyArray2<f32>,
+        skeleton_ids: Vec<usize>,
+        relation_ids: Vec<usize>,
+        object_ids: Vec<usize>,
+        alpha_logit: f32,
+        alpha_cos: f32,
+        beta_logit: f32,
+        beta_cos: f32,
+        beta_geo: f32,
+        curvature: f32,
+    ) -> Self {
+        let relation_weights = StageWeights {
+            logit: alpha_logit,
+            cosine: alpha_cos,
+            geodesic: 0.0,
+        };
+        let object_weights = StageWeights {
+            logit: beta_logit,
+            cosine: beta_cos,
+            geodesic: beta_geo,
+        };
+        let inner = HumanStyleDecoder::new(
+            embeddings.as_array().to_owned(),
+            skeleton_ids,
+            relation_ids,
+            object_ids,
+            relation_weights,
+            object_weights,
+            curvature,
+        );
+        Self { inner }
+    }
+
+    pub fn decode(
+        &self,
+        logits: PyReadonlyArray2<f32>,
+        relation_ctx: PyReadonlyArray2<f32>,
+        object_ctx: PyReadonlyArray2<f32>,
+        topk_relation: usize,
+        topk_object: usize,
+    ) -> Vec<usize> {
+        self.inner.decode_batch(
+            logits.as_array(),
+            relation_ctx.as_array(),
+            object_ctx.as_array(),
+            topk_relation,
+            topk_object,
+        )
     }
 }
 
@@ -498,7 +577,21 @@ pub fn rsulf_forward_cuda_py<'py>(
 ) -> PyResult<(&'py PyArray2<f32>, &'py PyArray1<f32>)> {
     #[cfg(not(feature = "cuda"))]
     {
-        let _ = (&py, &x, &v1, &s1, &u1, &v2, &s2, &u2, &g_inv, &v_mem, eta, alpha, gamma_param);
+        let _ = (
+            &py,
+            &x,
+            &v1,
+            &s1,
+            &u1,
+            &v2,
+            &s2,
+            &u2,
+            &g_inv,
+            &v_mem,
+            eta,
+            alpha,
+            gamma_param,
+        );
         return Err(pyo3::exceptions::PyRuntimeError::new_err(
             "CUDA support not enabled. Rebuild with --features cuda",
         ));
@@ -507,7 +600,7 @@ pub fn rsulf_forward_cuda_py<'py>(
     #[cfg(feature = "cuda")]
     {
         use crate::bindings::rsulf::rsulf_cuda_ffi::*;
-        use numpy::{PyArray1};
+        use numpy::PyArray1;
         use pyo3::exceptions::PyRuntimeError;
         use pyo3::PyErr;
         use std::ffi::c_void;
@@ -675,7 +768,20 @@ pub fn rsulf_batch_forward_cuda_py<'py>(
     #[cfg(not(feature = "cuda"))]
     {
         let _ = (
-            &py, &x, &v1, &s1, &u1, &v2, &s2, &u2, &g_inv, &v_mem, eta, alpha, gamma_param, batch,
+            &py,
+            &x,
+            &v1,
+            &s1,
+            &u1,
+            &v2,
+            &s2,
+            &u2,
+            &g_inv,
+            &v_mem,
+            eta,
+            alpha,
+            gamma_param,
+            batch,
             seq_len,
         );
         return Err(pyo3::exceptions::PyRuntimeError::new_err(
@@ -686,7 +792,7 @@ pub fn rsulf_batch_forward_cuda_py<'py>(
     #[cfg(feature = "cuda")]
     {
         use crate::bindings::rsulf::rsulf_cuda_ffi::*;
-        use numpy::{PyArray1};
+        use numpy::PyArray1;
         use pyo3::exceptions::PyRuntimeError;
         use pyo3::PyErr;
         use std::ffi::c_void;
@@ -859,8 +965,25 @@ pub fn rsulf_unified_forward_cuda_py<'py>(
     #[cfg(not(feature = "cuda"))]
     {
         let _ = (
-            &py, &x, &v1, &s1, &u1, &v2, &s2, &u2, &g_inv, &laplacian, &v_mem, eta, alpha, beta,
-            gamma_param, curvature, batch, seq_len, window,
+            &py,
+            &x,
+            &v1,
+            &s1,
+            &u1,
+            &v2,
+            &s2,
+            &u2,
+            &g_inv,
+            &laplacian,
+            &v_mem,
+            eta,
+            alpha,
+            beta,
+            gamma_param,
+            curvature,
+            batch,
+            seq_len,
+            window,
         );
         return Err(pyo3::exceptions::PyRuntimeError::new_err(
             "CUDA support not enabled. Rebuild with --features cuda",
@@ -870,7 +993,7 @@ pub fn rsulf_unified_forward_cuda_py<'py>(
     #[cfg(feature = "cuda")]
     {
         use crate::bindings::rsulf::rsulf_cuda_ffi::*;
-        use numpy::{PyArray1};
+        use numpy::PyArray1;
         use pyo3::exceptions::PyRuntimeError;
         use pyo3::PyErr;
         use std::ffi::c_void;
@@ -1038,7 +1161,12 @@ pub fn fold_metric_svd<'py>(
     wq: PyReadonlyArray2<f32>,
     wk: PyReadonlyArray2<f32>,
     target_dim: usize,
-) -> (&'py PyArray2<f32>, &'py PyArray1<f32>, &'py PyArray2<f32>, f32) {
+) -> (
+    &'py PyArray2<f32>,
+    &'py PyArray1<f32>,
+    &'py PyArray2<f32>,
+    f32,
+) {
     let folded = fold_dimension_svd(wq.as_array(), wk.as_array(), target_dim);
     let curvature = crate::layers::rsulf::compute_curvature(&folded.s_residual);
     (
@@ -1066,8 +1194,12 @@ pub fn fold_ffn<'py>(
     w2: PyReadonlyArray2<f32>,
     target_dim: usize,
 ) -> (
-    &'py PyArray2<f32>, &'py PyArray1<f32>, &'py PyArray2<f32>,
-    &'py PyArray2<f32>, &'py PyArray1<f32>, &'py PyArray2<f32>,
+    &'py PyArray2<f32>,
+    &'py PyArray1<f32>,
+    &'py PyArray2<f32>,
+    &'py PyArray2<f32>,
+    &'py PyArray1<f32>,
+    &'py PyArray2<f32>,
 ) {
     let folded = fold_ffn_svd(w1.as_array(), w2.as_array(), target_dim);
     (
@@ -1089,13 +1221,18 @@ pub fn verify_metric_consistency<'py>(
 ) -> &'py PyDict {
     let folded = fold_dimension_svd(wq.as_array(), wk.as_array(), target_dim);
     let result = verify_fold_consistency(wq.as_array(), wk.as_array(), &folded);
-    
+
     let dict = PyDict::new(py);
-    dict.set_item("symmetry_error", result.symmetry_error).unwrap();
-    dict.set_item("reconstruction_error", result.reconstruction_error).unwrap();
-    dict.set_item("fold_accuracy", result.fold_accuracy).unwrap();
-    dict.set_item("min_eigenvalue", result.min_eigenvalue).unwrap();
-    dict.set_item("condition_number", result.condition_number).unwrap();
+    dict.set_item("symmetry_error", result.symmetry_error)
+        .unwrap();
+    dict.set_item("reconstruction_error", result.reconstruction_error)
+        .unwrap();
+    dict.set_item("fold_accuracy", result.fold_accuracy)
+        .unwrap();
+    dict.set_item("min_eigenvalue", result.min_eigenvalue)
+        .unwrap();
+    dict.set_item("condition_number", result.condition_number)
+        .unwrap();
     dict.set_item("is_valid", result.is_valid).unwrap();
     dict
 }
@@ -1107,38 +1244,46 @@ pub fn fold_metric_optimized<'py>(
     wk: PyReadonlyArray2<f32>,
     target_dim: usize,
     method: &str,
-) -> (&'py PyArray2<f32>, &'py PyArray1<f32>, &'py PyArray2<f32>, f32, &'py PyDict) {
+) -> (
+    &'py PyArray2<f32>,
+    &'py PyArray1<f32>,
+    &'py PyArray2<f32>,
+    f32,
+    &'py PyDict,
+) {
     let d_q = wq.as_array().nrows();
     let d_k = wk.as_array().nrows();
     let d_in = wq.as_array().ncols();
-    
+
     let wk_expanded = if d_k < d_q {
         let repeat = d_q / d_k;
         let mut expanded = ndarray::Array2::<f32>::zeros((d_q, d_in));
         for i in 0..repeat {
-            expanded.slice_mut(ndarray::s![i*d_k..(i+1)*d_k, ..]).assign(&wk.as_array());
+            expanded
+                .slice_mut(ndarray::s![i * d_k..(i + 1) * d_k, ..])
+                .assign(&wk.as_array());
         }
         expanded
     } else {
         wk.as_array().to_owned()
     };
-    
+
     let g = wq.as_array().t().dot(&wk_expanded);
-    
+
     let (u, s, v) = match method {
         "block_lanczos" => block_lanczos_svd(&g, target_dim, 32, 10),
         "adaptive" => {
             let (u, s, v, _) = adaptive_rank_svd(&g, 0.95, target_dim);
             (u, s, v)
-        },
+        }
         _ => crate::layers::rsulf::randomized_svd(&g, target_dim, 5, 2),
     };
-    
+
     let frob_g: f32 = g.iter().map(|x| x * x).sum();
     let frob_approx: f32 = s.iter().map(|x| x * x).sum();
     let tail = frob_g - frob_approx;
     let curvature = if tail > 0.0 { tail.sqrt() } else { 0.0 };
-    
+
     let folded = crate::layers::rsulf::FoldedMetric {
         u: u.clone(),
         s: s.clone(),
@@ -1146,16 +1291,21 @@ pub fn fold_metric_optimized<'py>(
         s_residual: ndarray::Array1::from_elem(1, curvature),
     };
     let consistency = verify_fold_consistency(wq.as_array(), wk.as_array(), &folded);
-    
+
     let info = PyDict::new(py);
-    info.set_item("symmetry_error", consistency.symmetry_error).unwrap();
-    info.set_item("reconstruction_error", consistency.reconstruction_error).unwrap();
-    info.set_item("fold_accuracy", consistency.fold_accuracy).unwrap();
-    info.set_item("min_eigenvalue", consistency.min_eigenvalue).unwrap();
-    info.set_item("condition_number", consistency.condition_number).unwrap();
+    info.set_item("symmetry_error", consistency.symmetry_error)
+        .unwrap();
+    info.set_item("reconstruction_error", consistency.reconstruction_error)
+        .unwrap();
+    info.set_item("fold_accuracy", consistency.fold_accuracy)
+        .unwrap();
+    info.set_item("min_eigenvalue", consistency.min_eigenvalue)
+        .unwrap();
+    info.set_item("condition_number", consistency.condition_number)
+        .unwrap();
     info.set_item("is_valid", consistency.is_valid).unwrap();
     info.set_item("method", method).unwrap();
-    
+
     (
         u.into_pyarray(py),
         s.into_pyarray(py),
@@ -1176,21 +1326,23 @@ pub fn nystrom_metric<'py>(
     let d_q = wq.as_array().nrows();
     let d_k = wk.as_array().nrows();
     let d_in = wq.as_array().ncols();
-    
+
     let wk_expanded = if d_k < d_q {
         let repeat = d_q / d_k;
         let mut expanded = ndarray::Array2::<f32>::zeros((d_q, d_in));
         for i in 0..repeat {
-            expanded.slice_mut(ndarray::s![i*d_k..(i+1)*d_k, ..]).assign(&wk.as_array());
+            expanded
+                .slice_mut(ndarray::s![i * d_k..(i + 1) * d_k, ..])
+                .assign(&wk.as_array());
         }
         expanded
     } else {
         wk.as_array().to_owned()
     };
-    
+
     let g = wq.as_array().t().dot(&wk_expanded);
     let (u, s) = nystrom_approximation(&g, target_dim, n_samples);
-    
+
     (u.into_pyarray(py), s.into_pyarray(py))
 }
 
@@ -1215,10 +1367,14 @@ pub fn analyze_layer_py<'py>(
     let dict = PyDict::new(py);
     dict.set_item("layer_idx", analysis.layer_idx).unwrap();
     dict.set_item("param_count", analysis.param_count).unwrap();
-    dict.set_item("spectral_decay", analysis.spectral_decay).unwrap();
-    dict.set_item("condition_number", analysis.condition_number).unwrap();
-    dict.set_item("recommended_rank", analysis.recommended_rank).unwrap();
-    dict.set_item("expected_accuracy", analysis.expected_accuracy).unwrap();
+    dict.set_item("spectral_decay", analysis.spectral_decay)
+        .unwrap();
+    dict.set_item("condition_number", analysis.condition_number)
+        .unwrap();
+    dict.set_item("recommended_rank", analysis.recommended_rank)
+        .unwrap();
+    dict.set_item("expected_accuracy", analysis.expected_accuracy)
+        .unwrap();
     dict
 }
 
@@ -1231,9 +1387,9 @@ pub fn extract_global_basis_py<'py>(
 ) -> &'py PyDict {
     let wq_views: Vec<_> = layers_wq.iter().map(|x| x.as_array()).collect();
     let wk_views: Vec<_> = layers_wk.iter().map(|x| x.as_array()).collect();
-    
+
     let basis = crate::layers::rsulf::extract_global_basis(&wq_views, &wk_views, target_rank);
-    
+
     let dict = PyDict::new(py);
     dict.set_item("u", basis.u.into_pyarray(py)).unwrap();
     dict.set_item("rank", basis.rank).unwrap();
@@ -1247,22 +1403,52 @@ pub fn create_compression_plan_py<'py>(
     compression_ratio: f32,
 ) -> &'py PyDict {
     let mut layer_analyses = Vec::new();
-    
+
     for d in analyses {
-        let layer_idx = d.get_item("layer_idx").unwrap().expect("layer_idx missing").extract::<usize>().unwrap_or(0);
-        let param_count = d.get_item("param_count").unwrap().expect("param_count missing").extract::<usize>().unwrap_or(0);
-        let spectral_decay = d.get_item("spectral_decay").unwrap().expect("spectral_decay missing").extract::<f32>().unwrap_or(0.0);
-        let condition_number = d.get_item("condition_number").unwrap().expect("condition_number missing").extract::<f32>().unwrap_or(0.0);
-        let recommended_rank = d.get_item("recommended_rank").unwrap().expect("recommended_rank missing").extract::<usize>().unwrap_or(1);
-        let expected_accuracy = d.get_item("expected_accuracy").unwrap().expect("expected_accuracy missing").extract::<f32>().unwrap_or(0.0);
-        
-        use crate::layers::rsulf::{LayerAnalysis, LayerType, CompressionStrategy};
-        
-        let strategy = CompressionStrategy::MetricSVD { 
-            target_rank: recommended_rank, 
-            expected_accuracy 
+        let layer_idx = d
+            .get_item("layer_idx")
+            .unwrap()
+            .expect("layer_idx missing")
+            .extract::<usize>()
+            .unwrap_or(0);
+        let param_count = d
+            .get_item("param_count")
+            .unwrap()
+            .expect("param_count missing")
+            .extract::<usize>()
+            .unwrap_or(0);
+        let spectral_decay = d
+            .get_item("spectral_decay")
+            .unwrap()
+            .expect("spectral_decay missing")
+            .extract::<f32>()
+            .unwrap_or(0.0);
+        let condition_number = d
+            .get_item("condition_number")
+            .unwrap()
+            .expect("condition_number missing")
+            .extract::<f32>()
+            .unwrap_or(0.0);
+        let recommended_rank = d
+            .get_item("recommended_rank")
+            .unwrap()
+            .expect("recommended_rank missing")
+            .extract::<usize>()
+            .unwrap_or(1);
+        let expected_accuracy = d
+            .get_item("expected_accuracy")
+            .unwrap()
+            .expect("expected_accuracy missing")
+            .extract::<f32>()
+            .unwrap_or(0.0);
+
+        use crate::layers::rsulf::{CompressionStrategy, LayerAnalysis, LayerType};
+
+        let strategy = CompressionStrategy::MetricSVD {
+            target_rank: recommended_rank,
+            expected_accuracy,
         };
-        
+
         layer_analyses.push(LayerAnalysis {
             layer_idx,
             layer_type: LayerType::Attention,
@@ -1273,18 +1459,25 @@ pub fn create_compression_plan_py<'py>(
             condition_number,
             recommended_rank,
             expected_accuracy,
-            strategy
+            strategy,
         });
     }
-    
+
     let plan = crate::layers::rsulf::create_compression_plan(layer_analyses, compression_ratio);
-    
+
     let dict = PyDict::new(py);
-    dict.set_item("total_original_params", plan.total_original_params).unwrap();
-    dict.set_item("total_compressed_params", plan.total_compressed_params).unwrap();
-    dict.set_item("expected_compression_ratio", plan.expected_compression_ratio).unwrap();
-    dict.set_item("min_expected_accuracy", plan.min_expected_accuracy).unwrap();
-    
+    dict.set_item("total_original_params", plan.total_original_params)
+        .unwrap();
+    dict.set_item("total_compressed_params", plan.total_compressed_params)
+        .unwrap();
+    dict.set_item(
+        "expected_compression_ratio",
+        plan.expected_compression_ratio,
+    )
+    .unwrap();
+    dict.set_item("min_expected_accuracy", plan.min_expected_accuracy)
+        .unwrap();
+
     dict
 }
 
@@ -1306,5 +1499,6 @@ pub fn register(m: &PyModule) -> PyResult<()> {
         m.add_function(wrap_pyfunction!(rsulf_unified_forward_cuda_py, m)?)?;
     }
     m.add_class::<PyRiemannianDecoder>()?;
+    m.add_class::<PyHumanDecoder>()?;
     Ok(())
 }

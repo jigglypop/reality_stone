@@ -1,9 +1,9 @@
 pub mod batch;
 pub mod curvature;
+pub mod extraction;
 pub mod metrikey;
 pub mod mobius;
 pub mod project;
-pub mod extraction;
 
 use ndarray::Array2;
 

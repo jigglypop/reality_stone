@@ -1,5 +1,5 @@
-use ndarray::{Array1, Array2, ArrayView1, ArrayView2, s};
-use super::rsulf::{GlobalBasis, randomized_svd};
+use super::rsulf::{randomized_svd, GlobalBasis};
+use ndarray::{s, Array1, Array2, ArrayView1, ArrayView2};
 
 pub struct RiemannianDecoder {
     pub d_model: usize,
@@ -13,17 +13,21 @@ pub struct RiemannianDecoder {
 }
 
 impl RiemannianDecoder {
-    pub fn new(
-        u: Array2<f32>,
-        a: Array2<f32>,
-        bt: Array2<f32>,
-        bias: Array1<f32>,
-    ) -> Self {
+    pub fn new(u: Array2<f32>, a: Array2<f32>, bt: Array2<f32>, bias: Array1<f32>) -> Self {
         let d_model = u.nrows();
         let k = u.ncols();
         let vocab = bt.nrows();
         let r = bt.ncols();
-        Self { d_model, k, r, vocab, u, a, bt, bias }
+        Self {
+            d_model,
+            k,
+            r,
+            vocab,
+            u,
+            a,
+            bt,
+            bias,
+        }
     }
 
     pub fn from_lm_head(
@@ -59,10 +63,7 @@ impl RiemannianDecoder {
         RiemannianDecoder::new(u, a, bt, bias)
     }
 
-    pub fn forward(
-        &self,
-        x: ArrayView2<f32>,
-    ) -> Array2<f32> {
+    pub fn forward(&self, x: ArrayView2<f32>) -> Array2<f32> {
         let c = x.dot(&self.u);
         let q = c.dot(&self.a.t());
         let mut logits = q.dot(&self.bt.t());
@@ -75,4 +76,3 @@ impl RiemannianDecoder {
         logits
     }
 }
-

@@ -1,10 +1,10 @@
-use ndarray::{arr1, arr2, Array};
 use _rust::ops::{
-    block_orthogonal_from_key, compose_layers_order_preserving, mahalanobis_distance_sq_g,
-    mahalanobis_distance_sq_l, metric_factor_cholesky, norm_sq_batched, dot_batched,
+    block_orthogonal_from_key, compose_layers_order_preserving, dot_batched,
+    mahalanobis_distance_sq_g, mahalanobis_distance_sq_l, metric_factor_cholesky, norm_sq_batched,
     project_to_ball, rotate_metric_factor_block, spd_metric_from_key, DynamicCurvature,
     LayerWiseDynamicCurvature,
 };
+use ndarray::{arr1, arr2, Array};
 
 #[test]
 fn test_norm_sq_batched() {
@@ -183,17 +183,10 @@ fn is_symmetric(a: &ndarray::Array2<f32>, tol: f32) -> bool {
 fn test_spd_metric_from_key_properties_f32() {
     let dim = 64;
     let g = spd_metric_from_key("dept:AI", dim, 0.1, 2.0);
-    assert!(
-        is_symmetric(&g, 1e-4),
-        "SPD 메트릭 대칭성 위반 (f32)"
-    );
+    assert!(is_symmetric(&g, 1e-4), "SPD 메트릭 대칭성 위반 (f32)");
     let v = Array::from_shape_vec((dim,), (0..dim).map(|i| (i as f32).sin()).collect()).unwrap();
     let s = v.dot(&g.dot(&v));
-    assert!(
-        s > 0.0,
-        "SPD 메트릭 양의정부 위반 (v^T G v <= 0): {}",
-        s
-    );
+    assert!(s > 0.0, "SPD 메트릭 양의정부 위반 (v^T G v <= 0): {}", s);
 }
 
 #[test]
@@ -224,11 +217,7 @@ fn test_block_orthogonal_is_orthonormal_f32() {
     let should_be_i = q.t().dot(&q);
     let diff = &should_be_i - &i;
     let max_abs = diff.iter().fold(0.0_f32, |acc, &v| acc.max(v.abs()));
-    assert!(
-        max_abs < 5e-4,
-        "직교성 오차가 너무 큼: max_abs={}",
-        max_abs
-    );
+    assert!(max_abs < 5e-4, "직교성 오차가 너무 큼: max_abs={}", max_abs);
 }
 
 #[test]
@@ -272,5 +261,3 @@ fn test_rotate_metric_factor_preserves_g_f32() {
         diff
     );
 }
-
-

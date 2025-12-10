@@ -1,12 +1,12 @@
-use ndarray::{Array1, Array2, ArrayView1, ArrayView2, Axis};
-use ndarray::parallel::prelude::*;
-use indicatif::ProgressBar;
-use super::metric::{MetricType, DiagonalMetric, PoincareMetric, LorentzMetric, KleinMetric};
 use super::bellman_lagrangian::{
-    ValueFunction, LagrangianParams, EnergyComponents,
-    compute_energy_components, representation_flow, bellman_update, metric_flow,
+    bellman_update, compute_energy_components, metric_flow, representation_flow, EnergyComponents,
+    LagrangianParams, ValueFunction,
 };
-use super::geodesic::{geodesic_path, geodesic_interpolation};
+use super::geodesic::{geodesic_interpolation, geodesic_path};
+use super::metric::{DiagonalMetric, KleinMetric, LorentzMetric, MetricType, PoincareMetric};
+use indicatif::ProgressBar;
+use ndarray::parallel::prelude::*;
+use ndarray::{Array1, Array2, ArrayView1, ArrayView2, Axis};
 
 /// 통합 리만 레이어
 pub struct UnifiedRiemannianLayer {
@@ -25,12 +25,7 @@ impl UnifiedRiemannianLayer {
     /// * `curvature` - 곡률 파라미터 (양수)
     /// * `input_dim` - 입력 차원
     /// * `enable_bellman` - 벨만 가치 함수 활성화
-    pub fn new(
-        metric_type: &str,
-        curvature: f32,
-        input_dim: usize,
-        enable_bellman: bool,
-    ) -> Self {
+    pub fn new(metric_type: &str, curvature: f32, input_dim: usize, enable_bellman: bool) -> Self {
         let metric = match metric_type {
             "poincare" => MetricType::Poincare(PoincareMetric::new(curvature)),
             "lorentz" => MetricType::Lorentz(LorentzMetric::new(curvature)),
@@ -38,15 +33,15 @@ impl UnifiedRiemannianLayer {
             "diagonal" => MetricType::Diagonal(DiagonalMetric::new(input_dim)),
             _ => panic!("Unknown metric type: {}", metric_type),
         };
-        
+
         let value_function = if enable_bellman {
             Some(ValueFunction::new(input_dim, input_dim * 2))
         } else {
             None
         };
-        
+
         let enable_metric_learning = matches!(metric, MetricType::Diagonal(_));
-        
+
         Self {
             metric,
             value_function,
@@ -55,7 +50,7 @@ impl UnifiedRiemannianLayer {
             enable_metric_learning,
         }
     }
-    
+
     /// 순전파
     ///
     /// # Arguments
@@ -64,16 +59,12 @@ impl UnifiedRiemannianLayer {
     ///
     /// # Returns
     /// LayerOutput - 출력 및 에너지 정보
-    pub fn forward(
-        &self,
-        x: &ArrayView2<f32>,
-        target: Option<&ArrayView2<f32>>,
-    ) -> LayerOutput {
+    pub fn forward(&self, x: &ArrayView2<f32>, target: Option<&ArrayView2<f32>>) -> LayerOutput {
         let batch_size = x.nrows();
-        
+
         // 1. 메트릭 계산
         let metric_values = self.metric.as_trait().compute_metric(x);
-        
+
         // 2. 출력 계산
         let output = if let Some(y) = target {
             // 목표가 있으면 측지선 보간 (중간점)
@@ -86,14 +77,14 @@ impl UnifiedRiemannianLayer {
             // 단순 항등 (메트릭만 적용)
             x.to_owned()
         };
-        
+
         // 3. 에너지 계산 (벨만 활성화 시)
         let energy = if self.enable_bellman && self.value_function.is_some() {
             let vf = self.value_function.as_ref().unwrap();
             let dt = 0.1;
             let velocity = (&output - x) / dt;
-            let reward = Array1::zeros(batch_size);  // 기본 보상 0
-            
+            let reward = Array1::zeros(batch_size); // 기본 보상 0
+
             Some(compute_energy_components(
                 self.metric.as_trait(),
                 vf,
@@ -106,7 +97,7 @@ impl UnifiedRiemannianLayer {
         } else {
             None
         };
-        
+
         LayerOutput {
             output,
             energy,
@@ -117,7 +108,7 @@ impl UnifiedRiemannianLayer {
             },
         }
     }
-    
+
     /// 역전파
     ///
     /// # Arguments
@@ -140,30 +131,25 @@ impl UnifiedRiemannianLayer {
             grad_value_fn: None,
         }
     }
-    
+
     /// 메트릭 학습 업데이트
     ///
     /// # Arguments
     /// * `x` - 현재 상태
     /// * `v` - 속도 (변화율)
     /// * `learning_rate` - 학습률
-    pub fn update_metric(
-        &mut self,
-        x: &ArrayView2<f32>,
-        v: &ArrayView2<f32>,
-        learning_rate: f32,
-    ) {
+    pub fn update_metric(&mut self, x: &ArrayView2<f32>, v: &ArrayView2<f32>, learning_rate: f32) {
         if !self.enable_metric_learning {
             return;
         }
-        
+
         if let MetricType::Diagonal(ref mut metric) = self.metric {
             if let Some(ref vf) = self.value_function {
                 let batch_size = x.nrows();
                 let dt = 0.1;
                 let x_next = x + &(v * dt);
                 let reward = Array1::zeros(batch_size);
-                
+
                 let energy = compute_energy_components(
                     metric,
                     vf,
@@ -173,12 +159,12 @@ impl UnifiedRiemannianLayer {
                     &reward.view(),
                     &self.lagrangian_params,
                 );
-                
+
                 metric_flow(metric, x, v, &energy.lagrangian.view(), learning_rate);
             }
         }
     }
-    
+
     /// 에너지 계산
     ///
     /// # Arguments
@@ -210,7 +196,7 @@ impl UnifiedRiemannianLayer {
             EnergyComponents::new(x.nrows())
         }
     }
-    
+
     /// 측지선 경로 생성
     ///
     /// # Arguments
@@ -228,7 +214,7 @@ impl UnifiedRiemannianLayer {
     ) -> Vec<Array2<f32>> {
         geodesic_path(&self.metric, start, end, num_steps)
     }
-    
+
     /// 표현 흐름 스텝
     ///
     /// # Arguments
@@ -254,7 +240,7 @@ impl UnifiedRiemannianLayer {
             x.to_owned()
         }
     }
-    
+
     /// 벨만 가치 함수 업데이트
     ///
     /// # Arguments
@@ -270,7 +256,14 @@ impl UnifiedRiemannianLayer {
         learning_rate: f32,
     ) {
         if let Some(ref mut vf) = self.value_function {
-            bellman_update(vf, x, x_next, reward, self.lagrangian_params.gamma, learning_rate);
+            bellman_update(
+                vf,
+                x,
+                x_next,
+                reward,
+                self.lagrangian_params.gamma,
+                learning_rate,
+            );
         }
     }
 }
@@ -408,7 +401,7 @@ mod tests {
     fn test_unified_layer_creation() {
         let layer = UnifiedRiemannianLayer::new("poincare", 1.0, 32, false);
         assert!(!layer.enable_bellman);
-        
+
         let layer_bellman = UnifiedRiemannianLayer::new("diagonal", 0.0, 64, true);
         assert!(layer_bellman.enable_bellman);
         assert!(layer_bellman.value_function.is_some());
@@ -418,7 +411,7 @@ mod tests {
     fn test_forward_poincare() {
         let layer = UnifiedRiemannianLayer::new("poincare", 1.0, 4, false);
         let x = arr2(&[[0.1, 0.2, 0.3, 0.4], [0.2, 0.3, 0.4, 0.5]]);
-        
+
         let output = layer.forward(&x.view(), None);
         assert_eq!(output.output.shape(), x.shape());
         assert!(output.energy.is_none());
@@ -429,7 +422,7 @@ mod tests {
         let layer = UnifiedRiemannianLayer::new("diagonal", 0.0, 3, false);
         let x = arr2(&[[0.0, 0.0, 0.0]]);
         let y = arr2(&[[1.0, 1.0, 1.0]]);
-        
+
         let output = layer.forward(&x.view(), Some(&y.view()));
         // 중간점이어야 함
         assert!((output.output[[0, 0]] - 0.5).abs() < 0.1);
@@ -440,7 +433,7 @@ mod tests {
         let layer = UnifiedRiemannianLayer::new("diagonal", 0.0, 2, false);
         let start = arr2(&[[0.0, 0.0]]);
         let end = arr2(&[[1.0, 0.0]]);
-        
+
         let path = layer.geodesic_path(&start.view(), &end.view(), 5);
         assert_eq!(path.len(), 5);
         assert!((path[0][[0, 0]] - 0.0).abs() < 1e-4);
@@ -454,11 +447,10 @@ mod tests {
         let v = arr2(&[[0.01, 0.02, 0.03, 0.04]]);
         let x_next = &x + &v;
         let reward = ndarray::arr1(&[0.5]);
-        
+
         let energy = layer.compute_energy(&x.view(), &v.view(), &x_next.view(), &reward.view());
         assert!(energy.kinetic[0] >= 0.0);
         assert!(energy.potential[0] >= 0.0);
         assert!(energy.lagrangian[0].is_finite());
     }
 }
-

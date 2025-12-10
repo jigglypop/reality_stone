@@ -12,12 +12,9 @@ use ndarray::{Array2, ArrayView2, Zip};
 ///
 /// * `input` - Input features (Batch Size x Hidden Dim)
 /// * `dt` - Time step for the geodesic flow (learning rate factor)
-pub fn compute_diagonal_geodesic_update(
-    input: &ArrayView2<f64>,
-    dt: f64,
-) -> Array2<f64> {
+pub fn compute_diagonal_geodesic_update(input: &ArrayView2<f64>, dt: f64) -> Array2<f64> {
     let mut output = Array2::zeros(input.raw_dim());
-    
+
     // velocity is assumed to be 1.0 (momentum unit) for this simplified flow
     let velocity_sq = 1.0;
 
@@ -33,10 +30,10 @@ pub fn compute_diagonal_geodesic_update(
                 // Gamma = 0.5 * (1/w) * (w * (1-w)) = 0.5 * (1 - w)
                 // This simplification works specifically for Sigmoid metric.
                 let gamma = 0.5 * (1.0 - w);
-                
+
                 // 4. Geodesic Force
                 let force = -gamma * velocity_sq;
-                
+
                 // 5. Update
                 out_row[i] = val + force * dt;
             }
@@ -46,7 +43,7 @@ pub fn compute_diagonal_geodesic_update(
 }
 
 /// Inverse computation for backpropagation (Simplified)
-/// 
+///
 /// For a full layer, we would need the Jacobian of the update function.
 /// Given x_new = x + F(x)*dt, dx_new/dx = 1 + F'(x)*dt
 pub fn compute_diagonal_geodesic_backward(
@@ -63,21 +60,20 @@ pub fn compute_diagonal_geodesic_backward(
         .par_for_each(|mut gin_row, gout_row, in_row| {
             for (i, &val) in in_row.iter().enumerate() {
                 let w = 1.0 / (1.0 + (-val).exp());
-                
+
                 // F(x) = -0.5 * (1 - w) * v^2
                 // F'(x) = -0.5 * (-dw/dx) * v^2 = 0.5 * w(1-w) * v^2
-                
+
                 let dw = w * (1.0 - w);
                 let d_force = 0.5 * dw * velocity_sq;
-                
+
                 // Chain rule: dL/dx = dL/dy * dy/dx
                 // dy/dx = 1 + F'(x) * dt
                 let dy_dx = 1.0 + d_force * dt;
-                
+
                 gin_row[i] = gout_row[i] * dy_dx;
             }
         });
 
     grad_input
 }
-

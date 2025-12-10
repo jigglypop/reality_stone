@@ -1,4 +1,3 @@
-
 use _rust::layers::spline_cache::SplineCache;
 use ndarray::arr1;
 
@@ -27,7 +26,7 @@ fn test_reconstruct_exact_points() {
 
     let p0 = cache.reconstruct(0.0).unwrap();
     assert!((p0[0] - 1.0).abs() < 1e-5);
-    
+
     let p1 = cache.reconstruct(1.0).unwrap();
     assert!((p1[0] - 2.0).abs() < 1e-5);
 }
@@ -47,7 +46,7 @@ fn test_reconstruct_interpolation() {
 #[test]
 fn test_reconstruct_curvature() {
     let mut cache = SplineCache::new(1.0, 1); // Positive curvature
-    // Linear motion base
+                                              // Linear motion base
     cache.add_point(0.0, arr1(&[0.0]).view(), arr1(&[1.0]).view());
     cache.add_point(1.0, arr1(&[1.0]).view(), arr1(&[1.0]).view());
 
@@ -65,7 +64,7 @@ fn test_batch_reconstruct() {
 
     let times = arr1(&[0.0, 0.5, 1.0]);
     let batch = cache.batch_reconstruct(times.view());
-    
+
     assert_eq!(batch.shape(), &[3, 1]);
     assert!((batch[[0, 0]] - 0.0).abs() < 1e-5);
     assert!((batch[[1, 0]] - 0.5).abs() < 1e-5);
@@ -78,4 +77,3 @@ fn test_dimension_mismatch() {
     let mut cache = SplineCache::new(0.0, 2);
     cache.add_point(0.0, arr1(&[1.0]).view(), arr1(&[0.1]).view());
 }
-

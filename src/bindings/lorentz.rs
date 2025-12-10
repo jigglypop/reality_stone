@@ -138,13 +138,8 @@ pub fn lorentz_layer_dynamic_backward_cpu<'py>(
     let u_arr = u.as_array();
     let v_arr = v.as_array();
     let dynamic_c = DynamicCurvature::new(kappa, c_min, c_max);
-    let (gu, gv, gk) = lorentz::lorentz_layer_dynamic_backward(
-        &grad_output_arr,
-        &u_arr,
-        &v_arr,
-        &dynamic_c,
-        t,
-    );
+    let (gu, gv, gk) =
+        lorentz::lorentz_layer_dynamic_backward(&grad_output_arr, &u_arr, &v_arr, &dynamic_c, t);
     (gu.into_pyarray_bound(py), gv.into_pyarray_bound(py), gk)
 }
 

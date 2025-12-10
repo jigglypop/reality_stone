@@ -182,8 +182,12 @@ pub fn mobius_add_vjp_cpu<'py>(
     y: PyReadonlyArray2<f32>,
     c: f32,
 ) -> (&'py PyArray2<f32>, &'py PyArray2<f32>) {
-    let (grad_x, grad_y) =
-        crate::ops::mobius::mobius_add_vjp(&grad_output.as_array(), &x.as_array(), &y.as_array(), c);
+    let (grad_x, grad_y) = crate::ops::mobius::mobius_add_vjp(
+        &grad_output.as_array(),
+        &x.as_array(),
+        &y.as_array(),
+        c,
+    );
     (grad_x.into_pyarray(py), grad_y.into_pyarray(py))
 }
 
@@ -195,7 +199,8 @@ pub fn mobius_scalar_vjp_cpu<'py>(
     c: f32,
     r: f32,
 ) -> &'py PyArray2<f32> {
-    crate::ops::mobius::mobius_scalar_vjp(&grad_output.as_array(), &x.as_array(), c, r).into_pyarray(py)
+    crate::ops::mobius::mobius_scalar_vjp(&grad_output.as_array(), &x.as_array(), c, r)
+        .into_pyarray(py)
 }
 
 #[pyfunction]
@@ -344,7 +349,10 @@ pub fn register(m: &PyModule) -> PyResult<()> {
         sub
     )?)?;
     sub.add_function(wrap_pyfunction!(poincare_ball_layer_layerwise_cpu, sub)?)?;
-    sub.add_function(wrap_pyfunction!(poincare_ball_layer_layerwise_backward_cpu, sub)?)?;
+    sub.add_function(wrap_pyfunction!(
+        poincare_ball_layer_layerwise_backward_cpu,
+        sub
+    )?)?;
 
     #[cfg(feature = "cuda")]
     {

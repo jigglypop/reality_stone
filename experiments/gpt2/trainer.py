@@ -275,3 +275,4 @@ def fit_riemannian_decoder(
     end_time = time.time()
     print(f"[BACD] Decoder fitting finished in {end_time - start_time:.2f}s")
     return decoder
+

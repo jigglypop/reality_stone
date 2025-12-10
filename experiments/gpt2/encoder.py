@@ -53,11 +53,16 @@ def distill_structural_potentials(
     potentials_params = []
     for layer in structural_model.layers:
         potentials_params.extend(list(layer.potential.parameters()))
+        potentials_params.extend(list(layer.correction.parameters()))
     optimizer = torch.optim.AdamW(potentials_params, lr=lr)
     vocab_size = tokenizer.vocab_size
     teacher_blocks = list(original_model.transformer.h)
     num_layers = min(len(structural_model.layers), len(teacher_blocks))
     use_amp = _use_amp(device)
+    if num_layers > 1:
+        layer_denominator = float(num_layers - 1)
+    else:
+        layer_denominator = 1.0
     wte = original_model.transformer.wte
     wpe = original_model.transformer.wpe
     pos = torch.arange(seq_len, dtype=torch.long, device=device)
@@ -89,10 +94,22 @@ def distill_structural_potentials(
                     e_teacher = 0.5 * (f_teacher ** 2).sum(dim=-1)
                 f_teacher = f_teacher.to(dtype=x_s.dtype)
                 e_teacher = e_teacher.to(dtype=x_s.dtype)
-            f_student = -layer_s.potential.gradient(w)
+            # 학습과 추론의 일치를 위해 mlp 사용
+            # f_student는 LowRankFFN의 출력 (고정된 weight)
+            f_student = layer_s.mlp(w)
+            
+            # Correction은 (Teacher MLP - Student LowRankFFN) 차이를 학습
+            delta = layer_s.correction(y)
+            f_total = f_student + delta
+            
+            # Potential은 에너지 제약 조건 학습 (Auxiliary)
             phi_student = layer_s.potential(w)
-            force_loss = force_loss + F.mse_loss(f_student, f_teacher)
-            energy_loss = energy_loss + F.mse_loss(phi_student, e_teacher)
+            if num_layers > 1:
+                layer_weight = 1.0 + 2.0 * (float(i) / layer_denominator)
+            else:
+                layer_weight = 1.0
+            force_loss = force_loss + layer_weight * F.mse_loss(f_total, f_teacher)
+            energy_loss = energy_loss + layer_weight * F.mse_loss(phi_student, e_teacher)
             x_s = y + f_teacher.detach()
         loss = force_loss + lambda_energy * energy_loss
         optimizer.zero_grad()

@@ -1,5 +1,5 @@
-use ndarray::{Array1, Array2};
 use super::hyper_metric::HyperMetric;
+use ndarray::{Array1, Array2};
 
 #[derive(Debug, Clone)]
 pub struct SymplecticState {
@@ -25,10 +25,10 @@ pub struct SymplecticLayer {
 
 impl SymplecticLayer {
     pub fn new(
-        layer_idx: usize, 
-        layer_emb: Array1<f32>, 
+        layer_idx: usize,
+        layer_emb: Array1<f32>,
         hyper_metric: HyperMetric,
-        dt: f32
+        dt: f32,
     ) -> Self {
         Self {
             hyper_metric,
@@ -45,7 +45,7 @@ impl SymplecticLayer {
 
         state.p = &state.p + &(&force_total * dt);
         state.q = &state.q + &(&state.p * dt);
-        
+
         state.q.clone()
     }
 }

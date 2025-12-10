@@ -1,6 +1,6 @@
-use pyo3::prelude::*;
-use numpy::{PyReadonlyArray2, PyArray2, ToPyArray};
 use crate::layers::suppression::compute_dynamic_suppression;
+use numpy::{PyArray2, PyReadonlyArray2, ToPyArray};
+use pyo3::prelude::*;
 
 #[pyfunction]
 pub fn compute_suppression_field<'py>(
@@ -20,4 +20,3 @@ pub fn register(m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compute_suppression_field, m)?)?;
     Ok(())
 }
-

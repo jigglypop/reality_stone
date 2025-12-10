@@ -63,7 +63,25 @@
 - 선택 후 재샘플링 금지 (softmax sampling, temperature 조정, 재호출 등 없음)
 - 다음 은닉 상태로 진행: 입력 임베딩 \(x_{t+1} = E_{y_t}\), 모델 forward 진행
 
-## 6. KD 설계 (고주파 계층)
+## 6. KD 설계 (저/중/고주파)
+
+### 6.1 저주파 (Skeleton 대응)
+
+- 교사 은닉을 SVD 혹은 저주파 projector \(P_{\text{low}}\)로 분해
+  \( H^{(l)} = U\Sigma V^\top,\quad H^{(l)}_{\text{low}} = U_{:, :r}\Sigma_{:r,:r} \)
+- 학생 은닉 \(S^{(l)}_{\text{low}}\) 과의 loss
+  \( \mathcal{L}_{\text{low}} = \sum_l \| H^{(l)}_{\text{low}} - S^{(l)}_{\text{low}} \|_2^2 \)
+
+### 6.2 중주파 (Relation 대응)
+
+- 레이어 차분
+  \( \Delta H^{(l)} = H^{(l+1)} - H^{(l)} \)
+- 학생과의 차분 일치
+  \( \mathcal{L}_{\text{mid}} = \sum_l \| \Delta H^{(l)}_T - \Delta H^{(l)}_S \|_2^2 \)
+- Attention 이동 패턴을 쓰는 경우
+  \( \mathcal{L}_{\text{flow}} = \sum_l \mathrm{KL}(A_T^{(l)} \,\|\, A_S^{(l)}) \)
+
+### 6.3 고주파 (Object 대응)
 
 - 교사 로짓 \(z^T_t\), 학생 로짓 \(z^S_t\)
 - Top-K 집합: \( \mathcal{C}^T_t = \text{TopK}(z^T_t, K) \)
@@ -84,5 +102,62 @@
 5. Commit: \(y_t\) 확정, 다음 시점으로 진행
 
 이 절차는 “가중치 기반 KD → 기능 응답 KD → 기하 KD” 의 순서를 디코딩 레벨에서 그대로 반영하며, 인간형 WTA를 그대로 구현한다.
+
+## 8. 컨텍스트 함수 정의
+
+### 8.1 Skeleton
+
+- \( f_{\text{skel}} \) 은 기본적으로 현재 히스토리의 평균 혹은 마지막 문장 임베딩.
+- 구현 상 `HierarchicalSentenceTopicLLM.encode_tokens_to_sentences` 출력의 저주파 성분을 사용.
+
+### 8.2 Relation
+
+- \( c^{\text{rel}}_t = \gamma_1 \cdot h_t + \gamma_2 \cdot \text{topic}_t + \gamma_3 \cdot \text{metric}_t \)
+- topic 은 `SentenceTopicHead` 의 \(P_{\text{topic}}\) 기대값.
+- metric 은 `MetricContextRouter` 의 SPD 슬롯을 flatten 한 후 선형 변환.
+
+### 8.3 Object
+
+- \( c^{\text{obj}}_t = \delta_1 \cdot \text{paragraph\_embedding} + \delta_2 \cdot \text{sentence\_embedding}_t + \delta_3 \cdot \text{retrieved\_support} \)
+- paragraph embedding 은 `paragraph_aggregator` 출력.
+- retrieved support 는 QA 파이프라인에서 선택된 문장 평균.
+
+## 9. 실제 통합 지점
+
+| 모듈 | 역할 | 접점 |
+| --- | --- | --- |
+| `experiments/gpt2/decoder.py` | GPT-2 + RSULF inference | Skeleton/Relation/Object 단계를 그대로 넣어 기존 sampling 대체 |
+| `python/reality_stone/models/hierarchical_sentence_topic_llm.py` | 계층 디코더 | `infer_hierarchical_llm_on_text` 의 토큰 선택 루틴을 인간형 규칙으로 교체 |
+| `RSULFStudentAdapter` | KD | 6장 loss 추가 및 ΔH/Top-K 로그 잔차 계산 |
+
+## 10. 의사코드
+
+```
+for t in range(max_len):
+    z = W_o h_t
+    y_skel = argmax(mask(z, V_skel))
+    C_rel = topk(mask(z, V_rel), K_rel)
+    y_rel = argmax_i score_rel(i, h_<=t, topic, metric)
+    C_obj = topk(mask(z, V_obj), K_obj)
+    y_obj = argmax_i score_obj(i, paragraph, sentence, metric)
+    y_t = y_obj
+    if y_t == eos: break
+    h_{t+1} = transformer_step(y_t)
+```
+
+## 11. 파라미터 설정 가이드
+
+- \(K_{\text{rel}}\): 8~16, 짧은 텍스트는 8, 장문은 16
+- \(K_{\text{obj}}\): 20~32, 목적어 다양성 확보
+- \(\alpha_{\text{logit}}, \alpha_{\text{cos}}, \alpha_{\text{geo}}\): logit 1.0 기준, cosine 0.5, geodesic 0.3에서 시작
+- \(\gamma\), \(\delta\): normalize 된 벡터 가중치, 합 1 되도록 softmax 사용
+
+## 12. 검증 체크리스트
+
+1. Skeleton 단계에서 허용 토큰 외가 선택되지 않는지 (마스킹 확인)
+2. Relation 단계에서 metric 컨텍스트가 존재하지 않을 때 fallback 동작
+3. Object 단계에서 cos/geo 점수 계산 시 NaN 방지 (정규화, epsilon)
+4. Commit 이후에는 temperature/top-p와 무관하게 결과 고정되는지
+5. KD loss 전체가 기존 로짓 MSE 대신 해당 계층 loss만 쓰는지
 
 

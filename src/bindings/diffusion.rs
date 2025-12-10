@@ -1,5 +1,5 @@
-use pyo3::prelude::*;
 use crate::layers::diffusion::RiemannianDiffusion;
+use pyo3::prelude::*;
 
 // CUDA FFI 선언
 #[cfg(feature = "cuda")]

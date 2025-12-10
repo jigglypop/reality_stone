@@ -1,7 +1,7 @@
-use pyo3::prelude::*;
-use numpy::{PyArray2, PyReadonlyArray1, PyReadonlyArray2, IntoPyArray};
 use crate::layers::hyper_metric::{HyperMetric, TinyMLP};
 use crate::layers::symplectic::{SymplecticLayer, SymplecticState};
+use numpy::{IntoPyArray, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
+use pyo3::prelude::*;
 
 #[pyclass]
 pub struct PyHyperMetric {
@@ -26,13 +26,13 @@ impl PyHyperMetric {
             w2.as_array().to_owned(),
             b2.as_array().to_owned(),
         );
-        
+
         let inner = HyperMetric::from_components(
             u_global.as_array().to_owned(),
             v_global.as_array().to_owned(),
             mlp,
         );
-        
+
         Self { inner }
     }
 
@@ -51,10 +51,9 @@ impl PyHyperMetric {
         x: PyReadonlyArray2<f32>,
         layer_emb: PyReadonlyArray1<f32>,
     ) -> &'py PyArray2<f32> {
-        let out = self.inner.project_forward(
-            &x.as_array().to_owned(),
-            &layer_emb.as_array().to_owned(),
-        );
+        let out = self
+            .inner
+            .project_forward(&x.as_array().to_owned(), &layer_emb.as_array().to_owned());
         out.into_pyarray(py)
     }
 }
@@ -93,9 +92,9 @@ impl PySymplecticLayer {
             q: q.as_array().to_owned(),
             p: p.as_array().to_owned(),
         };
-        
+
         let _ = self.inner.step(&mut state, &x_input.as_array().to_owned());
-        
+
         (state.q.into_pyarray(py), state.p.into_pyarray(py))
     }
 }

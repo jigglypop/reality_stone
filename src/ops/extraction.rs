@@ -57,7 +57,7 @@ pub fn extract_metric_cuda(
     _lr: f32,
 ) -> (Array2<f32>, Array2<f32>, Array2<f32>) {
     use rand::Rng;
-    
+
     let out_dim = w.nrows();
     let in_dim = w.ncols();
     let k = target_dim;
@@ -68,7 +68,7 @@ pub fn extract_metric_cuda(
     let mut v = Array2::<f32>::zeros((in_dim, k));
 
     let mut rng = rand::thread_rng();
-    
+
     for i in 0..out_dim {
         for j in 0..k {
             u[[i, j]] = rng.gen::<f32>() * scale;
@@ -94,4 +94,3 @@ pub fn extract_metric_cuda(
 
     (u, g, v)
 }
-

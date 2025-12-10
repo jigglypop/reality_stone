@@ -50,7 +50,7 @@ pub fn lorentz_exp0_space(u: &ArrayView2<f32>, c: f32) -> Array2<f32> {
     let u_norm = norm_sq_batched(u).mapv(f32::sqrt);
     let s = u_norm.mapv(|v| sqrtc * v);
     let mut out = Array2::<f32>::zeros((batch, dim + 1));
-    
+
     // 시간 성분 (Time component)
     {
         let mut tcol = out.slice_mut(s![.., 0..1]);
@@ -463,7 +463,7 @@ pub fn lorentz_layer_forward(
             }
             let theta = safe_acosh((c * inner).max(1.0 + EPS));
             let sinh_theta = theta.sinh().max(EPS);
-            
+
             // 가중치 w1, w2 계산
             let w1 = if theta.abs() < 1e-6 {
                 1.0 - t
@@ -615,7 +615,7 @@ pub fn lorentz_layer_dynamic_backward(
         let alpha = z.acosh();
         let sinh_alpha = alpha.sinh().max(EPS);
         let cosh_alpha = alpha.cosh();
-        
+
         // dw/dalpha
         let num1 = (1.0 - t) * ((1.0 - t) * alpha).cosh() * sinh_alpha
             - ((1.0 - t) * alpha).sinh() * cosh_alpha;

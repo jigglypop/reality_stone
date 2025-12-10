@@ -1,6 +1,8 @@
+use crate::layers::bellman::{
+    compute_diagonal_geodesic_backward, compute_diagonal_geodesic_update,
+};
+use numpy::{IntoPyArray, PyArray2, PyReadonlyArray2};
 use pyo3::prelude::*;
-use numpy::{PyArray2, PyReadonlyArray2, IntoPyArray};
-use crate::layers::bellman::{compute_diagonal_geodesic_update, compute_diagonal_geodesic_backward};
 
 /// Applies the Bellman-Lagrangian Geodesic flow to the input features.
 ///
@@ -19,9 +21,9 @@ pub fn bellman_geodesic_forward<'py>(
 ) -> &'py PyArray2<f64> {
     let input = x.as_array();
     let step = dt.unwrap_or(0.1);
-    
+
     let output = compute_diagonal_geodesic_update(&input, step);
-    
+
     output.into_pyarray(py)
 }
 
@@ -37,9 +39,9 @@ pub fn bellman_geodesic_backward<'py>(
     let grad = grad_output.as_array();
     let inp = input.as_array();
     let step = dt.unwrap_or(0.1);
-    
+
     let grad_input = compute_diagonal_geodesic_backward(&grad, &inp, step);
-    
+
     grad_input.into_pyarray(py)
 }
 
@@ -48,4 +50,3 @@ pub fn register(m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(bellman_geodesic_backward, m)?)?;
     Ok(())
 }
-

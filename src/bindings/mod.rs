@@ -1,8 +1,8 @@
+pub mod hyper_metric;
 pub mod memory;
+pub mod rsulf;
 pub mod spline;
 pub mod spline_cache;
-pub mod rsulf;
-pub mod hyper_metric;
 
 pub mod bellman;
 pub mod diffusion;

@@ -11,19 +11,19 @@ const EPS: f32 = 1e-7;
 pub trait MetricTensor: Send + Sync {
     /// 메트릭 텐서 g_ij(x) 계산 (대각 원소만 반환, batch x dim)
     fn compute_metric(&self, x: &ArrayView2<f32>) -> Array2<f32>;
-    
+
     /// 역메트릭 g^ij(x) 계산 (대각 원소만)
     fn compute_inverse_metric(&self, x: &ArrayView2<f32>) -> Array2<f32>;
-    
+
     /// 크리스토펠 기호 Γ^k_ij 계산 (대각 근사, batch별)
     fn christoffel_symbols(&self, x: &ArrayView2<f32>) -> Vec<Array2<f32>>;
-    
+
     /// 리만 거리 d_g(x, y)
     fn distance(&self, x: &ArrayView2<f32>, y: &ArrayView2<f32>) -> Array1<f32>;
-    
+
     /// 메트릭의 행렬식 det(g)
     fn determinant(&self, x: &ArrayView2<f32>) -> Array1<f32>;
-    
+
     /// 곡률 스칼라
     fn curvature(&self) -> f32;
 }
@@ -33,7 +33,7 @@ pub trait MetricTensor: Send + Sync {
 #[derive(Clone)]
 pub struct DiagonalMetric {
     /// 각 차원의 가중치를 계산하는 함수 파라미터
-    pub weights: Array1<f32>,  // learnable parameters
+    pub weights: Array1<f32>, // learnable parameters
     pub base_weight: f32,
 }
 
@@ -44,7 +44,7 @@ impl DiagonalMetric {
             base_weight: 1.0,
         }
     }
-    
+
     /// w_i(x) = softplus(weights[i] * x[i]) + ε
     fn compute_weights(&self, x: &ArrayView2<f32>) -> Array2<f32> {
         let mut result = Array2::zeros(x.raw_dim());
@@ -62,18 +62,18 @@ impl MetricTensor for DiagonalMetric {
     fn compute_metric(&self, x: &ArrayView2<f32>) -> Array2<f32> {
         self.compute_weights(x)
     }
-    
+
     fn compute_inverse_metric(&self, x: &ArrayView2<f32>) -> Array2<f32> {
         let weights = self.compute_weights(x);
         weights.mapv(|w| 1.0 / w.max(EPS))
     }
-    
+
     fn christoffel_symbols(&self, x: &ArrayView2<f32>) -> Vec<Array2<f32>> {
         // 대각 메트릭에서 Γ^i_ii = (1/2w_i) * dw_i/dx_i
         let batch_size = x.nrows();
         let dim = x.ncols();
         let mut symbols = Vec::new();
-        
+
         for i in 0..batch_size {
             let mut gamma = Array2::zeros((dim, dim));
             for j in 0..dim {
@@ -87,7 +87,7 @@ impl MetricTensor for DiagonalMetric {
         }
         symbols
     }
-    
+
     fn distance(&self, x: &ArrayView2<f32>, y: &ArrayView2<f32>) -> Array1<f32> {
         // 유클리드 거리의 메트릭 가중 버전
         let diff = x - y;
@@ -95,7 +95,7 @@ impl MetricTensor for DiagonalMetric {
         let weighted_sq = &diff * &diff * &weights;
         weighted_sq.sum_axis(Axis(1)).mapv(|s| s.sqrt())
     }
-    
+
     fn determinant(&self, x: &ArrayView2<f32>) -> Array1<f32> {
         let weights = self.compute_weights(x);
         weights
@@ -103,9 +103,9 @@ impl MetricTensor for DiagonalMetric {
             .map(|row| row.iter().product())
             .collect()
     }
-    
+
     fn curvature(&self) -> f32 {
-        0.0  // 대각 메트릭의 곡률은 0 (국소적으로 평탄)
+        0.0 // 대각 메트릭의 곡률은 0 (국소적으로 평탄)
     }
 }
 
@@ -120,7 +120,7 @@ impl PoincareMetric {
     pub fn new(curvature: f32) -> Self {
         Self { curvature }
     }
-    
+
     fn conformal_factor(&self, x: &ArrayView2<f32>) -> Array1<f32> {
         let x_norm_sq = crate::ops::norm_sq_batched(x);
         let denom = (1.0 - self.curvature * &x_norm_sq).mapv(|v| v.max(EPS));
@@ -142,7 +142,7 @@ impl MetricTensor for PoincareMetric {
         }
         metric
     }
-    
+
     fn compute_inverse_metric(&self, x: &ArrayView2<f32>) -> Array2<f32> {
         let lambda_sq = self.conformal_factor(x);
         let batch_size = x.nrows();
@@ -155,19 +155,19 @@ impl MetricTensor for PoincareMetric {
         }
         inv_metric
     }
-    
+
     fn christoffel_symbols(&self, x: &ArrayView2<f32>) -> Vec<Array2<f32>> {
         // Poincaré: Γ^k_ij = (2c/(1-c||x||²)) * (δ_ik x_j + δ_jk x_i - δ_ij x_k)
         let batch_size = x.nrows();
         let dim = x.ncols();
         let c = self.curvature;
         let x_norm_sq = crate::ops::norm_sq_batched(x);
-        
+
         let mut symbols = Vec::new();
         for b in 0..batch_size {
             let coeff = 2.0 * c / (1.0 - c * x_norm_sq[b]).max(EPS);
             let mut gamma = Array2::zeros((dim, dim));
-            
+
             // 대각 근사: i=j=k만 고려
             for i in 0..dim {
                 gamma[[i, i]] = coeff * x[[b, i]];
@@ -176,17 +176,17 @@ impl MetricTensor for PoincareMetric {
         }
         symbols
     }
-    
+
     fn distance(&self, x: &ArrayView2<f32>, y: &ArrayView2<f32>) -> Array1<f32> {
         crate::layers::poincare::poincare_distance(x, y, self.curvature, 1e-5)
     }
-    
+
     fn determinant(&self, x: &ArrayView2<f32>) -> Array1<f32> {
         let lambda_sq = self.conformal_factor(x);
         let dim = x.ncols() as f32;
         lambda_sq.mapv(|l| l.powf(dim))
     }
-    
+
     fn curvature(&self) -> f32 {
         -self.curvature
     }
@@ -211,7 +211,7 @@ impl MetricTensor for LorentzMetric {
         let batch_size = x.nrows();
         let dim = x.ncols();
         let mut metric = Array2::zeros((batch_size, dim));
-        
+
         for i in 0..batch_size {
             metric[[i, 0]] = 1.0;
             for j in 1..dim {
@@ -220,27 +220,27 @@ impl MetricTensor for LorentzMetric {
         }
         metric
     }
-    
+
     fn compute_inverse_metric(&self, x: &ArrayView2<f32>) -> Array2<f32> {
         // Minkowski 메트릭은 자기역원
         self.compute_metric(x)
     }
-    
+
     fn christoffel_symbols(&self, x: &ArrayView2<f32>) -> Vec<Array2<f32>> {
         // 민코프스키 공간에서 크리스토펠 기호는 0 (평탄)
         let batch_size = x.nrows();
         let dim = x.ncols();
         vec![Array2::zeros((dim, dim)); batch_size]
     }
-    
+
     fn distance(&self, x: &ArrayView2<f32>, y: &ArrayView2<f32>) -> Array1<f32> {
         crate::layers::lorentz::lorentz_distance(x, y, self.curvature)
     }
-    
+
     fn determinant(&self, x: &ArrayView2<f32>) -> Array1<f32> {
-        Array1::from_elem(x.nrows(), -1.0)  // det(η) = -1
+        Array1::from_elem(x.nrows(), -1.0) // det(η) = -1
     }
-    
+
     fn curvature(&self) -> f32 {
         -self.curvature
     }
@@ -264,12 +264,12 @@ impl MetricTensor for KleinMetric {
         let c = self.curvature;
         let x_norm_sq = crate::ops::norm_sq_batched(x);
         let factor = (1.0 - c * &x_norm_sq).mapv(|v| 1.0 / v.max(EPS));
-        
+
         // 대각 근사: g_ii = factor * (1 + c x_i²/(1-c||x||²))
         let batch_size = x.nrows();
         let dim = x.ncols();
         let mut metric = Array2::zeros((batch_size, dim));
-        
+
         for i in 0..batch_size {
             for j in 0..dim {
                 metric[[i, j]] = factor[i] * (1.0 + c * x[[i, j]] * x[[i, j]] * factor[i]);
@@ -277,25 +277,25 @@ impl MetricTensor for KleinMetric {
         }
         metric
     }
-    
+
     fn compute_inverse_metric(&self, x: &ArrayView2<f32>) -> Array2<f32> {
         let metric = self.compute_metric(x);
         metric.mapv(|g| 1.0 / g.max(EPS))
     }
-    
+
     fn christoffel_symbols(&self, x: &ArrayView2<f32>) -> Vec<Array2<f32>> {
         // Klein 모델의 크리스토펠 기호 (대각 근사)
         let batch_size = x.nrows();
         let dim = x.ncols();
         let c = self.curvature;
         let x_norm_sq = crate::ops::norm_sq_batched(x);
-        
+
         let mut symbols = Vec::new();
         for b in 0..batch_size {
             let denom = (1.0 - c * x_norm_sq[b]).max(EPS);
             let coeff = c / denom;
             let mut gamma = Array2::zeros((dim, dim));
-            
+
             for i in 0..dim {
                 gamma[[i, i]] = coeff * x[[b, i]];
             }
@@ -303,11 +303,11 @@ impl MetricTensor for KleinMetric {
         }
         symbols
     }
-    
+
     fn distance(&self, x: &ArrayView2<f32>, y: &ArrayView2<f32>) -> Array1<f32> {
         crate::layers::klein::klein_distance(x, y, self.curvature)
     }
-    
+
     fn determinant(&self, x: &ArrayView2<f32>) -> Array1<f32> {
         let c = self.curvature;
         let x_norm_sq = crate::ops::norm_sq_batched(x);
@@ -315,7 +315,7 @@ impl MetricTensor for KleinMetric {
         let factor = 1.0 - c * &x_norm_sq;
         factor.mapv(|f| f.powf(-dim))
     }
-    
+
     fn curvature(&self) -> f32 {
         -self.curvature
     }
@@ -325,7 +325,7 @@ impl MetricTensor for KleinMetric {
 #[inline]
 fn softplus(x: f32) -> f32 {
     if x > 20.0 {
-        x  // 수치 안정성
+        x // 수치 안정성
     } else {
         (1.0 + x.exp()).ln()
     }
@@ -353,7 +353,7 @@ impl MetricType {
             MetricType::Klein(m) => m,
         }
     }
-    
+
     pub fn as_trait_mut(&mut self) -> &mut dyn MetricTensor {
         match self {
             MetricType::Diagonal(m) => m,
@@ -363,4 +363,3 @@ impl MetricType {
         }
     }
 }
-

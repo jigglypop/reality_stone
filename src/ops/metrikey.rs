@@ -874,4 +874,3 @@ pub fn givens_chain_apply_from_key(
     }
     y
 }
-

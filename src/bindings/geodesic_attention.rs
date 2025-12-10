@@ -1,9 +1,9 @@
-use pyo3::prelude::*;
-use numpy::{PyArray4, PyReadonlyArray2, PyReadonlyArray3, PyReadonlyArray4};
-#[cfg(feature = "cuda")]
-use numpy::IntoPyArray;
 #[cfg(feature = "cuda")]
 use ndarray::Array4;
+#[cfg(feature = "cuda")]
+use numpy::IntoPyArray;
+use numpy::{PyArray4, PyReadonlyArray2, PyReadonlyArray3, PyReadonlyArray4};
+use pyo3::prelude::*;
 
 #[cfg(feature = "cuda")]
 extern "C" {
@@ -27,18 +27,13 @@ extern "C" {
 
     // Low-level CUDA entry point; actual C symbol name is `batched_cholesky_cuda`.
     #[link_name = "batched_cholesky_cuda"]
-    fn batched_cholesky_cuda_ffi(
-        A: *const f32,
-        L: *mut f32,
-        batch_count: i32,
-        d: i32,
-    );
+    fn batched_cholesky_cuda_ffi(A: *const f32, L: *mut f32, batch_count: i32, d: i32);
 }
 
 /// Fused Geodesic Top-k Attention (CUDA)
-/// 
+///
 /// 한 커널에서 SPD metric 적용, geodesic distance 계산, softmax, aggregation을 모두 수행
-/// 
+///
 /// # Arguments
 /// * `q` - Query tensor [B, H, T, d_h]
 /// * `k` - Key tensor [B, H, S, d_h]
@@ -47,7 +42,7 @@ extern "C" {
 /// * `l_factor` - SPD Cholesky factor [d_h, d_h]
 /// * `c` - Curvature (default: 1.0)
 /// * `tau` - Temperature (default: 1.0)
-/// 
+///
 /// # Returns
 /// * Output tensor [B, H, T, d_v]
 #[pyfunction]
@@ -66,7 +61,7 @@ pub fn geodesic_topk_attention(
     {
         let _ = (&py, &q, &k, &v, &idx, &l_factor, c, tau);
         return Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "CUDA support not enabled. Rebuild with --features cuda"
+            "CUDA support not enabled. Rebuild with --features cuda",
         ));
     }
 
@@ -89,19 +84,22 @@ pub fn geodesic_topk_attention(
 
         // Validate shapes
         if k_shape[0] != b as usize || k_shape[1] != h as usize {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                format!("K shape mismatch: expected [{}, {}, ?, {}], got {:?}", b, h, d_h, k_shape)
-            ));
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "K shape mismatch: expected [{}, {}, ?, {}], got {:?}",
+                b, h, d_h, k_shape
+            )));
         }
         if v_shape[0] != b as usize || v_shape[1] != h as usize || v_shape[2] != s as usize {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                format!("V shape mismatch: expected [{}, {}, {}, {}], got {:?}", b, h, s, d_v, v_shape)
-            ));
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "V shape mismatch: expected [{}, {}, {}, {}], got {:?}",
+                b, h, s, d_v, v_shape
+            )));
         }
         if idx_shape[0] != b as usize || idx_shape[1] != t as usize {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                format!("idx shape mismatch: expected [{}, {}, {}], got {:?}", b, t, k_topk, idx_shape)
-            ));
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "idx shape mismatch: expected [{}, {}, {}], got {:?}",
+                b, t, k_topk, idx_shape
+            )));
         }
 
         // Get raw pointers
@@ -148,10 +146,10 @@ pub fn geodesic_topk_attention(
 }
 
 /// Batched SPD Cholesky Decomposition (CUDA)
-/// 
+///
 /// # Arguments
 /// * `g` - SPD matrices [B, T, d, d]
-/// 
+///
 /// # Returns
 /// * Cholesky factors [B, T, d, d]
 #[pyfunction]
@@ -162,7 +160,7 @@ pub fn batched_cholesky_cuda(
     #[cfg(not(feature = "cuda"))]
     {
         return Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "CUDA support not enabled. Rebuild with --features cuda"
+            "CUDA support not enabled. Rebuild with --features cuda",
         ));
     }
 
@@ -170,36 +168,32 @@ pub fn batched_cholesky_cuda(
     {
         let g_shape = _g.shape();
         if g_shape[2] != g_shape[3] {
-             return Err(pyo3::exceptions::PyValueError::new_err(
-                format!("Input must be square matrices, got shape {:?}", g_shape)
-            ));
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Input must be square matrices, got shape {:?}",
+                g_shape
+            )));
         }
 
         let batch_count = (g_shape[0] * g_shape[1]) as i32;
         let d = g_shape[2] as i32;
 
         let g_ptr = _g.as_slice()?.as_ptr();
-        
+
         // Allocate output L
         let l_size = (batch_count * d * d) as usize;
         let mut l_vec = vec![0.0f32; l_size];
-        
+
         unsafe {
-            batched_cholesky_cuda_ffi(
-                g_ptr,
-                l_vec.as_mut_ptr(),
-                batch_count,
-                d
-            );
+            batched_cholesky_cuda_ffi(g_ptr, l_vec.as_mut_ptr(), batch_count, d);
         }
-        
+
         let out_shape = (g_shape[0], g_shape[1], g_shape[2], g_shape[3]);
         let out_array = Array4::from_shape_vec(out_shape, l_vec).map_err(|e| {
-             pyo3::exceptions::PyValueError::new_err(format!(
+            pyo3::exceptions::PyValueError::new_err(format!(
                 "Failed to reshape cholesky output: {e}"
             ))
         })?;
-        
+
         Ok(out_array.into_pyarray(_py).to_owned())
     }
 }
@@ -211,4 +205,3 @@ pub fn register(m: &PyModule) -> PyResult<()> {
     m.add_submodule(sub)?;
     Ok(())
 }
-

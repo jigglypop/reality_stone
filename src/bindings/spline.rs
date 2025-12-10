@@ -73,7 +73,7 @@ pub fn spline_backward_cuda(
 pub fn register_spline_module(py: Python, parent_module: &PyModule) -> PyResult<()> {
     let spline_module = PyModule::new(py, "spline")?;
     spline_module.add_class::<SplineLayer>()?;
-    
+
     #[cfg(feature = "cuda")]
     {
         spline_module.add_function(wrap_pyfunction!(spline_interpolate_cuda, spline_module)?)?;

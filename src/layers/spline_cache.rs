@@ -1,4 +1,3 @@
-
 use ndarray::{Array1, Array2, ArrayView1};
 use std::cmp::Ordering;
 
@@ -29,12 +28,12 @@ impl SplineCache {
         if state.len() != self.dimension || velocity.len() != self.dimension {
             panic!("Dimension mismatch in SplineCache");
         }
-        
+
         // Ensure time is increasing
         if let Some(last) = self.control_points.last() {
             if time <= last.time {
                 // In a real scenario we might update, but for now append only
-                return; 
+                return;
             }
         }
 
@@ -59,13 +58,13 @@ impl SplineCache {
                 Ordering::Greater
             }
         }) {
-            Ok(i) => i, // exact match (unlikely with float, but logic holds)
+            Ok(i) => i,  // exact match (unlikely with float, but logic holds)
             Err(i) => i, // insertion point
         };
 
-        // idx is where t would be inserted. 
+        // idx is where t would be inserted.
         // So t is between idx-1 and idx.
-        
+
         if idx == 0 {
             // Before first point
             return Some(self.control_points[0].state.clone());
@@ -88,13 +87,13 @@ impl SplineCache {
 
         // Normalized time u in [0, 1]
         let u = (t - p0.time) / dt;
-        
+
         // 2. Cubic Hermite Spline
         // h00 = 2u^3 - 3u^2 + 1
         // h10 = u^3 - 2u^2 + u
         // h01 = -2u^3 + 3u^2
         // h11 = u^3 - u^2
-        
+
         let u2 = u * u;
         let u3 = u2 * u;
 
@@ -109,10 +108,7 @@ impl SplineCache {
         let m0 = &p0.velocity * dt;
         let m1 = &p1.velocity * dt;
 
-        let mut interpolated = &p0.state * h00 
-                             + &m0 * h10 
-                             + &p1.state * h01 
-                             + &m1 * h11;
+        let mut interpolated = &p0.state * h00 + &m0 * h10 + &p1.state * h01 + &m1 * h11;
 
         // 3. Curvature Correction
         // Blueprint: "Correct path using curvature kappa"
@@ -120,13 +116,13 @@ impl SplineCache {
         // based on the deviation from geodesic.
         // For now, let's implement a placeholder correction that scales with u(1-u) (max at midpoint)
         if self.curvature.abs() > 1e-6 {
-             let mid_correction = u * (1.0 - u) * self.curvature;
-             // Apply correction in direction of interpolation? 
-             // Or simply scale amplitude? 
-             // Blueprint 3.1 mentions "Christoffel symbols correction: -0.5 * Gamma * v * v"
-             // Here, let's assume a simple radial correction factor.
-             // x_corrected = x * (1 + correction)
-             interpolated.mapv_inplace(|x| x * (1.0 + mid_correction));
+            let mid_correction = u * (1.0 - u) * self.curvature;
+            // Apply correction in direction of interpolation?
+            // Or simply scale amplitude?
+            // Blueprint 3.1 mentions "Christoffel symbols correction: -0.5 * Gamma * v * v"
+            // Here, let's assume a simple radial correction factor.
+            // x_corrected = x * (1 + correction)
+            interpolated.mapv_inplace(|x| x * (1.0 + mid_correction));
         }
 
         Some(interpolated)
@@ -135,7 +131,7 @@ impl SplineCache {
     pub fn batch_reconstruct(&self, timestamps: ArrayView1<f32>) -> Array2<f32> {
         let n = timestamps.len();
         let mut output = Array2::zeros((n, self.dimension));
-        
+
         for (i, &t) in timestamps.iter().enumerate() {
             if let Some(state) = self.reconstruct(t) {
                 output.row_mut(i).assign(&state);
@@ -143,7 +139,7 @@ impl SplineCache {
         }
         output
     }
-    
+
     pub fn clear(&mut self) {
         self.control_points.clear();
     }
@@ -158,19 +154,19 @@ mod tests {
     fn test_spline_reconstruction() {
         let dim = 2;
         let mut cache = SplineCache::new(0.0, dim);
-        
+
         // p0 at t=0: [0, 0], v=[1, 1]
         cache.add_point(0.0, arr1(&[0.0, 0.0]).view(), arr1(&[1.0, 1.0]).view());
         // p1 at t=1: [1, 1], v=[1, 1]
         cache.add_point(1.0, arr1(&[1.0, 1.0]).view(), arr1(&[1.0, 1.0]).view());
-        
+
         // Midpoint t=0.5
         // Linear would be [0.5, 0.5]
         // Cubic with constant velocity should also be close to linear if velocity matches
-        
+
         let res = cache.reconstruct(0.5).unwrap();
         println!("Reconstructed at 0.5: {:?}", res);
-        
+
         // Check roughly
         assert!((res[0] - 0.5).abs() < 0.1);
         assert!((res[1] - 0.5).abs() < 0.1);
@@ -180,20 +176,19 @@ mod tests {
     fn test_curvature_effect() {
         let dim = 1;
         let mut cache = SplineCache::new(1.0, dim); // High curvature
-        
+
         cache.add_point(0.0, arr1(&[0.0]).view(), arr1(&[1.0]).view());
         cache.add_point(1.0, arr1(&[1.0]).view(), arr1(&[1.0]).view());
-        
+
         let res_curved = cache.reconstruct(0.5).unwrap();
-        
+
         let mut cache_flat = SplineCache::new(0.0, dim);
         cache_flat.add_point(0.0, arr1(&[0.0]).view(), arr1(&[1.0]).view());
         cache_flat.add_point(1.0, arr1(&[1.0]).view(), arr1(&[1.0]).view());
         let res_flat = cache_flat.reconstruct(0.5).unwrap();
-        
+
         // Curvature 1.0 adds u(1-u)*k = 0.25 * 1 = 0.25 factor roughly
         // Expect curved result to be larger (or different)
         assert!((res_curved[0] - res_flat[0]).abs() > 0.001);
     }
 }
-

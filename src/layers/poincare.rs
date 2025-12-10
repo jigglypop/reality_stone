@@ -38,7 +38,12 @@ pub fn poincare_ball_layer_backward(
 /// 푸앵카레 거리 (Poincaré Distance) 계산
 ///
 /// d(u, v) = (2/√c) * atanh(√(c * ||u-v||² / ((1-c||u||²)(1-c||v||²))))
-pub fn poincare_distance(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32, boundary_eps: f32) -> Array1<f32> {
+pub fn poincare_distance(
+    u: &ArrayView2<f32>,
+    v: &ArrayView2<f32>,
+    c: f32,
+    boundary_eps: f32,
+) -> Array1<f32> {
     let sqrtc = c.sqrt();
     let u2 = norm_sq_batched(u);
     let v2 = norm_sq_batched(v);
@@ -46,7 +51,7 @@ pub fn poincare_distance(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32, bound
 
     let norm_sq_diff = (&u2 + &v2 - 2.0 * &uv).mapv_into(|val| val.max(0.0));
     let den = (1.0 - c * &u2) * (1.0 - c * &v2);
-    
+
     // 경계 근처에서의 수치적 안정성을 위해 분모 제한
     let den_clamped = den.mapv_into(|val| val.max(boundary_eps));
 
@@ -112,7 +117,7 @@ pub fn poincare_exp_at(x: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32, _: f32)
     let arg = (&lambda_x * sqrtc * &vnorm_safe) * 0.5;
     let coeff = arg.mapv(|a| a.tanh()) / (sqrtc * &vnorm_safe);
     let u = &coeff * v;
-    
+
     // 뫼비우스 덧셈으로 이동
     mobius::mobius_add(x, &u.view(), c)
 }
@@ -121,7 +126,12 @@ pub fn poincare_exp_at(x: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32, _: f32)
 ///
 /// 두 점 x, y에 대해 x에서 y로 향하는 접벡터를 계산합니다.
 /// Log_x(y) = (2 / (√c λ_x)) * atanh( √c |(-x) ⊕_c y| ) * ((-x) ⊕_c y) / |(-x) ⊕_c y|
-pub fn poincare_log_at(x: &ArrayView2<f32>, y: &ArrayView2<f32>, c: f32, boundary_eps: f32) -> Array2<f32> {
+pub fn poincare_log_at(
+    x: &ArrayView2<f32>,
+    y: &ArrayView2<f32>,
+    c: f32,
+    boundary_eps: f32,
+) -> Array2<f32> {
     // 컨포멀 팩터 λ_x
     let x2 = norm_sq_batched(x).insert_axis(Axis(1));
     let one_minus_cx2 = (1.0 - c * &x2).mapv(|z| z.max(EPS));
@@ -138,7 +148,7 @@ pub fn poincare_log_at(x: &ArrayView2<f32>, y: &ArrayView2<f32>, c: f32, boundar
     let znorm = norm_sq_batched(&z.view())
         .mapv(f32::sqrt)
         .insert_axis(Axis(1));
-    
+
     // 수치적 안정성을 위해 norm 클리핑
     let znorm_clip = znorm.mapv(|r| r.min(1.0 - boundary_eps).max(EPS));
 
@@ -234,28 +244,28 @@ pub fn poincare_ball_layer_layerwise_backward(
     let c = layer_curvatures.compute_c(layer_idx);
     let u_prime = mobius::mobius_scalar(u, c, 1.0 - t);
     let v_prime = mobius::mobius_scalar(v, c, t);
-    
+
     let (grad_u_prime, grad_v_prime) =
         mobius::mobius_add_vjp(grad_output, &u_prime.view(), &v_prime.view(), c);
-        
+
     let grad_u = mobius::mobius_scalar_vjp(&grad_u_prime.view(), u, c, 1.0 - t);
     let grad_v = mobius::mobius_scalar_vjp(&grad_v_prime.view(), v, c, t);
-    
+
     // 곡률 c에 대한 그라디언트 계산 (Chain Rule)
     let grad_c_from_add_tensor = mobius::mobius_add_grad_c(&u_prime.view(), &v_prime.view(), c);
     let grad_c_add = (grad_output * &grad_c_from_add_tensor).sum();
-    
+
     let grad_c_from_scalar_u_tensor = mobius::mobius_scalar_grad_c(u, c, 1.0 - t);
     let grad_c_scalar_u = (&grad_u_prime * &grad_c_from_scalar_u_tensor).sum();
-    
+
     let grad_c_from_scalar_v_tensor = mobius::mobius_scalar_grad_c(v, c, t);
     let grad_c_scalar_v = (&grad_v_prime * &grad_c_from_scalar_v_tensor).sum();
-    
+
     let grad_c_total = grad_c_add + grad_c_scalar_u + grad_c_scalar_v;
-    
+
     let dc_dkappa = layer_curvatures.compute_dc_dkappa(layer_idx);
     let grad_kappa = grad_c_total * dc_dkappa;
-    
+
     (grad_u, grad_v, grad_kappa)
 }
 
@@ -280,7 +290,7 @@ pub fn poincare_riemannian_adam_step(
     max_norm_eps: f32,
 ) -> Array2<f32> {
     let mut g_r: Array2<f32>;
-    
+
     // 리만 그라디언트 변환: grad_R = grad_E / (lambda_x)^2
     if c.abs() < EPS {
         g_r = grad.to_owned();
@@ -289,7 +299,7 @@ pub fn poincare_riemannian_adam_step(
         let one_minus_cx2 = (1.0 - c * &norm_sq).mapv(|z| z.max(EPS));
         let lambda = 2.0 / &one_minus_cx2;
         let inv_lambda_sq = 1.0 / (&lambda * &lambda);
-        
+
         g_r = grad.to_owned();
         for (mut row, factor) in g_r
             .axis_iter_mut(Axis(0))
@@ -301,7 +311,7 @@ pub fn poincare_riemannian_adam_step(
             }
         }
     }
-    
+
     let one_minus_b1 = 1.0 - beta1;
     let one_minus_b2 = 1.0 - beta2;
 
@@ -338,10 +348,14 @@ pub fn poincare_riemannian_adam_step(
         &x.to_owned() + &u
     } else {
         // 사용자 정의 max_norm_eps 또는 기본 안전값 사용
-        let safe_eps = if max_norm_eps > 0.0 { max_norm_eps } else { BOUNDARY_EPS };
+        let safe_eps = if max_norm_eps > 0.0 {
+            max_norm_eps
+        } else {
+            BOUNDARY_EPS
+        };
         // Exponential Map으로 업데이트 적용
         let x_new = poincare_exp_at(x, &u.view(), c, safe_eps);
-        
+
         // 투영(Project) 로직 인라인 구현 (공 밖으로 나가지 않도록)
         let mut out = x_new.to_owned();
         let mut norms = norm_sq_batched(&out.view())
@@ -349,7 +363,7 @@ pub fn poincare_riemannian_adam_step(
             .insert_axis(Axis(1));
         let radius = if c > 0.0 { 1.0 / c.sqrt() } else { 1.0 };
         let max_norm = radius - safe_eps;
-        
+
         for (mut row, mut norm) in out.axis_iter_mut(Axis(0)).zip(norms.axis_iter_mut(Axis(0))) {
             let n = norm[0].max(EPS);
             if n > max_norm {
@@ -539,17 +553,7 @@ mod tests {
         let x_view = x.view();
         let grad_view = grad.view();
         let x_new = poincare_riemannian_adam_step(
-            &x_view,
-            &grad_view,
-            &mut m,
-            &mut v,
-            step,
-            c,
-            lr,
-            beta1,
-            beta2,
-            eps,
-            1e-5,
+            &x_view, &grad_view, &mut m, &mut v, step, c, lr, beta1, beta2, eps, 1e-5,
         );
         let mut m_e = Array2::<f32>::zeros((1, 2));
         let mut v_e = Array2::<f32>::zeros((1, 2));
@@ -583,17 +587,7 @@ mod tests {
         let x_view = x.view();
         let grad_view = grad.view();
         let x_new = poincare_riemannian_adam_step(
-            &x_view,
-            &grad_view,
-            &mut m,
-            &mut v,
-            step,
-            c,
-            lr,
-            beta1,
-            beta2,
-            eps,
-            1e-5,
+            &x_view, &grad_view, &mut m, &mut v, step, c, lr, beta1, beta2, eps, 1e-5,
         );
         let norms = norm_sq_batched(&x_new.view());
         let n = norms[0].sqrt();

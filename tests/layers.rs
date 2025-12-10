@@ -1,8 +1,8 @@
-use ndarray::{arr2, s, Array2};
-use numpy::PyArrayMethods;
 use _rust::bindings;
 use _rust::layers::{klein, lorentz, poincare, spline};
 use _rust::ops::mobius;
+use ndarray::{arr2, s, Array2};
+use numpy::PyArrayMethods;
 
 #[test]
 fn poincare_exp_log_inverse_local() {
@@ -307,8 +307,7 @@ fn lorentz_layer_backward_matches_numeric_small() {
 
     let y = lorentz::lorentz_layer_forward(&u.view(), &v.view(), c, t);
     let grad_output = Array2::<f32>::ones(y.dim());
-    let (gu, gv) =
-        lorentz::lorentz_layer_backward(&grad_output.view(), &u.view(), &v.view(), c, t);
+    let (gu, gv) = lorentz::lorentz_layer_backward(&grad_output.view(), &u.view(), &v.view(), c, t);
 
     let eps = 1e-4f32;
     let mut gu_num = Array2::<f32>::zeros(u.dim());
@@ -525,5 +524,3 @@ fn klein_distance_binding_matches_rust() {
         );
     });
 }
-
-

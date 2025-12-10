@@ -1,6 +1,6 @@
-use pyo3::prelude::*;
-use numpy::{PyArray1, PyReadonlyArray1, IntoPyArray};
 use crate::layers::memory::GeodesicMemory;
+use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1};
+use pyo3::prelude::*;
 
 #[pyclass]
 pub struct PyGeodesicMemory {
@@ -28,11 +28,10 @@ impl PyGeodesicMemory {
     pub fn get_stats(&self) -> (usize, usize, f32) {
         self.inner.get_compression_stats()
     }
-    
+
     pub fn reset(&mut self) {
         let d = self.inner.d_model;
         let th = self.inner.threshold;
         self.inner = GeodesicMemory::new(d, th);
     }
 }
-

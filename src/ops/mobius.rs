@@ -1,9 +1,7 @@
-use crate::{
-    ops::{
-        batch::EPS,
-        batch::{dot_batched_f64, norm_sq_batched_f64, EPS64},
-        dot_batched, norm_sq_batched, DynamicCurvature, LayerWiseDynamicCurvature,
-    },
+use crate::ops::{
+    batch::EPS,
+    batch::{dot_batched_f64, norm_sq_batched_f64, EPS64},
+    dot_batched, norm_sq_batched, DynamicCurvature, LayerWiseDynamicCurvature,
 };
 use ndarray::{Array2, ArrayView2, Axis};
 
@@ -53,7 +51,7 @@ pub fn mobius_scalar(u: &ArrayView2<f32>, c: f32, r: f32) -> Array2<f32> {
         // c = 0: 유클리드 근사
         return Array2::from_elem(u.dim(), r) * u;
     }
-    
+
     // 양수/음수 곡률 모두 처리
     // sqrt(c) * norm이 1보다 작아야 atanh가 정의됨 (경계값 처리)
     let sqrt_c_norm = if c > 0.0 {
@@ -61,7 +59,7 @@ pub fn mobius_scalar(u: &ArrayView2<f32>, c: f32, r: f32) -> Array2<f32> {
     } else {
         (-c).sqrt() * &norm_clamped
     };
-    
+
     let scale = if c > 0.0 {
         // 양수 곡률: tanh(r * atanh(sqrt(c)*|u|)) / (sqrt(c)*|u|)
         let alpha = sqrt_c_norm.mapv(|v| v.atanh());

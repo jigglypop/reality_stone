@@ -685,6 +685,9 @@ fn calibrate_eta_alpha(
     g_inv: &Array1<f32>,
     config: &mut RSULFConfig,
 ) {
+    if config.calibration_samples == 0 {
+        return;
+    }
     // Use d_model from config, but verify against weights
     let d_model = config.d_model;
 
@@ -892,6 +895,9 @@ impl RSULFLayer {
         let d_k = wk.nrows();
 
         let wk_expanded = if d_k < d_q {
+            if d_k == 0 {
+                panic!("RSULF: WK has zero rows");
+            }
             let repeat = d_q / d_k;
             let mut expanded = Array2::<f32>::zeros((d_q, d));
             for i in 0..repeat {
@@ -1069,7 +1075,7 @@ impl RSULFLayer {
         let curvature = 0.0;
         let laplacian = create_causal_laplacian(config.seq_len, config.window);
 
-        let folded_ffn = fold_ffn_random_projection(w1, w2, config.r);
+        let folded_ffn = fold_ffn_svd(w1, w2, config.r);
 
         Self {
             config,
@@ -1319,8 +1325,28 @@ impl RSULFLayer {
             }
         }
 
-        // x_next = x + v_total + correction
-        let x_next = &x_arr + &v_total + &christoffel;
+        let mut gamma_corr = Array2::zeros((batch_total, d));
+        if curv_scale > 1e-8
+            && self.ffn.v1.nrows() == d
+            && self.ffn.u2.nrows() == d
+            && self.ffn.v1.ncols() == self.ffn.u2.ncols()
+            && self.ffn.v1.ncols() > 0
+        {
+            let r = self.ffn.v1.ncols();
+            let x_u2 = x_arr.dot(&self.ffn.u2);
+            let mut z = Array2::<f32>::zeros((batch_total, r));
+            for i in 0..batch_total {
+                for j in 0..r {
+                    z[[i, j]] = h1[[i, j]] * x_u2[[i, j]];
+                }
+            }
+            gamma_corr = z.dot(&self.ffn.v1.t());
+            let inv_r = 1.0 / (r as f32);
+            let coeff = self.curvature.max(-1.0).min(1.0) * inv_r;
+            gamma_corr.mapv_inplace(|v| v * coeff);
+        }
+
+        let x_next = &x_arr + &v_total + &christoffel + &gamma_corr;
 
         (x_next, v_new)
     }

@@ -122,11 +122,19 @@
 - paragraph embedding 은 `paragraph_aggregator` 출력.
 - retrieved support 는 QA 파이프라인에서 선택된 문장 평균.
 
+### 8.4 GPT-2 RS-ULF 실험에서의 단순 컨텍스트
+
+- 첫 GPT-2 통합 실험(`experiments/gpt2/decoder.py`)에서는 계층 토픽/메트릭 없이 다음과 같이 단순 근사 컨텍스트를 사용한다.
+  - Relation 컨텍스트: \(c^{\text{rel}}_t \approx h_t\) (`relation_ctx = h[:, -1, :]`)
+  - Object 컨텍스트: \(c^{\text{obj}}_t \approx \frac{1}{t}\sum_{\tau \le t} h_\tau\) (`object_ctx = h.mean(dim=1)`)
+- Topic, metric, paragraph embedding 이 들어가는 전체 버전은 `HierarchicalSentenceTopicLLM` 경로에서 사용하며, GPT-2 baseline 변환에서는 위 단순 버전을 기준 구현으로 둔다.
+
 ## 9. 실제 통합 지점
 
 | 모듈 | 역할 | 접점 |
 | --- | --- | --- |
-| `experiments/gpt2/decoder.py` | GPT-2 + RSULF inference | Skeleton/Relation/Object 단계를 그대로 넣어 기존 sampling 대체 |
+| `experiments/gpt2/decoder.py` | GPT-2 + RSULF inference | `fit_riemannian_decoder` 로 RS-ULF 은닉 → Teacher 은닉/로짓 공간 투영 후, `PyHumanDecoder.decode` 를 통해 Skeleton/Relation/Object 단계로 기존 sampling 대체 |
+| `src/layers/human_decoder.rs`, `src/bindings/rsulf.rs` | Rust 인간형 디코더 코어 | `HumanStyleDecoder::decode_batch` 를 `PyHumanDecoder` 로 노출하여 Python 측에서 S/R/O 선택 로직 호출 |
 | `python/reality_stone/models/hierarchical_sentence_topic_llm.py` | 계층 디코더 | `infer_hierarchical_llm_on_text` 의 토큰 선택 루틴을 인간형 규칙으로 교체 |
 | `RSULFStudentAdapter` | KD | 6장 loss 추가 및 ΔH/Top-K 로그 잔차 계산 |
 
@@ -159,5 +167,11 @@ for t in range(max_len):
 3. Object 단계에서 cos/geo 점수 계산 시 NaN 방지 (정규화, epsilon)
 4. Commit 이후에는 temperature/top-p와 무관하게 결과 고정되는지
 5. KD loss 전체가 기존 로짓 MSE 대신 해당 계층 loss만 쓰는지
-
+ 
+## 13. GPT-2 RS-ULF 변환과 마지막 레이어 안정화
+ 
+- GPT-2 → RS-ULF 변환에서 마지막 레이어 은닉 불일치 문제는 다음 두 단계로 다룬다.
+  1. `fit_riemannian_decoder` 를 통해 RS-ULF 스택 출력 은닉을 교사 GPT-2 로짓/은닉 공간으로 투영하는 선형 디코더를 학습한다. (자세한 수치는 `docs/06_research_lab/04_gpt2_decoder_stabilization.md` 참고)
+  2. 이 투영 결과 위에서 본 문서의 Skeleton/Relation/Object 인간형 디코더를 적용하여, 토큰 선택을 기능별로 분리한다.
+- 이 설계는 RSULF 각 레이어의 은닉이 교사와 완전히 일치하지 않더라도, 디코딩 단계에서 기능/기하 보정을 통해 생성 품질을 유지하는 것을 목표로 한다.
 

@@ -380,7 +380,7 @@ impl PyRSULFLayer {
     }
 
     #[staticmethod]
-    #[pyo3(signature = (wq, wk, w1, w2, d_model=4096, r=1024, eta=0.01, alpha=0.02, beta=0.01, gamma=0.99, seq_len=128, window=8))]
+    #[pyo3(signature = (wq, wk, w1, w2, d_model=4096, r=1024, eta=0.01, alpha=0.02, beta=0.01, gamma=0.99, seq_len=128, window=8, calibration_samples=1024))]
     pub fn new_fast(
         wq: PyReadonlyArray2<f32>,
         wk: PyReadonlyArray2<f32>,
@@ -394,6 +394,7 @@ impl PyRSULFLayer {
         gamma: f32,
         seq_len: usize,
         window: usize,
+        calibration_samples: usize,
     ) -> Self {
         let config = RSULFConfig {
             d_model,
@@ -404,7 +405,7 @@ impl PyRSULFLayer {
             gamma,
             seq_len,
             window,
-            calibration_samples: 1024,
+            calibration_samples,
         };
 
         let inner = RSULFLayer::from_transformer_fast(

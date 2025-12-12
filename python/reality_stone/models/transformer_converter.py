@@ -44,6 +44,14 @@ class RSULFTransformerConverter:
         gamma: float = 0.99,
         seq_len: int = 128,
         window: int = 8,
+        calibration_samples: int = 1024,
+        num_heads: int = 1,
+        pfc_mode: str = "bilinear",
+        pfc_curvature: float = 0.0,
+        pfc_max_rel: float = 0.02,
+        pfc_window: int = 0,
+        pfc_layers: int = 3,
+        pfc_speed_gate: float = 1.0,
         checkpoint_dir: Optional[str] = None,
         checkpoint_interval: int = 4,
         verbose: bool = False,
@@ -60,6 +68,14 @@ class RSULFTransformerConverter:
         self.gamma = gamma
         self.seq_len = seq_len
         self.window = window
+        self.calibration_samples = calibration_samples
+        self.num_heads = int(max(1, num_heads))
+        self.pfc_mode = str(pfc_mode).lower().strip()
+        self.pfc_curvature = float(pfc_curvature)
+        self.pfc_max_rel = float(pfc_max_rel)
+        self.pfc_window = int(max(0, pfc_window))
+        self.pfc_layers = int(max(0, pfc_layers))
+        self.pfc_speed_gate = float(max(0.0, pfc_speed_gate))
         self.checkpoint_dir = checkpoint_dir
         self.checkpoint_interval = checkpoint_interval
         self.verbose = verbose
@@ -69,15 +85,56 @@ class RSULFTransformerConverter:
     def extract_weights(self, layer) -> Dict[str, np.ndarray]:
         weights = {}
         if hasattr(layer, 'attn') and hasattr(layer.attn, 'c_attn'):
-            c_attn = layer.attn.c_attn.weight.detach().cpu().numpy().astype(np.float32).T
-            c_attn = np.ascontiguousarray(c_attn)
-            hidden_size = c_attn.shape[1]
-            weights["WQ"] = np.ascontiguousarray(c_attn[:hidden_size, :])
-            weights["WK"] = np.ascontiguousarray(c_attn[hidden_size:2*hidden_size, :])
-            w1 = layer.mlp.c_fc.weight.detach().cpu().numpy().astype(np.float32).T
+            d_model = int(self.d_model)
+            c_attn_w = np.ascontiguousarray(
+                layer.attn.c_attn.weight.detach().cpu().numpy().astype(np.float32)
+            )
+            if c_attn_w.shape == (d_model, 3 * d_model):
+                wq = c_attn_w[:, :d_model].T
+                wk = c_attn_w[:, d_model:2 * d_model].T
+                wv = c_attn_w[:, 2 * d_model:3 * d_model].T
+            elif c_attn_w.shape == (3 * d_model, d_model):
+                wq = c_attn_w[:d_model, :]
+                wk = c_attn_w[d_model:2 * d_model, :]
+                wv = c_attn_w[2 * d_model:3 * d_model, :]
+            else:
+                raise ValueError(f"Unexpected GPT2 c_attn.weight shape: {c_attn_w.shape}")
+            weights["WQ"] = np.ascontiguousarray(wq)
+            weights["WK"] = np.ascontiguousarray(wk)
+            weights["WV"] = np.ascontiguousarray(wv)
+            if hasattr(layer.attn.c_attn, "bias") and layer.attn.c_attn.bias is not None:
+                c_attn_b = np.ascontiguousarray(
+                    layer.attn.c_attn.bias.detach().cpu().numpy().astype(np.float32)
+                )
+                weights["bQ"] = np.ascontiguousarray(c_attn_b[:d_model])
+                weights["bK"] = np.ascontiguousarray(c_attn_b[d_model:2 * d_model])
+                weights["bV"] = np.ascontiguousarray(c_attn_b[2 * d_model:3 * d_model])
+            c_proj_w = np.ascontiguousarray(layer.attn.c_proj.weight.detach().cpu().numpy().astype(np.float32))
+            if c_proj_w.shape != (d_model, d_model):
+                raise ValueError(f"Unexpected GPT2 c_proj.weight shape: {c_proj_w.shape}")
+            weights["WO"] = np.ascontiguousarray(c_proj_w.T)
+            if hasattr(layer.attn.c_proj, "bias") and layer.attn.c_proj.bias is not None:
+                weights["bO"] = np.ascontiguousarray(layer.attn.c_proj.bias.detach().cpu().numpy().astype(np.float32))
+            w1_w = np.ascontiguousarray(layer.mlp.c_fc.weight.detach().cpu().numpy().astype(np.float32))
+            if w1_w.shape == (d_model, 4 * d_model):
+                w1 = w1_w.T
+            elif w1_w.shape == (4 * d_model, d_model):
+                w1 = w1_w
+            else:
+                raise ValueError(f"Unexpected GPT2 c_fc.weight shape: {w1_w.shape}")
             weights["W1"] = np.ascontiguousarray(w1)
-            w2 = layer.mlp.c_proj.weight.detach().cpu().numpy().astype(np.float32).T
+            if hasattr(layer.mlp.c_fc, "bias") and layer.mlp.c_fc.bias is not None:
+                weights["b1"] = np.ascontiguousarray(layer.mlp.c_fc.bias.detach().cpu().numpy().astype(np.float32))
+            w2_w = np.ascontiguousarray(layer.mlp.c_proj.weight.detach().cpu().numpy().astype(np.float32))
+            if w2_w.shape == (4 * d_model, d_model):
+                w2 = w2_w.T
+            elif w2_w.shape == (d_model, 4 * d_model):
+                w2 = w2_w
+            else:
+                raise ValueError(f"Unexpected GPT2 c_proj.weight shape: {w2_w.shape}")
             weights["W2"] = np.ascontiguousarray(w2)
+            if hasattr(layer.mlp.c_proj, "bias") and layer.mlp.c_proj.bias is not None:
+                weights["b2"] = np.ascontiguousarray(layer.mlp.c_proj.bias.detach().cpu().numpy().astype(np.float32))
             if hasattr(layer, 'ln_1'):
                 weights["ln_1_weight"] = layer.ln_1.weight.detach().cpu().numpy().astype(np.float32)
                 weights["ln_1_bias"] = layer.ln_1.bias.detach().cpu().numpy().astype(np.float32)
@@ -153,6 +210,23 @@ class RSULFTransformerConverter:
                 gamma=self.gamma,
                 seq_len=self.seq_len,
                 window=self.window,
+                calibration_samples=self.calibration_samples,
+                num_heads=self.num_heads,
+                pfc_mode=self.pfc_mode,
+                pfc_curvature=self.pfc_curvature,
+                pfc_max_rel=self.pfc_max_rel,
+                pfc_window=self.pfc_window,
+                pfc_speed_gate=self.pfc_speed_gate,
+            )
+            if "WV" in weights and "WO" in weights:
+                rsulf.set_attention_weights(weights["WV"], weights["WO"])
+            rsulf.set_biases(
+                bq=weights.get("bQ"),
+                bk=weights.get("bK"),
+                bv=weights.get("bV"),
+                bo=weights.get("bO"),
+                b1=weights.get("b1"),
+                b2=weights.get("b2"),
             )
             
             compressed, original, ratio = rsulf.param_count()
@@ -197,6 +271,11 @@ class RSULFTransformerConverter:
                   self.d_model = model.config.d_model
              elif hasattr(model.config, "n_embd"): # GPT-2
                   self.d_model = model.config.n_embd
+        if hasattr(model, "config"):
+            if hasattr(model.config, "n_head"):
+                self.num_heads = int(model.config.n_head)
+            elif hasattr(model.config, "num_attention_heads"):
+                self.num_heads = int(model.config.num_attention_heads)
         
         print(f"Collecting weights from {len(transformer_layers)} layers...")
         all_wq = []
@@ -240,8 +319,18 @@ class RSULFTransformerConverter:
                     d_out, d_model = weights["WQ"].shape
                     if self.verbose:
                         print(f"[RSULF] layer {idx:02d}: start")
-                    best_r = d_model
-                    orig_block = transformer_layers[idx] if idx < len(transformer_layers) else None
+                    best_r = int(max(1, min(d_model, self.r)))
+                    total_layers = len(layer_weights)
+                    k = int(self.pfc_layers)
+                    if k <= 0:
+                        pfc_c = 0.0
+                    else:
+                        start = max(0, total_layers - k)
+                        if idx < start:
+                            pfc_c = 0.0
+                        else:
+                            t = float((idx - start) + 1) / float(max(1, total_layers - start))
+                            pfc_c = float(self.pfc_curvature) * t
                     rsulf = RSULFLayerCUDA(
                         wq=weights["WQ"],
                         wk=weights["WK"],
@@ -256,7 +345,24 @@ class RSULFTransformerConverter:
                         seq_len=self.seq_len,
                         window=self.window,
                         global_basis=None,
-                        original_block=orig_block if idx == len(layer_weights) - 1 else None,
+                        original_block=None,
+                        calibration_samples=self.calibration_samples,
+                        num_heads=self.num_heads,
+                        pfc_mode=self.pfc_mode,
+                        pfc_curvature=pfc_c,
+                        pfc_max_rel=self.pfc_max_rel,
+                        pfc_window=self.pfc_window,
+                        pfc_speed_gate=self.pfc_speed_gate,
+                    )
+                    if "WV" in weights and "WO" in weights:
+                        rsulf.set_attention_weights(weights["WV"], weights["WO"])
+                    rsulf.set_biases(
+                        bq=weights.get("bQ"),
+                        bk=weights.get("bK"),
+                        bv=weights.get("bV"),
+                        bo=weights.get("bO"),
+                        b1=weights.get("b1"),
+                        b2=weights.get("b2"),
                     )
                     if "ln_1_weight" in weights:
                         rsulf.set_ln1(weights["ln_1_weight"], weights.get("ln_1_bias"))
@@ -345,6 +451,23 @@ class RSULFTransformerConverter:
                     seq_len=self.seq_len,
                     window=self.window,
                     global_basis=global_basis,
+                    calibration_samples=self.calibration_samples,
+                    num_heads=self.num_heads,
+                    pfc_mode=self.pfc_mode,
+                    pfc_curvature=self.pfc_curvature,
+                    pfc_max_rel=self.pfc_max_rel,
+                    pfc_window=self.pfc_window,
+                    pfc_speed_gate=self.pfc_speed_gate,
+                )
+                if "WV" in weights and "WO" in weights:
+                    rsulf.set_attention_weights(weights["WV"], weights["WO"])
+                rsulf.set_biases(
+                    bq=weights.get("bQ"),
+                    bk=weights.get("bK"),
+                    bv=weights.get("bV"),
+                    bo=weights.get("bO"),
+                    b1=weights.get("b1"),
+                    b2=weights.get("b2"),
                 )
                 if "ln_1_weight" in weights:
                     rsulf.set_ln1(weights["ln_1_weight"], weights.get("ln_1_bias"))

@@ -522,6 +522,7 @@ __global__ void rsulf_unified_forward_kernel(
     float* s_phi = smem + d + r + ffn_dim;
     float* s_reduce = smem + 2 * d + r + ffn_dim;
     float* s_velocity = smem + 2 * d + r + ffn_dim + 512;
+    float* s_xu2 = smem + 3 * d + r + ffn_dim + 512;
     
     const float* x_in = x + token_idx * d;
     float* x_o = x_out + token_idx * d;
@@ -661,6 +662,21 @@ __global__ void rsulf_unified_forward_kernel(
         }
         __syncthreads();
     }
+
+    if (fabsf(curvature) > RSULF_EPS) {
+        for (int j = tid; j < r; j += blockDim.x) {
+            float acc_v1 = 0.0f;
+            float acc_u2 = 0.0f;
+            for (int i = 0; i < d; ++i) {
+                float x_i = s_x[i];
+                acc_v1 += x_i * v1[i * r + j];
+                acc_u2 += x_i * u2_t[j * d + i];
+            }
+            s_h1[j] = acc_v1;
+            s_xu2[j] = acc_u2;
+        }
+        __syncthreads();
+    }
     
     for (int i = tid; i < d; i += blockDim.x) {
         float velocity = s_velocity[i];
@@ -669,9 +685,78 @@ __global__ void rsulf_unified_forward_kernel(
         if (fabsf(curvature) > RSULF_EPS) {
             delta = -0.5f * curvature * v_norm_sq * s_x[i];
         }
+
+        float gamma = 0.0f;
+        if (fabsf(curvature) > RSULF_EPS) {
+            for (int j = 0; j < r; ++j) {
+                float z = s_h1[j] * s_xu2[j];
+                gamma += z * v1[i * r + j];
+            }
+            gamma *= curvature * (1.0f / (float)r);
+        }
         
-        float x_next = s_x[i] + velocity + delta;
-        // Removed hard clamp
+        float x_next = s_x[i] + velocity + delta + gamma;
         x_o[i] = x_next;
+    }
+}
+
+extern "C" void rsulf_unified_forward_cuda(
+    const float* x,
+    const float* v1,
+    const float* s1,
+    const float* u1,
+    const float* v2,
+    const float* s2,
+    const float* u2,
+    const float* g_inv,
+    const float* laplacian,
+    const float* v_mem,
+    float eta,
+    float alpha,
+    float beta,
+    float gamma_param,
+    float curvature,
+    int batch,
+    int seq_len,
+    int d,
+    int r,
+    int ffn_dim,
+    int window,
+    float* x_out,
+    float* v_out
+) {
+    int total_tokens = batch * seq_len;
+    size_t smem_size = (3 * d + 2 * r + ffn_dim + 512) * sizeof(float);
+    int block_size = 256;
+    dim3 grid(total_tokens);
+    dim3 block(block_size);
+    rsulf_unified_forward_kernel<<<grid, block, smem_size>>>(
+        x,
+        v1,
+        s1,
+        u1,
+        v2,
+        s2,
+        u2,
+        g_inv,
+        laplacian,
+        v_mem,
+        eta,
+        alpha,
+        beta,
+        gamma_param,
+        curvature,
+        batch,
+        seq_len,
+        d,
+        r,
+        ffn_dim,
+        window,
+        x_out,
+        v_out
+    );
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("CUDA Error in rsulf_unified_forward: %s\n", cudaGetErrorString(err));
     }
 }

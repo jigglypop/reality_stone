@@ -24,6 +24,8 @@ def analyze_layer_fidelity(original_model, rs_model, tokenizer, prompt, device):
         h = wrapper(h)
         rs_outputs.append(h.detach())
     n_layers = min(len(hidden_states) - 1, len(rs_outputs))
+    if len(hidden_states) == len(rs_outputs) + 2:
+        n_layers = min(len(hidden_states) - 2, len(rs_outputs))
     print("\n[RS-ULF] Layer-wise similarity")
     for i in range(n_layers):
         o = hidden_states[i + 1]

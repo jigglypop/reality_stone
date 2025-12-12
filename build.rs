@@ -52,6 +52,10 @@ fn main() {
             .filter_map(Result::ok)
             .collect();
 
+        for file in &cu_files {
+            println!("cargo:rerun-if-changed={}", file.display());
+        }
+
         let out_dir = env::var("OUT_DIR").unwrap();
         println!("cargo:rustc-link-search=native={}", out_dir);
         println!("cargo:rustc-link-search=native={}/lib64", cuda_path);

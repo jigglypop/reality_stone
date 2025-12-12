@@ -61,6 +61,11 @@ def _collect_decoder_data(
     num_batches: int = 64,
     batch_size: int = 4,
     seq_len: int = 32,
+    prompt_text: str | None = None,
+    data_mode: str = "random",
+    temperature: float = 0.9,
+    top_k: int = 40,
+    top_p: float = 0.95,
 ):
     if isinstance(device, str):
         device = torch.device(device)
@@ -68,16 +73,13 @@ def _collect_decoder_data(
     rs_model.eval()
     ln_f = original_model.transformer.ln_f
     lm_head = original_model.lm_head
+    wte = original_model.transformer.wte
     wpe = original_model.transformer.wpe
     h_rs_list = []
     h_t_list = []
     logits_t_list = []
-    half_batches = max(1, num_batches // 2)
-    inputs_high, inputs_low = _generate_binary_curriculum_prompts(
-        original_model, tokenizer, device, half_batches, batch_size, seq_len
-    )
-    all_inputs = torch.cat([inputs_high, inputs_low], dim=0)
-    total_samples = all_inputs.size(0)
+    vocab_size = tokenizer.vocab_size
+    total_samples = num_batches * batch_size
     start = time.time()
     total_batches = (total_samples + batch_size - 1) // batch_size
     total_tokens = total_samples * seq_len
@@ -91,8 +93,34 @@ def _collect_decoder_data(
     pos_emb = wpe(pos)
     with torch.no_grad():
         for b, i in enumerate(iterator, 1):
-            batch_embeds = all_inputs[i : i + batch_size]
-            x = batch_embeds + pos_emb
+            if data_mode == "teacher_sample" and prompt_text:
+                # Fast path: use HF generate() with KV-cache instead of per-token transformer forward.
+                prompt_ids = tokenizer.encode(prompt_text, return_tensors="pt").to(device)
+                prompt_ids = prompt_ids[:, : max(1, min(prompt_ids.size(1), seq_len))]
+                prompt_ids = prompt_ids.repeat(batch_size, 1)
+                attn_mask = torch.ones_like(prompt_ids, dtype=torch.long, device=device)
+                max_new = int(max(0, seq_len - prompt_ids.size(1)))
+                gen_ids = original_model.generate(
+                    input_ids=prompt_ids,
+                    attention_mask=attn_mask,
+                    max_new_tokens=max_new,
+                    do_sample=True,
+                    temperature=float(temperature),
+                    top_k=int(top_k),
+                    top_p=float(top_p),
+                    pad_token_id=tokenizer.eos_token_id,
+                    eos_token_id=tokenizer.eos_token_id,
+                    use_cache=True,
+                )
+                if gen_ids.size(1) < seq_len:
+                    pad = torch.full((batch_size, seq_len - gen_ids.size(1)), int(tokenizer.eos_token_id), device=device, dtype=torch.long)
+                    input_ids = torch.cat([gen_ids, pad], dim=1)
+                else:
+                    input_ids = gen_ids[:, :seq_len]
+            else:
+                input_ids = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
+            tok_emb = wte(input_ids)
+            x = tok_emb + pos_emb
             with autocast(enabled=use_amp):
                 outputs = original_model.transformer(inputs_embeds=x, output_hidden_states=True)
                 teacher_hidden_last = outputs.hidden_states[-1]
@@ -132,6 +160,8 @@ def fit_riemannian_decoder(
     num_batches: int = 64,
     batch_size: int = 4,
     seq_len: int = 32,
+    prompt_text: str | None = None,
+    data_mode: str = "random",
 ):
     if isinstance(device, str):
         device = torch.device(device)
@@ -143,6 +173,8 @@ def fit_riemannian_decoder(
         num_batches=num_batches,
         batch_size=batch_size,
         seq_len=seq_len,
+        prompt_text=prompt_text,
+        data_mode=data_mode,
     )
     print(f"[BACD] Start fitting Riemannian Decoder (samples={H_rs.shape[0]})...")
     start_time = time.time()
@@ -161,7 +193,10 @@ def fit_riemannian_decoder(
     H_mean = H_t.mean(axis=0, keepdims=True)
     H_centered = H_t - H_mean
     lambda_lb = 0.0
-    lambda_ridge = 1e-5
+    rank_factor = float(H_rs.shape[1]) / float(max(1, int(target_rank)))
+    lambda_ridge = 1e-5 * max(1.0, rank_factor)
+    if lambda_ridge > 1e-2:
+        lambda_ridge = 1e-2
     use_gpu = device.type == "cuda" or (
         hasattr(torch.backends, "mps") and torch.backends.mps.is_available() and device.type == "mps"
     )

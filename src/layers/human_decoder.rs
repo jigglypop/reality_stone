@@ -1,5 +1,5 @@
 use crate::layers::poincare::poincare_distance;
-use ndarray::{s, Array1, Array2, ArrayView1, ArrayView2, Axis};
+use ndarray::{s, Array1, Array2, ArrayView1, ArrayView2};
 
 const EPS: f32 = 1e-8;
 
@@ -174,7 +174,6 @@ impl HumanStyleDecoder {
             let obj_row = object_ctx.row(b);
             let rel_norm = rel_row.dot(&rel_row).sqrt().max(EPS);
             let obj_norm = obj_row.dot(&obj_row).sqrt().max(EPS);
-            let rel_view = relation_ctx.slice(s![b..b + 1, ..]);
             let obj_view = object_ctx.slice(s![b..b + 1, ..]);
             let skel_choice = self.masked_argmax(&log_row, &self.skeleton);
             let rel_choice = self.select_relation(&log_row, &rel_row, rel_norm, topk_relation);

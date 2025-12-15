@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Tuple, Dict
 import numpy as np
+import math
 
 try:
     from reality_stone import _rust, build_causal_laplacian
@@ -47,6 +48,8 @@ class RSULFLayerCUDA(nn.Module):
         pfc_max_rel: float = 0.02,
         pfc_window: int = 0,
         pfc_speed_gate: float = 1.0,
+        norm_mode: str = "layernorm",
+        ffn_mode: str = "gelu",
     ):
         super().__init__()
         if not HAS_RUST:
@@ -102,6 +105,8 @@ class RSULFLayerCUDA(nn.Module):
         self.pfc_speed_gate = float(max(0.0, pfc_speed_gate))
         self.original_block = original_block
         self._cuda_available = False
+        self.norm_mode = str(norm_mode).lower().strip()
+        self.ffn_mode = str(ffn_mode).lower().strip()
         self._components = self._layer.export_components()
         
         self._ffn_u1 = np.asarray(self._components["ffn_u1"], dtype=np.float32)
@@ -141,8 +146,35 @@ class RSULFLayerCUDA(nn.Module):
         
         self.b1 = nn.Parameter(torch.zeros(self._ffn_u1.shape[0]), requires_grad=False)
         self.b2 = nn.Parameter(torch.zeros(d_model), requires_grad=False)
+
+        self.ffn_gate_w = nn.Parameter(torch.empty(0), requires_grad=False)
+        self.ffn_gate_b = nn.Parameter(torch.empty(0), requires_grad=False)
         
         self.use_hybrid_mode = True
+        self.engine = "torch"
+
+    def set_ffn_gate(self, w_gate, b_gate=None):
+        self.ffn_gate_w.data = torch.from_numpy(w_gate).float()
+        if b_gate is not None:
+            self.ffn_gate_b.data = torch.from_numpy(b_gate).float()
+        else:
+            self.ffn_gate_b.data = torch.zeros(self.ffn_gate_w.size(0))
+
+    def _norm(self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor) -> torch.Tensor:
+        dim = x.size(-1)
+        mode = self.norm_mode
+        if mode in ("rms", "rmsnorm"):
+            eps = 1e-5
+            v = (x * x).mean(dim=-1, keepdim=True)
+            y = x * torch.rsqrt(v + eps)
+            y = y * weight
+            if bias is not None and bias.numel() == dim and bias.abs().sum().item() != 0.0:
+                y = y + bias
+            return y
+        return F.layer_norm(x, (dim,), weight, bias)
+
+    def _gelu_new(self, x: torch.Tensor) -> torch.Tensor:
+        return 0.5 * x * (1.0 + torch.tanh(math.sqrt(2.0 / math.pi) * (x + 0.044715 * torch.pow(x, 3.0))))
 
     def _pfc_cap_and_project(self, h: torch.Tensor, corr: torch.Tensor) -> torch.Tensor:
         # Remove component parallel to h (keeps correction in tangent-ish direction)
@@ -277,9 +309,34 @@ class RSULFLayerCUDA(nn.Module):
         x: torch.Tensor,
         v_mem: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        squeeze = False
+        if x.dim() == 2:
+            x = x.unsqueeze(1)
+            squeeze = True
+        if self.engine == "rust":
+            device = x.device
+            x_cpu = x.detach().to("cpu", dtype=torch.float32)
+            x_np = x_cpu.numpy().astype(np.float32)
+            b, t, d = x_np.shape
+            out = np.empty((b, t, d), dtype=np.float32)
+            v = None
+            if v_mem is not None:
+                if isinstance(v_mem, np.ndarray):
+                    v = v_mem.astype(np.float32)
+                elif isinstance(v_mem, torch.Tensor):
+                    v = v_mem.detach().to("cpu").numpy().astype(np.float32)
+            for i in range(t):
+                y, v = self._layer.forward(x_np[:, i, :], v)
+                out[:, i, :] = y
+            y_t = torch.from_numpy(out).to(device=device, dtype=x.dtype)
+            v_out = None if v is None else torch.from_numpy(np.asarray(v, dtype=np.float32)).to(device=device)
+            if squeeze:
+                y_t = y_t[:, 0, :]
+            return y_t, v_out
+
         batch, seq_len, dim = x.shape
 
-        u = F.layer_norm(x, (dim,), self.ln1_weight, self.ln1_bias)
+        u = self._norm(x, self.ln1_weight, self.ln1_bias)
 
         q = F.linear(u, self.wq, self.bq)
         k = F.linear(u, self.wk, self.bk)
@@ -292,8 +349,20 @@ class RSULFLayerCUDA(nn.Module):
             head_dim = dim
 
         q = q.view(batch, seq_len, n_head, head_dim).transpose(1, 2)
-        k = k.view(batch, seq_len, n_head, head_dim).transpose(1, 2)
-        v = v.view(batch, seq_len, n_head, head_dim).transpose(1, 2)
+        if k.size(-1) != dim and (k.size(-1) % head_dim) == 0:
+            n_kv = int(k.size(-1) // head_dim)
+            k = k.view(batch, seq_len, n_kv, head_dim).transpose(1, 2)
+            v = v.view(batch, seq_len, n_kv, head_dim).transpose(1, 2)
+            if n_kv > 0 and (n_head % n_kv) == 0:
+                rep = int(n_head // n_kv)
+                k = k.repeat_interleave(rep, dim=1)
+                v = v.repeat_interleave(rep, dim=1)
+            else:
+                k = k.repeat(1, n_head, 1, 1)[:, :n_head, :, :]
+                v = v.repeat(1, n_head, 1, 1)[:, :n_head, :, :]
+        else:
+            k = k.view(batch, seq_len, n_head, head_dim).transpose(1, 2)
+            v = v.view(batch, seq_len, n_head, head_dim).transpose(1, 2)
 
         attn_out = F.scaled_dot_product_attention(
             q,
@@ -308,7 +377,7 @@ class RSULFLayerCUDA(nn.Module):
         x_mid = x + attn_out
         x_mid = self._apply_pfc(x_mid)
         
-        w = F.layer_norm(x_mid, (dim,), self.ln2_weight, self.ln2_bias)
+        w = self._norm(x_mid, self.ln2_weight, self.ln2_bias)
         
         w_flat = w.reshape(-1, dim)
         
@@ -317,8 +386,20 @@ class RSULFLayerCUDA(nn.Module):
         h = h @ self.ffn_u1.T
         
         h = h + self.b1.unsqueeze(0)
-        
-        h = F.gelu(h)
+        if self.ffn_mode in ("swiglu", "silu_gated", "gated"):
+            if self.ffn_gate_w.numel() == 0:
+                h = F.silu(h)
+            else:
+                gate = F.linear(w_flat, self.ffn_gate_w, self.ffn_gate_b)
+                gate = F.silu(gate)
+                h = h * gate
+        elif self.ffn_mode in ("silu", "swish"):
+            h = F.silu(h)
+        else:
+            if self.ffn_mode in ("gelu_new", "gelu_new_tanh"):
+                h = self._gelu_new(h)
+            else:
+                h = F.gelu(h)
         
         out = h @ self.ffn_v2
         out = out * self.ffn_s2.unsqueeze(0)
@@ -336,7 +417,135 @@ class RSULFLayerCUDA(nn.Module):
         
         x_out = x_mid + ffn_out
         
+        if squeeze:
+            x_out = x_out[:, 0, :]
         return x_out, None
+
+    def forward_step(self, x_t: torch.Tensor, cache: Optional[dict] = None) -> Tuple[torch.Tensor, dict]:
+        if self.engine == "rust":
+            device = x_t.device
+            x_cpu = x_t.detach().to("cpu", dtype=torch.float32)
+            x_np = x_cpu.numpy().astype(np.float32)
+            v = None
+            if cache is not None:
+                if isinstance(cache, np.ndarray):
+                    v = cache.astype(np.float32)
+                elif isinstance(cache, torch.Tensor):
+                    v = cache.detach().to("cpu").numpy().astype(np.float32)
+            y, v = self._layer.forward(x_np[:, 0, :], v)
+            y_np = np.asarray(y, dtype=np.float32)[:, None, :]
+            y_t = torch.from_numpy(y_np).to(device=device, dtype=x_t.dtype)
+            v_out = None if v is None else torch.from_numpy(np.asarray(v, dtype=np.float32)).to(device=device)
+            return y_t, v_out
+
+        if cache is None:
+            cache = {}
+        if x_t.dim() != 3 or x_t.size(1) != 1:
+            raise ValueError("x_t must have shape (B, 1, D)")
+        batch, _, dim = x_t.shape
+
+        u = self._norm(x_t, self.ln1_weight, self.ln1_bias)
+        q = F.linear(u, self.wq, self.bq)
+        k = F.linear(u, self.wk, self.bk)
+        v = F.linear(u, self.wv, self.bv)
+
+        n_head = self.num_heads
+        head_dim = dim // n_head
+        if head_dim * n_head != dim:
+            n_head = 1
+            head_dim = dim
+
+        q = q.view(batch, 1, n_head, head_dim).transpose(1, 2)
+
+        k_in = k
+        v_in = v
+        if k_in.size(-1) != dim and (k_in.size(-1) % head_dim) == 0:
+            n_kv = int(k_in.size(-1) // head_dim)
+            k_step = k_in.view(batch, 1, n_kv, head_dim).transpose(1, 2)
+            v_step = v_in.view(batch, 1, n_kv, head_dim).transpose(1, 2)
+            if n_kv > 0 and (n_head % n_kv) == 0:
+                rep = int(n_head // n_kv)
+                k_step = k_step.repeat_interleave(rep, dim=1)
+                v_step = v_step.repeat_interleave(rep, dim=1)
+            else:
+                k_step = k_step.repeat(1, n_head, 1, 1)[:, :n_head, :, :]
+                v_step = v_step.repeat(1, n_head, 1, 1)[:, :n_head, :, :]
+        else:
+            k_step = k_in.view(batch, 1, n_head, head_dim).transpose(1, 2)
+            v_step = v_in.view(batch, 1, n_head, head_dim).transpose(1, 2)
+
+        t = int(cache.get("t", 0))
+        k_buf = cache.get("k_buf")
+        v_buf = cache.get("v_buf")
+        max_len = cache.get("max_len")
+        if k_buf is None or v_buf is None:
+            if max_len is None:
+                max_len = 2048
+            max_len = int(max_len)
+            k_buf = torch.empty(batch, n_head, max_len, head_dim, device=x_t.device, dtype=q.dtype)
+            v_buf = torch.empty(batch, n_head, max_len, head_dim, device=x_t.device, dtype=q.dtype)
+            cache["k_buf"] = k_buf
+            cache["v_buf"] = v_buf
+            cache["max_len"] = max_len
+            t = 0
+        if t >= int(cache["max_len"]):
+            raise RuntimeError("kv cache overflow")
+        k_buf[:, :, t : t + 1, :].copy_(k_step)
+        v_buf[:, :, t : t + 1, :].copy_(v_step)
+        cache["t"] = t + 1
+        k_all = k_buf[:, :, : t + 1, :]
+        v_all = v_buf[:, :, : t + 1, :]
+
+        attn = F.scaled_dot_product_attention(q, k_all, v_all, is_causal=True)
+        attn = attn.transpose(1, 2).contiguous().view(batch, 1, dim)
+        attn = F.linear(attn, self.wo, self.bo)
+
+        x_mid_t = x_t + attn
+
+        hist = cache.get("x_mid_hist")
+        if hist is None:
+            x_mid_seq = x_mid_t
+        else:
+            x_mid_seq = torch.cat([hist, x_mid_t], dim=1)
+        w = int(self.pfc_window)
+        if w <= 0:
+            w = x_mid_seq.size(1) - 1
+        keep = min(x_mid_seq.size(1), max(3, w + 2))
+        x_mid_seq = x_mid_seq[:, -keep:, :]
+        x_mid_seq = self._apply_pfc(x_mid_seq)
+        x_mid_t = x_mid_seq[:, -1:, :]
+
+        w2 = self._norm(x_mid_t, self.ln2_weight, self.ln2_bias)
+        w_flat = w2.reshape(-1, dim)
+
+        h = w_flat @ self.ffn_v1
+        h = h * self.ffn_s1.unsqueeze(0)
+        h = h @ self.ffn_u1.T
+        h = h + self.b1.unsqueeze(0)
+        if self.ffn_mode in ("swiglu", "silu_gated", "gated"):
+            if self.ffn_gate_w.numel() == 0:
+                h = F.silu(h)
+            else:
+                gate = F.linear(w_flat, self.ffn_gate_w, self.ffn_gate_b)
+                gate = F.silu(gate)
+                h = h * gate
+        elif self.ffn_mode in ("silu", "swish"):
+            h = F.silu(h)
+        else:
+            if self.ffn_mode in ("gelu_new", "gelu_new_tanh"):
+                h = self._gelu_new(h)
+            else:
+                h = F.gelu(h)
+
+        out = h @ self.ffn_v2
+        out = out * self.ffn_s2.unsqueeze(0)
+        out = out @ self.ffn_u2.T
+        out = out + self.b2.unsqueeze(0)
+        ffn_out = out.view(batch, 1, dim)
+        x_out_t = x_mid_t + ffn_out
+
+        cache["x_mid_hist"] = x_mid_seq.detach()
+        return x_out_t, cache
 
     def param_count(self) -> Tuple[int, int, float]:
         return self._layer.param_count()
@@ -377,19 +586,46 @@ class RSULFWrapperCUDA(nn.Module):
         self.original_block = rsulf_layer.original_block
         self.v_mem: Optional[torch.Tensor] = None
         self.d_model = rsulf_layer.d_model
+        self.time_step = 0
 
     def reset_memory(self):
         self.v_mem = None
+        self.time_step = 0
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.original_block is not None:
-            out = self.original_block(x)
-            if isinstance(out, tuple):
-                out = out[0]
-            return out
+            raise RuntimeError("original_block path is disabled")
         
-        out, _ = self.rsulf(x, None)
+        out, v = self.rsulf(x, self.v_mem)
+        self.v_mem = v
+        self.time_step += int(x.size(1))
         return out
+
+    def forward_step(self, x_t: torch.Tensor) -> torch.Tensor:
+        if self.original_block is not None:
+            raise RuntimeError("original_block path is disabled")
+        out, cache = self.rsulf.forward_step(x_t, cache=self.v_mem)
+        self.v_mem = cache
+        self.time_step += 1
+        return out
+
+    def init_step_cache(self, batch: int, max_len: int, device: torch.device, dtype: torch.dtype):
+        if getattr(self.rsulf, "engine", None) == "rust":
+            self.v_mem = None
+            return
+        dim = int(self.d_model)
+        n_head = int(self.rsulf.num_heads)
+        head_dim = dim // max(1, n_head)
+        if head_dim * n_head != dim:
+            n_head = 1
+            head_dim = dim
+        self.v_mem = {
+            "t": 0,
+            "max_len": int(max_len),
+            "k_buf": torch.empty(batch, n_head, int(max_len), head_dim, device=device, dtype=dtype),
+            "v_buf": torch.empty(batch, n_head, int(max_len), head_dim, device=device, dtype=dtype),
+            "x_mid_hist": None,
+        }
 
 
 class RSULFLMHeadCUDA(nn.Module):

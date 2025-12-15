@@ -68,7 +68,7 @@ class RSULFTransformerConverter:
         self.gamma = gamma
         self.seq_len = seq_len
         self.window = window
-        self.calibration_samples = calibration_samples
+        self.calibration_samples = int(max(1, calibration_samples))
         self.num_heads = int(max(1, num_heads))
         self.pfc_mode = str(pfc_mode).lower().strip()
         self.pfc_curvature = float(pfc_curvature)
@@ -135,6 +135,7 @@ class RSULFTransformerConverter:
             weights["W2"] = np.ascontiguousarray(w2)
             if hasattr(layer.mlp.c_proj, "bias") and layer.mlp.c_proj.bias is not None:
                 weights["b2"] = np.ascontiguousarray(layer.mlp.c_proj.bias.detach().cpu().numpy().astype(np.float32))
+            weights["ffn_mode"] = "gelu_new"
             if hasattr(layer, 'ln_1'):
                 weights["ln_1_weight"] = layer.ln_1.weight.detach().cpu().numpy().astype(np.float32)
                 weights["ln_1_bias"] = layer.ln_1.bias.detach().cpu().numpy().astype(np.float32)
@@ -143,34 +144,68 @@ class RSULFTransformerConverter:
                 weights["ln_2_bias"] = layer.ln_2.bias.detach().cpu().numpy().astype(np.float32)
             return weights
 
-        # Llama / Mistral / Standard Linear
-        weights["WQ"] = layer.self_attn.q_proj.weight.detach().cpu().numpy().astype(np.float32)
-        wk = layer.self_attn.k_proj.weight.detach().cpu().numpy().astype(np.float32)
-        
-        if wk.shape[0] < weights["WQ"].shape[0]:
-            repeat = weights["WQ"].shape[0] // wk.shape[0]
-            wk = np.tile(wk, (repeat, 1))
-        weights["WK"] = wk
-        
-        if hasattr(layer.mlp, 'gate_proj'):
+        q = layer.self_attn.q_proj
+        k = layer.self_attn.k_proj
+        v = layer.self_attn.v_proj if hasattr(layer.self_attn, "v_proj") else None
+        o = layer.self_attn.o_proj if hasattr(layer.self_attn, "o_proj") else None
+
+        weights["WQ"] = q.weight.detach().cpu().numpy().astype(np.float32)
+        weights["WK"] = k.weight.detach().cpu().numpy().astype(np.float32)
+        if getattr(q, "bias", None) is not None:
+            weights["bQ"] = q.bias.detach().cpu().numpy().astype(np.float32)
+        if getattr(k, "bias", None) is not None:
+            weights["bK"] = k.bias.detach().cpu().numpy().astype(np.float32)
+
+        if v is not None:
+            weights["WV"] = v.weight.detach().cpu().numpy().astype(np.float32)
+            if getattr(v, "bias", None) is not None:
+                weights["bV"] = v.bias.detach().cpu().numpy().astype(np.float32)
+        if o is not None:
+            weights["WO"] = o.weight.detach().cpu().numpy().astype(np.float32)
+            if getattr(o, "bias", None) is not None:
+                weights["bO"] = o.bias.detach().cpu().numpy().astype(np.float32)
+
+        if hasattr(layer.mlp, "gate_proj") and hasattr(layer.mlp, "up_proj") and hasattr(layer.mlp, "down_proj"):
+            weights["W1"] = layer.mlp.up_proj.weight.detach().cpu().numpy().astype(np.float32)
+            weights["W2"] = layer.mlp.down_proj.weight.detach().cpu().numpy().astype(np.float32)
+            weights["WG"] = layer.mlp.gate_proj.weight.detach().cpu().numpy().astype(np.float32)
+            if getattr(layer.mlp.gate_proj, "bias", None) is not None:
+                weights["bG"] = layer.mlp.gate_proj.bias.detach().cpu().numpy().astype(np.float32)
+            weights["ffn_mode"] = "swiglu"
+        elif hasattr(layer.mlp, "gate_proj") and hasattr(layer.mlp, "down_proj"):
             weights["W1"] = layer.mlp.gate_proj.weight.detach().cpu().numpy().astype(np.float32)
             weights["W2"] = layer.mlp.down_proj.weight.detach().cpu().numpy().astype(np.float32)
+            weights["ffn_mode"] = "silu"
         else:
-            # e.g. OPT or others
             weights["W1"] = layer.mlp.fc1.weight.detach().cpu().numpy().astype(np.float32)
             weights["W2"] = layer.mlp.fc2.weight.detach().cpu().numpy().astype(np.float32)
-        
-        # Extract LayerNorms (input_layernorm or similar)
-        if hasattr(layer, 'input_layernorm'):
-             weights["ln_1_weight"] = layer.input_layernorm.weight.detach().cpu().numpy().astype(np.float32)
-             if layer.input_layernorm.bias is not None:
-                 weights["ln_1_bias"] = layer.input_layernorm.bias.detach().cpu().numpy().astype(np.float32)
-        
+            weights["ffn_mode"] = "gelu"
+
+        if hasattr(layer, "input_layernorm"):
+            weights["ln_1_weight"] = layer.input_layernorm.weight.detach().cpu().numpy().astype(np.float32)
+            if getattr(layer.input_layernorm, "bias", None) is not None:
+                weights["ln_1_bias"] = layer.input_layernorm.bias.detach().cpu().numpy().astype(np.float32)
+            weights["norm_mode"] = "rmsnorm"
+        elif hasattr(layer, "ln_1"):
+            weights["ln_1_weight"] = layer.ln_1.weight.detach().cpu().numpy().astype(np.float32)
+            weights["ln_1_bias"] = layer.ln_1.bias.detach().cpu().numpy().astype(np.float32)
+            weights["norm_mode"] = "layernorm"
+
+        if hasattr(layer, "post_attention_layernorm"):
+            weights["ln_2_weight"] = layer.post_attention_layernorm.weight.detach().cpu().numpy().astype(np.float32)
+            if getattr(layer.post_attention_layernorm, "bias", None) is not None:
+                weights["ln_2_bias"] = layer.post_attention_layernorm.bias.detach().cpu().numpy().astype(np.float32)
+        elif hasattr(layer, "ln_2"):
+            weights["ln_2_weight"] = layer.ln_2.weight.detach().cpu().numpy().astype(np.float32)
+            weights["ln_2_bias"] = layer.ln_2.bias.detach().cpu().numpy().astype(np.float32)
+
         return weights
 
     def verify_weights(self, weights: Dict[str, np.ndarray], idx: int) -> Tuple[bool, Dict]:
         result = {"valid": True, "issues": []}
         for name, w in weights.items():
+            if not isinstance(w, np.ndarray):
+                continue
             if np.isnan(w).any():
                 result["valid"] = False
                 result["issues"].append(f"{name} NaN")
@@ -217,6 +252,9 @@ class RSULFTransformerConverter:
                 pfc_max_rel=self.pfc_max_rel,
                 pfc_window=self.pfc_window,
                 pfc_speed_gate=self.pfc_speed_gate,
+                norm_mode=str(weights.get("norm_mode", "layernorm")),
+                ffn_mode=str(weights.get("ffn_mode", "gelu")),
+                use_fast=bool((not self.exact) and (self.calibration_samples > 1)),
             )
             if "WV" in weights and "WO" in weights:
                 rsulf.set_attention_weights(weights["WV"], weights["WO"])
@@ -228,6 +266,12 @@ class RSULFTransformerConverter:
                 b1=weights.get("b1"),
                 b2=weights.get("b2"),
             )
+            if "WG" in weights:
+                rsulf.set_ffn_gate(weights["WG"], weights.get("bG"))
+            if "ln_1_weight" in weights:
+                rsulf.set_ln1(weights["ln_1_weight"], weights.get("ln_1_bias"))
+            if "ln_2_weight" in weights:
+                rsulf.set_ln2(weights["ln_2_weight"], weights.get("ln_2_bias"))
             
             compressed, original, ratio = rsulf.param_count()
             layer_stat["compressed"] = compressed
@@ -353,6 +397,9 @@ class RSULFTransformerConverter:
                         pfc_max_rel=self.pfc_max_rel,
                         pfc_window=self.pfc_window,
                         pfc_speed_gate=self.pfc_speed_gate,
+                        use_fast=False,
+                        norm_mode=str(weights.get("norm_mode", "layernorm")),
+                        ffn_mode=str(weights.get("ffn_mode", "gelu")),
                     )
                     if "WV" in weights and "WO" in weights:
                         rsulf.set_attention_weights(weights["WV"], weights["WO"])
@@ -458,6 +505,9 @@ class RSULFTransformerConverter:
                     pfc_max_rel=self.pfc_max_rel,
                     pfc_window=self.pfc_window,
                     pfc_speed_gate=self.pfc_speed_gate,
+                    norm_mode=str(weights.get("norm_mode", "layernorm")),
+                    ffn_mode=str(weights.get("ffn_mode", "gelu")),
+                    use_fast=bool(self.calibration_samples > 1),
                 )
                 if "WV" in weights and "WO" in weights:
                     rsulf.set_attention_weights(weights["WV"], weights["WO"])
@@ -469,6 +519,8 @@ class RSULFTransformerConverter:
                     b1=weights.get("b1"),
                     b2=weights.get("b2"),
                 )
+                if "WG" in weights:
+                    rsulf.set_ffn_gate(weights["WG"], weights.get("bG"))
                 if "ln_1_weight" in weights:
                     rsulf.set_ln1(weights["ln_1_weight"], weights.get("ln_1_bias"))
                 if "ln_2_weight" in weights:
@@ -559,9 +611,384 @@ class RSULFModel(torch.nn.Module):
             x = wrapper(x)
         return x
 
+    def forward_step(self, x_t: torch.Tensor) -> torch.Tensor:
+        for wrapper in self.wrappers:
+            x_t = wrapper.forward_step(x_t)
+        return x_t
+
     def reset_memory(self):
         for wrapper in self.wrappers:
             wrapper.v_mem = None
+
+    def init_step_cache(self, batch: int, max_len: int, device: torch.device, dtype: torch.dtype):
+        for wrapper in self.wrappers:
+            if hasattr(wrapper, "init_step_cache"):
+                wrapper.init_step_cache(batch, max_len, device, dtype)
+
+
+class TorchRiemannianDecoder(nn.Module):
+    def __init__(self, u: np.ndarray, a: np.ndarray, bt: np.ndarray, bias: np.ndarray):
+        super().__init__()
+        self.u = nn.Parameter(torch.from_numpy(np.asarray(u, dtype=np.float32)), requires_grad=False)
+        self.a = nn.Parameter(torch.from_numpy(np.asarray(a, dtype=np.float32)), requires_grad=False)
+        self.bt = nn.Parameter(torch.from_numpy(np.asarray(bt, dtype=np.float32)), requires_grad=False)
+        self.bias = nn.Parameter(torch.from_numpy(np.asarray(bias, dtype=np.float32)), requires_grad=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dim() == 3:
+            b, s, d = x.shape
+            flat = x.reshape(-1, d).to(dtype=torch.float32)
+            y = flat @ self.u
+            y = y @ self.a.T
+            y = y @ self.bt.T
+            y = y + self.bias.unsqueeze(0)
+            return y.view(b, s, -1)
+        if x.dim() == 2:
+            flat = x.to(dtype=torch.float32)
+            y = flat @ self.u
+            y = y @ self.a.T
+            y = y @ self.bt.T
+            y = y + self.bias.unsqueeze(0)
+            return y
+        raise ValueError("decoder input must be 2D or 3D")
+
+
+class SyntaxHead(nn.Module):
+    def __init__(self, d_model: int):
+        super().__init__()
+        self.fc1 = nn.Linear(d_model, d_model)
+        self.fc2 = nn.Linear(d_model, d_model)
+        nn.init.zeros_(self.fc1.weight)
+        nn.init.zeros_(self.fc1.bias)
+        nn.init.zeros_(self.fc2.weight)
+        nn.init.zeros_(self.fc2.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = torch.nn.functional.gelu(self.fc1(x))
+        return x + self.fc2(h)
+
+
+class RSULFCausalLM(nn.Module):
+    def __init__(
+        self,
+        rsulf: RSULFModel,
+        token_embedding: nn.Embedding,
+        lm_head: nn.Linear,
+        final_norm: Optional[nn.Module] = None,
+        pos_embedding: Optional[nn.Embedding] = None,
+        decoder=None,
+        apply_final_norm: bool = True,
+    ):
+        super().__init__()
+        self.rsulf = rsulf
+        self.token_embedding = token_embedding
+        self.pos_embedding = pos_embedding
+        self.final_norm = final_norm
+        self.lm_head = lm_head
+        self.decoder = decoder
+        self.apply_final_norm = bool(apply_final_norm)
+        self.syntax_head = SyntaxHead(int(token_embedding.weight.size(1)))
+
+    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+        if hasattr(self.rsulf, "reset_memory"):
+            self.rsulf.reset_memory()
+        x = self.token_embedding(input_ids)
+        if self.pos_embedding is not None:
+            pos = torch.arange(input_ids.size(1), device=input_ids.device, dtype=torch.long)
+            x = x + self.pos_embedding(pos)[None, :, :]
+        x = self.rsulf(x)
+        x = self.syntax_head(x)
+        if self.decoder is not None:
+            x_np = x.detach().to("cpu", dtype=torch.float32).reshape(-1, x.size(-1)).numpy().astype(np.float32)
+            y_np = self.decoder.forward(x_np)
+            x = torch.from_numpy(y_np).to(device=input_ids.device, dtype=x.dtype).view(input_ids.size(0), input_ids.size(1), -1)
+        if self.final_norm is not None and bool(self.apply_final_norm):
+            x = self.final_norm(x)
+        return self.lm_head(x)
+
+    def _decode_hidden(self, h: torch.Tensor) -> torch.Tensor:
+        if self.decoder is None:
+            return h
+        if isinstance(self.decoder, nn.Module):
+            y = self.decoder(h)
+            return y.to(dtype=h.dtype)
+        h_np = h.detach().to("cpu", dtype=torch.float32).reshape(-1, h.size(-1)).numpy().astype(np.float32)
+        y_np = self.decoder.forward(h_np)
+        y = torch.from_numpy(y_np).to(device=h.device, dtype=h.dtype).view(h.size(0), h.size(1), -1)
+        return y
+
+    def generate(self, input_ids: torch.Tensor, max_new_tokens: int = 32) -> torch.Tensor:
+        return self.generate_sample(
+            input_ids=input_ids,
+            max_new_tokens=max_new_tokens,
+            temperature=0.8,
+            top_k=50,
+            top_p=0.95,
+            repetition_penalty=1.15,
+        )
+
+    def generate_sample(
+        self,
+        input_ids: torch.Tensor,
+        max_new_tokens: int = 32,
+        temperature: float = 0.8,
+        top_k: int = 50,
+        top_p: float = 0.95,
+        repetition_penalty: float = 1.15,
+        eos_token_id: Optional[int] = None,
+    ) -> torch.Tensor:
+        from reality_stone.utils.sampling import sample_next_token
+        device = input_ids.device
+        out = input_ids
+        self.rsulf.reset_memory()
+        self.rsulf.init_step_cache(
+            batch=int(out.size(0)),
+            max_len=int(out.size(1) + max(1, int(max_new_tokens)) + 1),
+            device=device,
+            dtype=self.token_embedding.weight.dtype,
+        )
+        for pos_idx in range(out.size(1)):
+            tok = out[:, pos_idx : pos_idx + 1]
+            x_t = self.token_embedding(tok)
+            if self.pos_embedding is not None:
+                pos = torch.tensor([pos_idx], device=device, dtype=torch.long)
+                x_t = x_t + self.pos_embedding(pos)[None, :, :]
+            x_t = self.rsulf.forward_step(x_t)
+
+        finished = torch.zeros(out.size(0), device=device, dtype=torch.bool)
+        for step in range(int(max_new_tokens)):
+            if out.size(1) == 0:
+                break
+            if step == 0:
+                h = x_t
+            else:
+                tok = out[:, -1:]
+                x_t = self.token_embedding(tok)
+                if self.pos_embedding is not None:
+                    pos = torch.tensor([out.size(1) - 1], device=device, dtype=torch.long)
+                    x_t = x_t + self.pos_embedding(pos)[None, :, :]
+                x_t = self.rsulf.forward_step(x_t)
+                h = x_t
+            h = self.syntax_head(h)
+            h = self._decode_hidden(h)
+            if self.final_norm is not None and bool(self.apply_final_norm):
+                h = self.final_norm(h)
+            logits = self.lm_head(h)[:, -1, :]
+            next_id = sample_next_token(
+                logits,
+                generated_ids=out,
+                temperature=float(temperature),
+                top_k=int(top_k),
+                top_p=float(top_p),
+                repetition_penalty=float(repetition_penalty),
+            )
+            if eos_token_id is not None:
+                eos = torch.full_like(next_id, int(eos_token_id))
+                next_id = torch.where(finished.unsqueeze(1), eos, next_id)
+            out = torch.cat([out, next_id], dim=1)
+            if eos_token_id is not None:
+                finished = finished | (next_id.squeeze(1) == int(eos_token_id))
+                if bool(finished.all().item()):
+                    break
+        return out
+
+
+def save_rsulf_causal_lm(path: str, rs_lm: RSULFCausalLM, decoder_state: dict | None = None) -> None:
+    state = rs_lm.state_dict()
+    state_cpu = {}
+    for k, v in state.items():
+        if torch.is_tensor(v):
+            state_cpu[k] = v.detach().cpu()
+        else:
+            state_cpu[k] = v
+
+    layers = getattr(getattr(rs_lm, "rsulf", None), "layers", None)
+    layer_meta = []
+    if layers is not None:
+        for layer in layers:
+            layer_meta.append(
+                {
+                    "d_model": int(getattr(layer, "d_model", 0)),
+                    "r": int(getattr(layer, "r", 0)),
+                    "ffn_dim": int(getattr(getattr(layer, "b1", None), "numel", lambda: 0)()),
+                    "num_heads": int(getattr(layer, "num_heads", 1)),
+                    "pfc_mode": str(getattr(layer, "pfc_mode", "accel")),
+                    "pfc_curvature": float(getattr(layer, "pfc_curvature", 0.0)),
+                    "pfc_max_rel": float(getattr(layer, "pfc_max_rel", 0.02)),
+                    "pfc_window": int(getattr(layer, "pfc_window", 0)),
+                    "pfc_speed_gate": float(getattr(layer, "pfc_speed_gate", 1.0)),
+                    "norm_mode": str(getattr(layer, "norm_mode", "layernorm")),
+                    "ffn_mode": str(getattr(layer, "ffn_mode", "gelu")),
+                }
+            )
+
+    token_emb = getattr(rs_lm, "token_embedding", None)
+    pos_emb = getattr(rs_lm, "pos_embedding", None)
+    meta = {
+        "vocab_size": int(token_emb.weight.size(0)) if token_emb is not None else 0,
+        "d_model": int(token_emb.weight.size(1)) if token_emb is not None else 0,
+        "max_positions": int(pos_emb.weight.size(0)) if pos_emb is not None else 0,
+        "num_layers": int(len(layer_meta)),
+        "layer_meta": layer_meta,
+        "apply_final_norm": bool(getattr(rs_lm, "apply_final_norm", True)),
+    }
+
+    payload = {"meta": meta, "state_dict": state_cpu}
+    if decoder_state is not None:
+        payload["decoder_state"] = {
+            "u": np.asarray(decoder_state["u"], dtype=np.float32),
+            "a": np.asarray(decoder_state["a"], dtype=np.float32),
+            "bt": np.asarray(decoder_state["bt"], dtype=np.float32),
+            "bias": np.asarray(decoder_state["bias"], dtype=np.float32),
+        }
+    torch.save(payload, path)
+
+
+def load_rsulf_causal_lm(path: str, device: str | torch.device | None = None) -> RSULFCausalLM:
+    payload = torch.load(path, map_location="cpu")
+    meta = payload.get("meta") or {}
+    state = payload.get("state_dict") or {}
+    layer_meta = meta.get("layer_meta") or []
+
+    vocab_size = int(meta.get("vocab_size") or 0)
+    d_model = int(meta.get("d_model") or 0)
+    max_positions = int(meta.get("max_positions") or 0)
+
+    if vocab_size <= 0 or d_model <= 0 or max_positions <= 0:
+        raise ValueError("Invalid checkpoint meta (vocab_size/d_model/max_positions)")
+    if not layer_meta:
+        raise ValueError("Invalid checkpoint meta (layer_meta missing)")
+
+    layers: list[RSULFLayerCUDA] = []
+    for lm in layer_meta:
+        dm = int(lm.get("d_model") or d_model)
+        r = int(lm.get("r") or dm)
+        ffn_dim = int(lm.get("ffn_dim") or (4 * dm))
+        wq0 = np.zeros((dm, dm), dtype=np.float32)
+        wk0 = np.zeros((dm, dm), dtype=np.float32)
+        w10 = np.zeros((ffn_dim, dm), dtype=np.float32)
+        w20 = np.zeros((dm, ffn_dim), dtype=np.float32)
+        layer = RSULFLayerCUDA(
+            wq=wq0,
+            wk=wk0,
+            w1=w10,
+            w2=w20,
+            d_model=dm,
+            r=r,
+            eta=0.0,
+            alpha=0.0,
+            beta=0.0,
+            gamma=0.0,
+            seq_len=0,
+            window=0,
+            global_basis=None,
+            original_block=None,
+            use_fast=False,
+            calibration_samples=0,
+            num_heads=int(lm.get("num_heads") or 1),
+            pfc_mode=str(lm.get("pfc_mode") or "accel"),
+            pfc_curvature=float(lm.get("pfc_curvature") or 0.0),
+            pfc_max_rel=float(lm.get("pfc_max_rel") or 0.02),
+            pfc_window=int(lm.get("pfc_window") or 0),
+            pfc_speed_gate=float(lm.get("pfc_speed_gate") or 1.0),
+            norm_mode=str(lm.get("norm_mode") or "layernorm"),
+            ffn_mode=str(lm.get("ffn_mode") or "gelu"),
+        )
+        layers.append(layer)
+
+    rsulf = RSULFModel(layers, stats=None)
+
+    token_embedding = nn.Embedding(vocab_size, d_model)
+    pos_embedding = nn.Embedding(max_positions, d_model)
+    final_norm = nn.LayerNorm(d_model, elementwise_affine=True)
+    lm_head = nn.Linear(d_model, vocab_size, bias=False)
+
+    rs_lm = RSULFCausalLM(
+        rsulf=rsulf,
+        token_embedding=token_embedding,
+        lm_head=lm_head,
+        final_norm=final_norm,
+        pos_embedding=pos_embedding,
+        decoder=None,
+        apply_final_norm=bool(meta.get("apply_final_norm", True)),
+    )
+    rs_lm.load_state_dict(state, strict=False)
+
+    decoder_state = payload.get("decoder_state")
+    if decoder_state is not None:
+        rs_lm.decoder = TorchRiemannianDecoder(
+            np.asarray(decoder_state["u"], dtype=np.float32),
+            np.asarray(decoder_state["a"], dtype=np.float32),
+            np.asarray(decoder_state["bt"], dtype=np.float32),
+            np.asarray(decoder_state["bias"], dtype=np.float32),
+        )
+
+    if device is not None:
+        rs_lm = rs_lm.to(device)
+    rs_lm.eval()
+    return rs_lm
+
+
+def build_rsulf_causal_lm(model: nn.Module, converter: RSULFTransformerConverter) -> RSULFCausalLM:
+    rsulf = converter.convert_model(model)
+    return wrap_rsulf_as_causal_lm(model, rsulf)
+
+def wrap_rsulf_as_causal_lm(model: nn.Module, rsulf: RSULFModel) -> RSULFCausalLM:
+    if hasattr(model, "transformer") and hasattr(model.transformer, "wte"):
+        wte = model.transformer.wte
+        token_embedding = nn.Embedding(wte.weight.size(0), wte.weight.size(1))
+        token_embedding.weight.data = wte.weight.detach().clone().cpu()
+        token_embedding.weight.requires_grad = False
+        pos_embedding = None
+        if hasattr(model.transformer, "wpe"):
+            wpe = model.transformer.wpe
+            pos_embedding = nn.Embedding(wpe.weight.size(0), wpe.weight.size(1))
+            pos_embedding.weight.data = wpe.weight.detach().clone().cpu()
+            pos_embedding.weight.requires_grad = False
+        final_norm = None
+        if hasattr(model.transformer, "ln_f"):
+            ln_f = model.transformer.ln_f
+            final_norm = nn.LayerNorm(ln_f.weight.numel(), elementwise_affine=True)
+            final_norm.weight.data = ln_f.weight.detach().clone().cpu()
+            final_norm.bias.data = ln_f.bias.detach().clone().cpu()
+            final_norm.weight.requires_grad = False
+            final_norm.bias.requires_grad = False
+        vocab = token_embedding.weight.size(0)
+        d_model = token_embedding.weight.size(1)
+        lm_head = nn.Linear(d_model, vocab, bias=False)
+        if hasattr(model, "lm_head") and hasattr(model.lm_head, "weight"):
+            lm_head.weight.data = model.lm_head.weight.detach().clone().cpu()
+        else:
+            lm_head.weight.data = token_embedding.weight.detach().clone().cpu()
+        lm_head.weight.requires_grad = False
+        return RSULFCausalLM(rsulf, token_embedding, lm_head, final_norm=final_norm, pos_embedding=pos_embedding)
+
+    if hasattr(model, "model") and hasattr(model.model, "embed_tokens"):
+        emb = model.model.embed_tokens
+        token_embedding = nn.Embedding(emb.weight.size(0), emb.weight.size(1))
+        token_embedding.weight.data = emb.weight.detach().clone().cpu()
+        token_embedding.weight.requires_grad = False
+        final_norm = None
+        if hasattr(model.model, "norm"):
+            nrm = model.model.norm
+            d_model = token_embedding.weight.size(1)
+            ln = nn.LayerNorm(d_model, elementwise_affine=True)
+            ln.weight.data = nrm.weight.detach().clone().cpu()
+            ln.bias.data.zero_()
+            ln.weight.requires_grad = False
+            ln.bias.requires_grad = False
+            final_norm = ln
+        vocab = token_embedding.weight.size(0)
+        d_model = token_embedding.weight.size(1)
+        lm_head = nn.Linear(d_model, vocab, bias=False)
+        if hasattr(model, "lm_head") and hasattr(model.lm_head, "weight"):
+            lm_head.weight.data = model.lm_head.weight.detach().clone().cpu()
+        else:
+            lm_head.weight.data = token_embedding.weight.detach().clone().cpu()
+        lm_head.weight.requires_grad = False
+        return RSULFCausalLM(rsulf, token_embedding, lm_head, final_norm=final_norm, pos_embedding=None)
+
+    raise ValueError("Unsupported model structure for RSULF causal LM")
 
 
 def convert_transformer_to_rsulf(

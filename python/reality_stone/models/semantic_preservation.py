@@ -1,9 +1,7 @@
 import torch
 import torch.nn as nn
 from typing import Optional
-
 from reality_stone.layers.poincare import poincare_distance, project_to_ball
-
 
 class SemanticPreservationLoss(nn.Module):
     def __init__(
@@ -24,20 +22,16 @@ class SemanticPreservationLoss(nn.Module):
         mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         B, T, d = original_embeddings.shape
-        
         if self.manifold == "poincare":
             orig_proj = project_to_ball(original_embeddings.reshape(B * T, d))
             edit_proj = project_to_ball(edited_embeddings.reshape(B * T, d))
-            
             distances = poincare_distance(orig_proj, edit_proj, self.c)
             distances = distances.reshape(B, T)
-            
         elif self.manifold == "euclidean":
             distances = torch.norm(
                 original_embeddings - edited_embeddings,
                 dim=-1,
             )
-        
         else:
             raise ValueError(f"Unsupported manifold: {self.manifold}")
         

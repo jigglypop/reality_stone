@@ -44,9 +44,12 @@ class HierarchicalLLMConfig:
     lambda_diversity_schedule: str = "constant"
     lambda_topic_supervision: float = 0.5
     lambda_metric: float = 0.1
-    lambda_curvature: float = 0.0
+    # Turn curvature correction on by default (user-requested: "작동 돌려놔")
+    lambda_curvature: float = 0.1
     curvature_target_poincare: float = 1e-3
     curvature_target_lorentz: float = -1.0
+    curvature_target_klein: float = 1e-3
+    enable_dynamic_manifold: bool = True
     
     manifold_sentence: str = "poincare"
     manifold_paragraph: str = "poincare"
@@ -205,6 +208,10 @@ class TreeNodeOperator(nn.Module):
         self.c = c
         self.enable_dynamic_manifold = enable_dynamic_manifold
         self.aggregator = RiemannianAggregation(d_model, manifold, c, temperature=1.0)
+        if enable_dynamic_manifold:
+            self.kappa_poincare = nn.Parameter(torch.zeros(()))
+            self.kappa_lorentz = nn.Parameter(torch.zeros(()))
+            self.kappa_klein = nn.Parameter(torch.zeros(()))
         
         if enable_dynamic_manifold:
             self.manifold_selector = nn.Sequential(
@@ -215,23 +222,38 @@ class TreeNodeOperator(nn.Module):
             self.aggregator_poincare = RiemannianAggregation(d_model, "poincare", c, temperature=1.0)
             self.aggregator_lorentz = RiemannianAggregation(d_model, "lorentz", c, temperature=1.0)
             self.aggregator_klein = RiemannianAggregation(d_model, "klein", c, temperature=1.0)
+
+    def _curvatures(self, device: torch.device, dtype: torch.dtype):
+        if not self.enable_dynamic_manifold:
+            c = torch.as_tensor(abs(float(self.c)), device=device, dtype=dtype)
+            return c, c, c
+        s_p = torch.sigmoid(self.kappa_poincare).to(device=device, dtype=dtype)
+        s_l = torch.sigmoid(self.kappa_lorentz).to(device=device, dtype=dtype)
+        s_k = torch.sigmoid(self.kappa_klein).to(device=device, dtype=dtype)
+        c_min = torch.as_tensor(1e-6, device=device, dtype=dtype)
+        c_max = torch.as_tensor(5e-2, device=device, dtype=dtype)
+        c_p = c_min + (c_max - c_min) * s_p
+        c_l = c_min + (c_max - c_min) * s_l
+        c_k = c_min + (c_max - c_min) * s_k
+        return c_p, c_l, c_k
     
     def up_operator(
         self,
         children_embeddings: torch.Tensor,
         metric_ctx: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        c_p, c_l, c_k = self._curvatures(children_embeddings.device, children_embeddings.dtype)
         if not self.enable_dynamic_manifold:
-            return self.aggregator(children_embeddings, metric_ctx)
+            return self.aggregator(children_embeddings, metric_ctx, c_override=c_p)
         
         B = children_embeddings.shape[0]
         mean_emb = children_embeddings.mean(dim=1)
         manifold_logits = self.manifold_selector(mean_emb)
         manifold_probs = torch.softmax(manifold_logits, dim=-1)
         
-        result_poincare = self.aggregator_poincare(children_embeddings, metric_ctx)
-        result_lorentz = self.aggregator_lorentz(children_embeddings, metric_ctx)
-        result_klein = self.aggregator_klein(children_embeddings, metric_ctx)
+        result_poincare = self.aggregator_poincare(children_embeddings, metric_ctx, c_override=c_p)
+        result_lorentz = self.aggregator_lorentz(children_embeddings, metric_ctx, c_override=c_l)
+        result_klein = self.aggregator_klein(children_embeddings, metric_ctx, c_override=c_k)
         
         results = torch.stack([result_poincare, result_lorentz, result_klein], dim=1)
         weighted_result = (results * manifold_probs.unsqueeze(-1)).sum(dim=1)
@@ -1610,7 +1632,22 @@ class HierarchicalSentenceTopicLLM(nn.Module):
             diff_G = G_sentence - eye
             loss_metric = (diff_G.pow(2).sum(dim=(-2, -1))).mean()
 
-            loss_curvature = torch.tensor(0.0, device=device, dtype=logits.dtype, requires_grad=False)
+            # Curvature regularization (only meaningful when dynamic manifold/kappa is enabled)
+            loss_curvature = torch.tensor(0.0, device=device, dtype=logits.dtype)
+            if getattr(self.config, "enable_dynamic_manifold", False):
+                tgt_p = torch.as_tensor(abs(float(self.config.curvature_target_poincare)), device=device, dtype=logits.dtype)
+                tgt_l = torch.as_tensor(abs(float(self.config.curvature_target_lorentz)), device=device, dtype=logits.dtype)
+                tgt_k = torch.as_tensor(abs(float(getattr(self.config, "curvature_target_klein", self.config.curvature_target_poincare))), device=device, dtype=logits.dtype)
+                # Sum across node operators so kappa actually gets a gradient signal.
+                reg_terms = []
+                for op in self.tree_processor.node_operators.values():
+                    if hasattr(op, "_curvatures"):
+                        c_p, c_l, c_k = op._curvatures(device=device, dtype=logits.dtype)  # type: ignore[attr-defined]
+                        reg_terms.append((c_p - tgt_p).pow(2))
+                        reg_terms.append((c_l - tgt_l).pow(2))
+                        reg_terms.append((c_k - tgt_k).pow(2))
+                if reg_terms:
+                    loss_curvature = torch.stack(reg_terms).mean()
 
             # 최종 loss 구성
             loss = (
@@ -1731,6 +1768,8 @@ def train_hierarchical_llm_from_text(
     metric_params.extend(model.paragraph_aggregator.parameters())
     if model.suppression_field is not None:
         metric_params.extend(model.suppression_field.parameters())
+    # Include dynamic-manifold/tree curvature parameters (kappa, selector, etc.)
+    metric_params.extend(model.tree_processor.parameters())
     
     # Backbone parameters (low LR)
     backbone_params = []

@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import numpy as np
 from tqdm.auto import tqdm
-from typing import List, Tuple, Dict, Optional
 from pathlib import Path
 import json
 import reality_stone._rust as rs_rust

@@ -1,20 +1,14 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
-
-import numpy as np
 import torch
-from tqdm import tqdm
-
 from reality_stone._rust import PyRSULFLayer
-from reality_stone.models.transformer_converter import RSULFTransformerConverter, RSULFStack
+from reality_stone.models.transformer_converter import RSULFTransformerConverter, build_rsulf_causal_lm
 
 
 def test_llm_compression_inference():
     from transformers import AutoModelForCausalLM, AutoTokenizer
-    
     model_name = "Qwen/Qwen2.5-0.5B"
-    
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
@@ -22,18 +16,10 @@ def test_llm_compression_inference():
         device_map="cpu",
         trust_remote_code=True,
     )
-    
     d_model = model.config.hidden_size
-    num_layers = len(model.model.layers)
-    
     r = max(128, d_model // 8)
-    
-    layer0 = model.model.layers[0]
-    wq_shape = layer0.self_attn.q_proj.weight.shape
-    wk_shape = layer0.self_attn.k_proj.weight.shape
-    
     converter = RSULFTransformerConverter(
-        d_model=wq_shape[0],
+        d_model=d_model,
         r=r,
         eta=0.005,
         alpha=0.01,
@@ -43,66 +29,28 @@ def test_llm_compression_inference():
         window=4,
         verbose=True,
     )
-    
-    rsulf_layers, stats = converter.convert_model(model)
-    
-    if stats.converted == 0:
-        raise RuntimeError(f"No layers converted. Errors: {stats.errors}")
-    
-    if stats.errors:
-        error_analysis = converter.analyze_errors()
-        for err_type, layers in error_analysis["by_type"].items():
-            print(f"Error '{err_type}': layers {layers[:3]}...")
-    
-    ratio = stats.original_params / max(stats.compressed_params, 1)
-    
-    rs_stack = RSULFStack(rsulf_layers)
-    
+    rs_lm = build_rsulf_causal_lm(model, converter)
+    stats = rs_lm.rsulf.stats
+    if stats is not None and stats.converted == 0:
+        raise RuntimeError(f"No layers converted. Errors: {stats.errors if stats else None}")
+    ratio = (stats.original_params / max(stats.compressed_params, 1)) if stats is not None else 0.0
     prompt = "The meaning of life is"
     inputs = tokenizer(prompt, return_tensors="pt")
     input_ids = inputs["input_ids"]
     
     with torch.no_grad():
-        embeds = model.model.embed_tokens(input_ids)
-        
-        x = embeds.squeeze(0).numpy().astype(np.float32)
-        v_mem = None
-        
-        for i, layer in enumerate(rsulf_layers):
-            x, v_mem = layer._layer.forward(x, v_mem)
-        
-        hidden = torch.from_numpy(x).unsqueeze(0).float()
-        logits = model.lm_head(hidden)
-        
-        generated_ids = input_ids.tolist()[0]
-        
-        for step in range(20):
-            next_token_logits = logits[0, -1, :]
-            next_token = torch.argmax(next_token_logits).item()
-            generated_ids.append(next_token)
-            
-            if next_token == tokenizer.eos_token_id:
-                break
-            
-            next_embed = model.model.embed_tokens(torch.tensor([[next_token]]))
-            x_next = next_embed.squeeze(0).numpy().astype(np.float32)
-            
-            for layer in rsulf_layers:
-                x_next, v_mem = layer._layer.forward(x_next, v_mem)
-            
-            hidden = torch.from_numpy(x_next).unsqueeze(0).float()
-            logits = model.lm_head(hidden)
+        generated = rs_lm.generate(input_ids, max_new_tokens=20)
     
-    output_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
+    output_text = tokenizer.decode(generated[0].tolist(), skip_special_tokens=True)
     
     return {
         "prompt": prompt,
         "output": output_text,
         "compression_ratio": ratio,
-        "converted_layers": stats.converted,
-        "total_layers": stats.total_layers,
-        "original_params": stats.original_params,
-        "compressed_params": stats.compressed_params,
+        "converted_layers": stats.converted if stats is not None else 0,
+        "total_layers": stats.total_layers if stats is not None else 0,
+        "original_params": stats.original_params if stats is not None else 0,
+        "compressed_params": stats.compressed_params if stats is not None else 0,
     }
 
 

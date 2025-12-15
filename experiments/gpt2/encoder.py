@@ -157,11 +157,12 @@ def distill_structural_potentials(
 
 
 class RSULFStudentAdapter(nn.Module):
-    def __init__(self, rs_model, d_model, hidden_dim: int = None):
+    def __init__(self, rs_model, d_model, hidden_dim: int = None, use_potentials: bool = True):
         super().__init__()
         self.rs_model = rs_model
         for p in self.rs_model.parameters():
             p.requires_grad = False
+        self.use_potentials = bool(use_potentials)
         num_layers = len(self.rs_model.wrappers)
         if hidden_dim is None:
             hidden_dim = d_model
@@ -180,7 +181,8 @@ class RSULFStudentAdapter(nn.Module):
         for i, wrapper in enumerate(self.rs_model.wrappers):
             with torch.no_grad():
                 h = wrapper(h)
-            h = h - self.potentials[i].gradient(h)
+            if self.use_potentials:
+                h = h - self.potentials[i].gradient(h)
             rs_hiddens.append(h)
         return rs_hiddens
 
@@ -202,6 +204,9 @@ def distill_gpt2_to_rsulf(
     lr=1e-4,
     layer_loss_weight=1.0,
     logit_loss_weight=1.0,
+    use_potentials: bool = True,
+    force_loss_weight: float = 1.0,
+    energy_loss_weight: float = 0.1,
     delta_loss_weight: float = 0.0,
     rank_loss_weight: float = 0.0,
     top1_loss_weight: float = 0.0,
@@ -210,7 +215,7 @@ def distill_gpt2_to_rsulf(
     kl_temperature: float = 1.0,
     cos_last_weight: float = 0.0,
 ):
-    adapter = RSULFStudentAdapter(rs_model, original_model.config.n_embd).to(device)
+    adapter = RSULFStudentAdapter(rs_model, original_model.config.n_embd, use_potentials=bool(use_potentials)).to(device)
     optimizer = torch.optim.AdamW(adapter.parameters(), lr=lr)
     original_model.eval()
     rs_model.eval()
@@ -265,18 +270,21 @@ def distill_gpt2_to_rsulf(
                 s_norm = F.normalize(s_flat, dim=-1)
                 cos_val = (t_norm * s_norm).sum(dim=-1).mean()
                 cos_last_loss = cos_last_loss + (1.0 - cos_val)
-            x_in = x0 if i == 0 else rs_hiddens[i - 1]
-            wrapper = rs_model.wrappers[i]
-            h_rs_raw = wrapper(x_in)
-            with torch.no_grad():
-                block_t = original_model.transformer.h[i]
-                with autocast(enabled=use_amp):
-                    h_tea_raw = block_t(x_in.detach(), attention_mask=None)[0]
-                target_grad = (h_rs_raw.detach() - h_tea_raw).float()
-            force_student = adapter.potentials[i].gradient(h_rs_raw)
-            force_loss = force_loss + F.mse_loss(force_student, target_grad)
-            phi_student = adapter.potentials[i](h_rs_raw)
-            energy_loss = energy_loss + F.mse_loss(phi_student, torch.zeros_like(phi_student))
+            if adapter.use_potentials and (force_loss_weight > 0.0 or energy_loss_weight > 0.0):
+                x_in = x0 if i == 0 else rs_hiddens[i - 1]
+                wrapper = rs_model.wrappers[i]
+                h_rs_raw = wrapper(x_in)
+                if force_loss_weight > 0.0:
+                    with torch.no_grad():
+                        block_t = original_model.transformer.h[i]
+                        with autocast(enabled=use_amp):
+                            h_tea_raw = block_t(x_in.detach(), attention_mask=None)[0]
+                        target_grad = (h_rs_raw.detach() - h_tea_raw).float()
+                    force_student = adapter.potentials[i].gradient(h_rs_raw)
+                    force_loss = force_loss + F.mse_loss(force_student, target_grad)
+                if energy_loss_weight > 0.0:
+                    phi_student = adapter.potentials[i](h_rs_raw)
+                    energy_loss = energy_loss + F.mse_loss(phi_student, torch.zeros_like(phi_student))
         if delta_loss_weight > 0.0 and num_layers > 1:
             for i in range(num_layers - 1):
                 t_high = teacher_hidden[i + 2]
@@ -307,8 +315,8 @@ def distill_gpt2_to_rsulf(
         loss = (
             layer_loss_weight * layer_loss
             + logit_loss_weight * logit_loss
-            + force_loss
-            + 0.1 * energy_loss
+            + float(force_loss_weight) * force_loss
+            + float(energy_loss_weight) * energy_loss
             + delta_loss_weight * delta_loss
             + rank_loss_weight * rank_loss
             + top1_loss_weight * top1_loss

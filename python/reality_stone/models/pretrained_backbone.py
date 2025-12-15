@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 from typing import Optional
 
-
 class PretrainedBackbone(nn.Module):
     def __init__(
         self,
@@ -32,7 +31,6 @@ class PretrainedBackbone(nn.Module):
                 print(f"[PretrainedBackbone] Loaded {model_name}, frozen")
             else:
                 print(f"[PretrainedBackbone] Loaded {model_name}, trainable")
-                
         except Exception as e:
             print(f"[PretrainedBackbone] Failed: {e}")
             print("[PretrainedBackbone] Random init")
@@ -44,12 +42,9 @@ class PretrainedBackbone(nn.Module):
         if self.backbone is None:
             B, S = input_ids.shape
             return torch.randn(B, S, self.d_model, device=input_ids.device)
-        
         outputs = self.backbone(input_ids, return_dict=True)
         hidden = outputs.last_hidden_state
-        
         embeddings = self.proj(hidden)
-        
         return embeddings
     
     def get_vocab_size(self) -> int:

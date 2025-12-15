@@ -3,6 +3,7 @@ import string
 import numpy as np
 import torch
 from reality_stone._rust import PyHumanDecoder
+from reality_stone.utils.sampling import sample_next_token
 
 _SKELETON_WORDS = {
     "the",
@@ -46,34 +47,16 @@ _RELATION_WORDS = {
 }
 
 def _sample_next_token(logits, generated, repetition_penalty=1.2, temperature=1.0, top_k=50, top_p=0.95):
-    scores = logits[0, -1, :].clone()
-    seen = set(generated[0].tolist())
-    for token_id in seen:
-        val = scores[token_id]
-        if val < 0:
-            scores[token_id] = val * repetition_penalty
-        else:
-            scores[token_id] = val / repetition_penalty
-    if temperature != 1.0:
-        scores = scores / max(temperature, 1e-8)
-    if top_k > 0 and top_k < scores.size(-1):
-        _, topk_idx = torch.topk(scores, top_k)
-        mask = torch.ones_like(scores, dtype=torch.bool)
-        mask[topk_idx] = False
-        scores[mask] = -float("inf")
-    if 0.0 < top_p < 1.0:
-        sorted_scores, sorted_idx = torch.sort(scores, descending=True)
-        probs = torch.softmax(sorted_scores, dim=-1)
-        cumprobs = torch.cumsum(probs, dim=-1)
-        cutoff = cumprobs > top_p
-        if cutoff.any():
-            first = int(cutoff.nonzero(as_tuple=False)[0])
-            sorted_scores[first + 1 :] = -float("inf")
-            scores = torch.full_like(scores, -float("inf"))
-            scores[sorted_idx] = sorted_scores
-    probs = torch.softmax(scores, dim=-1)
-    next_token = torch.multinomial(probs, num_samples=1)
-    return next_token.unsqueeze(0)
+    step_logits = logits[:, -1, :]
+    next_id = sample_next_token(
+        step_logits,
+        generated_ids=generated,
+        temperature=float(temperature),
+        top_k=int(top_k),
+        top_p=float(top_p),
+        repetition_penalty=float(repetition_penalty),
+    )
+    return next_id
 
 def _classify_token(token):
     plain = token.replace("Ġ", "").strip()
@@ -476,3 +459,24 @@ def rsulf_generate_text(
                 break
     gen_time = time.time() - start_gen
     return tokenizer.decode(generated[0], skip_special_tokens=True), gen_time
+
+
+def rsulf_generate_text_pure(rs_lm, tokenizer, device, text_prompt, max_tokens=30):
+    start = time.time()
+    if isinstance(device, str):
+        device = torch.device(device)
+    input_ids = tokenizer(text_prompt, return_tensors="pt")["input_ids"].to(device)
+    rs_lm = rs_lm.to(device)
+    rs_lm.eval()
+    with torch.no_grad():
+        out_ids = rs_lm.generate_sample(
+            input_ids=input_ids,
+            max_new_tokens=int(max_tokens),
+            temperature=0.8,
+            top_k=50,
+            top_p=0.95,
+            repetition_penalty=1.15,
+            eos_token_id=int(tokenizer.eos_token_id) if tokenizer.eos_token_id is not None else None,
+        )
+    text = tokenizer.decode(out_ids[0].tolist(), skip_special_tokens=True)
+    return text, (time.time() - start)

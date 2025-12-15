@@ -1,14 +1,11 @@
 import torch
 import numpy as np
 import random
-import os
 
 def get_device() -> str:
-    """Returns 'cuda' if available, else 'cpu'."""
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 def set_seed(seed: int = 42):
-    """Sets random seed for reproducibility."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -19,7 +16,6 @@ def set_seed(seed: int = 42):
         torch.backends.cudnn.benchmark = False
 
 def load_mnist_dataloaders(data_dir="./data", batch_size=256, test_batch_size=1000, download=True):
-    """Loads MNIST train and test dataloaders with standard normalization."""
     from torchvision import datasets, transforms
     from torch.utils.data import DataLoader
     
@@ -36,7 +32,6 @@ def load_mnist_dataloaders(data_dir="./data", batch_size=256, test_batch_size=10
     return train_loader, test_loader
 
 def evaluate_accuracy(model, test_loader, device):
-    """Evaluates classification accuracy."""
     model.eval()
     correct = 0
     total = 0

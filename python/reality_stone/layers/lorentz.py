@@ -62,11 +62,14 @@ class LorentzDistance(Function):
         
         return grad_u, grad_v, None
 
-def lorentz_distance(x: Tensor, y: Tensor, c: float) -> Tensor:
-    """
-    로렌츠 거리를 계산합니다. Reality Stone의 최적화된 커널을 사용합니다.
-    """
-    return LorentzDistance.apply(x, y, c)
+def lorentz_distance(x: Tensor, y: Tensor, c: float | Tensor) -> Tensor:
+    if isinstance(c, Tensor):
+        eps = 1e-7
+        inner = x[..., 0] * y[..., 0] - (x[..., 1:] * y[..., 1:]).sum(dim=-1)
+        z = (c * inner).clamp(min=1.0 + eps)
+        sqrt_c = torch.sqrt(c)
+        return torch.acosh(z) / sqrt_c
+    return LorentzDistance.apply(x, y, float(c))
 
 
 class LorentzLayer(Function):

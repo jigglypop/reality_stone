@@ -7,6 +7,12 @@ from torch.cuda.amp import autocast
 from reality_stone._rust import laplace_beltrami_matrix, PyRiemannianDecoder
 
 try:
+    from reality_stone.utils.text_corpus import load_corpus, chunk_text
+    _HAS_TEXT_CORPUS = True
+except Exception:
+    _HAS_TEXT_CORPUS = False
+
+try:
     from tqdm.auto import tqdm as _tqdm
 except Exception:
     _tqdm = None
@@ -31,15 +37,11 @@ def _generate_binary_curriculum_prompts(
     original_model.eval()
     vocab_size = tokenizer.vocab_size
     wte = original_model.transformer.wte
-    wpe = original_model.transformer.wpe
     seed_inputs = torch.randint(0, vocab_size, (num_batches * batch_size, seq_len), device=device)
     embeds = wte(seed_inputs).detach().requires_grad_(True)
-    pos = torch.arange(seq_len, dtype=torch.long, device=device)
-    pos_emb = wpe(pos)
-    x = embeds + pos_emb
     use_amp = _use_amp(device)
     with autocast(enabled=use_amp):
-        outputs = original_model.transformer(inputs_embeds=x)
+        outputs = original_model.transformer(inputs_embeds=embeds)
     hidden_last = outputs.last_hidden_state.float()
     activation_norm = hidden_last.norm(dim=-1).mean()
     grad = torch.autograd.grad(activation_norm, embeds, create_graph=False)[0]
@@ -66,18 +68,24 @@ def _collect_decoder_data(
     temperature: float = 0.9,
     top_k: int = 40,
     top_p: float = 0.95,
+    corpus_roots: list[str] | None = None,
+    corpus_max_docs: int = 2000,
+    corpus_chunk_chars: int = 8000,
+    corpus_overlap_chars: int = 1000,
+    mix_p_corpus: float = 0.6,
+    mix_p_random: float = 0.3,
+    mix_p_teacher_sample: float = 0.1,
+    prompt_pool: list[str] | None = None,
 ):
     if isinstance(device, str):
         device = torch.device(device)
     original_model.eval()
     rs_model.eval()
-    ln_f = original_model.transformer.ln_f
     lm_head = original_model.lm_head
     wte = original_model.transformer.wte
     wpe = original_model.transformer.wpe
     h_rs_list = []
     h_t_list = []
-    logits_t_list = []
     vocab_size = tokenizer.vocab_size
     total_samples = num_batches * batch_size
     start = time.time()
@@ -91,47 +99,145 @@ def _collect_decoder_data(
     use_amp = _use_amp(device)
     pos = torch.arange(seq_len, dtype=torch.long, device=device)
     pos_emb = wpe(pos)
+
+    corpus_chunks: list[str] | None = None
+    if data_mode in ("corpus", "mixed") and float(mix_p_corpus) > 0.0:
+        if not _HAS_TEXT_CORPUS:
+            raise RuntimeError("data_mode='corpus' requires python/reality_stone/utils/text_corpus.py")
+        if not corpus_roots:
+            corpus_roots = ["docs", "README.md", "rules.mdc"]
+        docs = load_corpus(corpus_roots, max_docs=int(corpus_max_docs))
+        if len(docs) == 0:
+            raise RuntimeError(f"No corpus docs found from roots={corpus_roots}")
+        chunks: list[str] = []
+        for d in docs:
+            for ch in chunk_text(d.text, chunk_chars=int(corpus_chunk_chars), overlap_chars=int(corpus_overlap_chars)):
+                t = ch.strip()
+                if len(t) >= 64:
+                    chunks.append(t)
+        if len(chunks) == 0:
+            raise RuntimeError("Corpus loaded but produced 0 usable chunks.")
+        # Pre-tokenize only what we actually need (avoid tokenizing the whole corpus).
+        needed = int(total_samples)
+        # small buffer for variety
+        cap = min(len(chunks), max(needed, int(batch_size) * 4))
+        ids_list: list[torch.Tensor] = []
+        for t in chunks[:cap]:
+            enc = tokenizer(
+                t,
+                return_tensors="pt",
+                truncation=True,
+                max_length=int(seq_len),
+                padding="max_length",
+            )
+            ids_list.append(enc["input_ids"][0].to("cpu"))
+        if len(ids_list) == 0:
+            raise RuntimeError("Corpus tokenization produced 0 sequences.")
+        corpus_chunks = None
+        corpus_ids = ids_list
+    else:
+        corpus_ids = None
+
+    # Mixed-mode prompt pool (if not provided, reuse corpus chunks as prompts)
+    if prompt_pool is None:
+        prompt_pool = []
+        if data_mode in ("corpus", "mixed") and _HAS_TEXT_CORPUS:
+            try:
+                roots = corpus_roots if corpus_roots else ["docs", "README.md", "rules.mdc"]
+                docs_for_prompts = load_corpus(roots, max_docs=50)
+                for d in docs_for_prompts:
+                    for ch in chunk_text(d.text, chunk_chars=1200, overlap_chars=0):
+                        t = ch.strip().replace("\n", " ")
+                        if len(t) >= 32:
+                            prompt_pool.append(t[:256])
+                        if len(prompt_pool) >= 200:
+                            break
+                    if len(prompt_pool) >= 200:
+                        break
+            except Exception:
+                prompt_pool = []
+        if not prompt_pool:
+            prompt_pool = ["The", "Once upon a time", "In summary", "Q: ", "Answer: "]
+
+    def _pick_mode() -> str:
+        # deterministic-ish mixture by batch index (no RNG dependency)
+        p_c = float(max(0.0, mix_p_corpus))
+        p_r = float(max(0.0, mix_p_random))
+        p_t = float(max(0.0, mix_p_teacher_sample))
+        s = p_c + p_r + p_t
+        if s <= 0:
+            return "random"
+        p_c, p_r, p_t = p_c / s, p_r / s, p_t / s
+        u = (float(b) * 0.6180339887498949) % 1.0
+        if u < p_c:
+            return "corpus"
+        if u < p_c + p_r:
+            return "random"
+        return "teacher_sample"
+
     with torch.no_grad():
         for b, i in enumerate(iterator, 1):
-            if data_mode == "teacher_sample" and prompt_text:
+            # Important: each batch is an independent sequence set.
+            # RSULF wrappers keep KV/memory (v_mem) for autoregressive generation;
+            # if we don't reset here, batches contaminate each other and ruin distillation quality.
+            if hasattr(rs_model, "wrappers"):
+                for w in rs_model.wrappers:
+                    if hasattr(w, "reset_memory"):
+                        w.reset_memory()
+                    elif hasattr(w, "v_mem"):
+                        w.v_mem = None
+            mode = data_mode
+            if data_mode == "mixed":
+                mode = _pick_mode()
+
+            if mode == "teacher_sample":
                 # Fast path: use HF generate() with KV-cache instead of per-token transformer forward.
-                prompt_ids = tokenizer.encode(prompt_text, return_tensors="pt").to(device)
+                ptxt = prompt_text if prompt_text else prompt_pool[(b - 1) % len(prompt_pool)]
+                prompt_ids = tokenizer.encode(ptxt, return_tensors="pt").to(device)
                 prompt_ids = prompt_ids[:, : max(1, min(prompt_ids.size(1), seq_len))]
                 prompt_ids = prompt_ids.repeat(batch_size, 1)
                 attn_mask = torch.ones_like(prompt_ids, dtype=torch.long, device=device)
-                max_new = int(max(0, seq_len - prompt_ids.size(1)))
-                gen_ids = original_model.generate(
-                    input_ids=prompt_ids,
-                    attention_mask=attn_mask,
-                    max_new_tokens=max_new,
-                    do_sample=True,
-                    temperature=float(temperature),
-                    top_k=int(top_k),
-                    top_p=float(top_p),
-                    pad_token_id=tokenizer.eos_token_id,
-                    eos_token_id=tokenizer.eos_token_id,
-                    use_cache=True,
-                )
+                max_new = int(seq_len - prompt_ids.size(1))
+                if max_new > 0:
+                    gen_ids = original_model.generate(
+                        input_ids=prompt_ids,
+                        attention_mask=attn_mask,
+                        max_new_tokens=max_new,
+                        do_sample=True,
+                        temperature=float(temperature),
+                        top_k=int(top_k),
+                        top_p=float(top_p),
+                        pad_token_id=tokenizer.eos_token_id,
+                        eos_token_id=tokenizer.eos_token_id,
+                        use_cache=True,
+                    )
+                else:
+                    gen_ids = prompt_ids
                 if gen_ids.size(1) < seq_len:
                     pad = torch.full((batch_size, seq_len - gen_ids.size(1)), int(tokenizer.eos_token_id), device=device, dtype=torch.long)
                     input_ids = torch.cat([gen_ids, pad], dim=1)
                 else:
                     input_ids = gen_ids[:, :seq_len]
+            elif mode == "corpus":
+                if corpus_ids is None or len(corpus_ids) == 0:
+                    # Fallback (no corpus prepared): behave like random
+                    input_ids = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
+                else:
+                    base = (b - 1) * batch_size
+                    batch_ids = [corpus_ids[(base + j) % len(corpus_ids)] for j in range(batch_size)]
+                    input_ids = torch.stack(batch_ids, dim=0).to(device)
             else:
                 input_ids = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
             tok_emb = wte(input_ids)
             x = tok_emb + pos_emb
             with autocast(enabled=use_amp):
-                outputs = original_model.transformer(inputs_embeds=x, output_hidden_states=True)
-                teacher_hidden_last = outputs.hidden_states[-1]
-                t_last = ln_f(teacher_hidden_last)
-                t_logits = lm_head(t_last)
+                outputs = original_model.transformer(input_ids=input_ids, use_cache=False)
+                teacher_hidden_last = outputs.last_hidden_state
             h_rs = x
             for wrapper in rs_model.wrappers:
                 h_rs = wrapper(h_rs)
             h_rs_list.append(h_rs.reshape(-1, h_rs.size(-1)).cpu())
             h_t_list.append(teacher_hidden_last.reshape(-1, teacher_hidden_last.size(-1)).cpu())
-            logits_t_list.append(t_logits.reshape(-1, t_logits.size(-1)).cpu())
             current_norm = h_rs.norm(dim=-1).mean().item()
             if _tqdm is not None:
                 processed_samples = min(i + batch_size, total_samples)
@@ -145,9 +251,8 @@ def _collect_decoder_data(
     elapsed = time.time() - start
     H_rs = torch.cat(h_rs_list, dim=0).numpy().astype(np.float32)
     H_t = torch.cat(h_t_list, dim=0).numpy().astype(np.float32)
-    L_t = torch.cat(logits_t_list, dim=0).numpy().astype(np.float32)
     print(f"[BACD] Collected tokens={H_rs.shape[0]} dim={H_rs.shape[1]} time={elapsed:.2f}s")
-    return H_rs, H_t, L_t
+    return H_rs, H_t
 
 
 def fit_riemannian_decoder(
@@ -162,10 +267,18 @@ def fit_riemannian_decoder(
     seq_len: int = 32,
     prompt_text: str | None = None,
     data_mode: str = "random",
+    corpus_roots: list[str] | None = None,
+    corpus_max_docs: int = 2000,
+    corpus_chunk_chars: int = 8000,
+    corpus_overlap_chars: int = 1000,
+    mix_p_corpus: float = 0.6,
+    mix_p_random: float = 0.3,
+    mix_p_teacher_sample: float = 0.1,
+    prompt_pool: list[str] | None = None,
 ):
     if isinstance(device, str):
         device = torch.device(device)
-    H_rs, H_t, L_t = _collect_decoder_data(
+    H_rs, H_t = _collect_decoder_data(
         original_model,
         rs_model,
         tokenizer,
@@ -175,6 +288,14 @@ def fit_riemannian_decoder(
         seq_len=seq_len,
         prompt_text=prompt_text,
         data_mode=data_mode,
+        corpus_roots=corpus_roots,
+        corpus_max_docs=corpus_max_docs,
+        corpus_chunk_chars=corpus_chunk_chars,
+        corpus_overlap_chars=corpus_overlap_chars,
+        mix_p_corpus=mix_p_corpus,
+        mix_p_random=mix_p_random,
+        mix_p_teacher_sample=mix_p_teacher_sample,
+        prompt_pool=prompt_pool,
     )
     print(f"[BACD] Start fitting Riemannian Decoder (samples={H_rs.shape[0]})...")
     start_time = time.time()
@@ -190,6 +311,9 @@ def fit_riemannian_decoder(
         k_basis = d_model
         U_k = np.eye(d_model, k_basis, dtype=np.float32)
         C = H_rs
+    C_float = C.astype(np.float32)
+    C_mean = C_float.mean(axis=0, keepdims=True)
+    C_centered = C_float - C_mean
     H_mean = H_t.mean(axis=0, keepdims=True)
     H_centered = H_t - H_mean
     lambda_lb = 0.0
@@ -202,41 +326,45 @@ def fit_riemannian_decoder(
     )
 
     try:
-        C_float = C.astype(np.float32)
-        print(f"[BACD] Computing Laplace-Beltrami matrix (samples={C_float.shape[0]})...")
-        lb_done = {"v": False, "start": time.time()}
+        use_lb = float(lambda_lb) > 0.0
+        lb_mat_np = None
+        if use_lb:
+            print(f"[BACD] Computing Laplace-Beltrami matrix (samples={C_float.shape[0]})...")
+            lb_done = {"v": False, "start": time.time()}
 
-        def _lb_spinner():
-            while not lb_done["v"]:
-                elapsed = time.time() - lb_done["start"]
-                print(f"[BACD] LB running... {elapsed:.1f}s", flush=True)
-                time.sleep(5.0)
+            def _lb_spinner():
+                while not lb_done["v"]:
+                    elapsed = time.time() - lb_done["start"]
+                    print(f"[BACD] LB running... {elapsed:.1f}s", flush=True)
+                    time.sleep(5.0)
 
-        spinner = threading.Thread(target=_lb_spinner, daemon=True)
-        spinner.start()
-        lb_mat_np = laplace_beltrami_matrix(C_float, "diagonal", 0.0, 0.5, 1e-6)
-        lb_done["v"] = True
-        spinner.join(timeout=0.1)
-        print("[BACD] LB matrix computed.")
+            spinner = threading.Thread(target=_lb_spinner, daemon=True)
+            spinner.start()
+            lb_mat_np = laplace_beltrami_matrix(C_float, "diagonal", 0.0, 0.5, 1e-6)
+            lb_done["v"] = True
+            spinner.join(timeout=0.1)
+            print("[BACD] LB matrix computed.")
 
         if use_gpu:
             print(f"[BACD] Switching to GPU ({device}) for Solver...")
-            lb_mat = torch.from_numpy(lb_mat_np).to(device)
-            C_torch = torch.from_numpy(C_float).to(device)
+            C_torch = torch.from_numpy(C_centered).to(device)
             H_centered_torch = torch.from_numpy(H_centered).to(device)
 
             A_main = C_torch
             B_main = H_centered_torch
 
-            # Matrix multiplication on GPU
-            A_reg = torch.matmul(lb_mat, C_torch)
-            B_reg = torch.zeros_like(H_centered_torch)
-
             A_ridge = np.sqrt(lambda_ridge) * torch.eye(C.shape[1], device=device)
             B_ridge = torch.zeros((C.shape[1], H_centered.shape[1]), device=device)
 
-            A_aug = torch.cat([A_main, np.sqrt(lambda_lb) * A_reg, A_ridge], dim=0)
-            B_aug = torch.cat([B_main, B_reg, B_ridge], dim=0)
+            if use_lb and lb_mat_np is not None:
+                lb_mat = torch.from_numpy(lb_mat_np).to(device)
+                A_reg = torch.matmul(lb_mat, C_torch)
+                B_reg = torch.zeros_like(H_centered_torch)
+                A_aug = torch.cat([A_main, np.sqrt(lambda_lb) * A_reg, A_ridge], dim=0)
+                B_aug = torch.cat([B_main, B_reg, B_ridge], dim=0)
+            else:
+                A_aug = torch.cat([A_main, A_ridge], dim=0)
+                B_aug = torch.cat([B_main, B_ridge], dim=0)
 
             print(f"[BACD] Solving Linear System (A={A_aug.shape}, B={B_aug.shape})...")
             # torch.linalg.lstsq returns (solution, residuals, rank, singular_values)
@@ -244,15 +372,19 @@ def fit_riemannian_decoder(
             W_T = W_T_torch.cpu().numpy()
             print("[BACD] Linear System solved.")
         else:
-            lb_mat = np.asarray(lb_mat_np, dtype=np.float32)
-            A_main = C_float
+            A_main = C_centered
             B_main = H_centered
-            A_reg = lb_mat @ C_float
-            B_reg = np.zeros_like(H_centered)
             A_ridge = np.sqrt(lambda_ridge) * np.eye(C.shape[1], dtype=np.float32)
             B_ridge = np.zeros((C.shape[1], H_centered.shape[1]), dtype=np.float32)
-            A_aug = np.vstack([A_main, np.sqrt(lambda_lb) * A_reg, A_ridge])
-            B_aug = np.vstack([B_main, B_reg, B_ridge])
+            if use_lb and lb_mat_np is not None:
+                lb_mat = np.asarray(lb_mat_np, dtype=np.float32)
+                A_reg = lb_mat @ C_float
+                B_reg = np.zeros_like(H_centered)
+                A_aug = np.vstack([A_main, np.sqrt(lambda_lb) * A_reg, A_ridge])
+                B_aug = np.vstack([B_main, B_reg, B_ridge])
+            else:
+                A_aug = np.vstack([A_main, A_ridge])
+                B_aug = np.vstack([B_main, B_ridge])
             print(f"[BACD] Solving Linear System (A={A_aug.shape}, B={B_aug.shape})...")
             W_T, resid, _, _ = np.linalg.lstsq(A_aug, B_aug, rcond=None)
             print("[BACD] Linear System solved.")
@@ -283,25 +415,26 @@ def fit_riemannian_decoder(
     sqrt_S = np.sqrt(S_r).astype(np.float32)
     Bt = U_r * sqrt_S[None, :]
     A = sqrt_S[:, None] * V_r.T
-    bias = H_mean.reshape(-1).astype(np.float32)
+    bias = (H_mean - (C_mean @ W_T)).reshape(-1).astype(np.float32)
+    decoder_state = {
+        "u": U_k.astype(np.float32),
+        "a": A.astype(np.float32),
+        "bt": Bt.astype(np.float32),
+        "bias": bias.astype(np.float32),
+    }
     decoder = PyRiemannianDecoder(
-        U_k.astype(np.float32),
-        A.astype(np.float32),
-        Bt.astype(np.float32),
-        bias.astype(np.float32),
+        decoder_state["u"],
+        decoder_state["a"],
+        decoder_state["bt"],
+        decoder_state["bias"],
     )
     with torch.no_grad():
-        ln_f = original_model.transformer.ln_f
         lm_head = original_model.lm_head
         H_rs_t = torch.from_numpy(H_rs[:1024]).to(device)
-        logits_t_ref = torch.from_numpy(L_t[:1024]).to(device)
-        hidden_s_np = decoder.forward(H_rs_t.cpu().numpy().astype(np.float32))
-        hidden_s = torch.from_numpy(hidden_s_np).to(device)
-        hidden_s = hidden_s.view_as(logits_t_ref[:, : hidden_s.size(-1)])
-        hidden_s = hidden_s.view(-1, hidden_s.size(-1))
-        hidden_s = hidden_s.view(-1, 1, hidden_s.size(-1))
-        logits_s = lm_head(ln_f(hidden_s))
-        logits_s = logits_s.view_as(logits_t_ref)
+        logits_t_ref = lm_head(torch.from_numpy(H_t[:1024]).to(device))
+        hidden_s_np = decoder.forward(H_rs_t.detach().to("cpu", dtype=torch.float32).numpy().astype(np.float32))
+        hidden_s = torch.from_numpy(hidden_s_np).to(device=device, dtype=torch.float32)
+        logits_s = lm_head(hidden_s)
         t_flat = logits_t_ref.view(-1, logits_t_ref.size(-1))
         s_flat = logits_s.view(-1, logits_s.size(-1))
         cos = F.cosine_similarity(t_flat, s_flat, dim=-1).mean().item()
@@ -309,5 +442,5 @@ def fit_riemannian_decoder(
         print(f"[Decoder fit] final_logits (train-sample) cos={cos:.4f}, rel_l2={rel:.4f}")
     end_time = time.time()
     print(f"[BACD] Decoder fitting finished in {end_time - start_time:.2f}s")
-    return decoder
+    return decoder, decoder_state
 

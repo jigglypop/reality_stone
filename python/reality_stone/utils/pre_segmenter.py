@@ -3,12 +3,10 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import torch
-
 try:
-    # Sentence-Topic LLM 전역에서 사용하는 토크나이저 (klue/bert-base)
     from transformers import AutoTokenizer
-except Exception:  # pragma: no cover - transformers 미설치 환경 대비
-    AutoTokenizer = None  # type: ignore
+except Exception: 
+    AutoTokenizer = None 
 
 
 @dataclass

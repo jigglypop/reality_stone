@@ -1,19 +1,12 @@
 import torch
 import torch.nn as nn
-from typing import List, Optional, Tuple
-
-try:
-    from reality_stone.layers.poincare import (
-        poincare_distance,
-        project_to_ball,
-        exp_map_zero,
-        log_map_zero,
-    )
-    from reality_stone.layers.lorentz import lorentz_distance
-    HAS_REALITY_STONE = True
-except Exception:
-    HAS_REALITY_STONE = False
-
+from typing import Optional
+from reality_stone.layers.poincare import (
+    poincare_distance,
+    project_to_ball
+)
+from reality_stone.layers.lorentz import lorentz_distance
+from reality_stone.layers.klein import klein_distance, project_to_klein
 
 class RiemannianAggregation(nn.Module):
     def __init__(
@@ -35,6 +28,7 @@ class RiemannianAggregation(nn.Module):
         metric_ctx: Optional[torch.Tensor] = None,
         mask: Optional[torch.Tensor] = None,
         temperature_override: Optional[torch.Tensor] = None,
+        c_override: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         B, N, d = children_states.shape
         device = children_states.device
@@ -63,16 +57,15 @@ class RiemannianAggregation(nn.Module):
             mu = (children_states * mask_expanded).sum(dim=1) / mask.sum(dim=1, keepdim=True).clamp(min=1)
         else:
             mu = children_states.mean(dim=1)  # [B, d]
-        
-        if not HAS_REALITY_STONE or self.manifold == "euclidean":
-            # Fallback: Euclidean mean
-            return mu
+        c_val = c_override if c_override is not None else torch.as_tensor(self.c, device=children_states.device, dtype=children_states.dtype)
         
         # Riemannian aggregation
         if self.manifold == "poincare":
-            return self._poincare_agg(children_states, mu, mask, temperature_override)
+            return self._poincare_agg(children_states, mu, c_val, mask, temperature_override)
         elif self.manifold == "lorentz":
-            return self._lorentz_agg(children_states, mu, mask, temperature_override)
+            return self._lorentz_agg(children_states, mu, c_val, mask, temperature_override)
+        elif self.manifold == "klein":
+            return self._klein_agg(children_states, mu, c_val, mask, temperature_override)
         else:
             return mu
     
@@ -80,6 +73,7 @@ class RiemannianAggregation(nn.Module):
         self,
         children_states: torch.Tensor,
         mu: torch.Tensor,
+        c: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
         temperature_override: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
@@ -90,7 +84,7 @@ class RiemannianAggregation(nn.Module):
 
         mu_exp = mu.unsqueeze(1).expand(B, N, d).reshape(B * N, d)
         child_flat = children_states.reshape(B * N, d)
-        dist_flat = poincare_distance(mu_exp, child_flat, self.c)
+        dist_flat = poincare_distance(mu_exp, child_flat, c)
         distances = dist_flat.reshape(B, N)
         temp = temperature_override if temperature_override is not None else torch.as_tensor(self.temperature, device=distances.device, dtype=distances.dtype)
         scores = -distances / temp
@@ -109,6 +103,7 @@ class RiemannianAggregation(nn.Module):
         self,
         children_states: torch.Tensor,
         mu: torch.Tensor,
+        c: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
         temperature_override: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
@@ -119,7 +114,7 @@ class RiemannianAggregation(nn.Module):
             dist = lorentz_distance(
                 mu,
                 children_states[:, i, :],
-                self.c
+                c
             )
             distances.append(dist)
         
@@ -135,4 +130,31 @@ class RiemannianAggregation(nn.Module):
         weighted_mean = (alpha.unsqueeze(-1) * children_states).sum(dim=1)
         
         return weighted_mean
+
+    def _klein_agg(
+        self,
+        children_states: torch.Tensor,
+        mu: torch.Tensor,
+        c: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+        temperature_override: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        B, N, d = children_states.shape
+
+        children_states = project_to_klein(children_states.reshape(-1, d), c).reshape(B, N, d)
+        mu = project_to_klein(mu, c)
+
+        mu_exp = mu.unsqueeze(1).expand(B, N, d).reshape(B * N, d)
+        child_flat = children_states.reshape(B * N, d)
+        dist_flat = klein_distance(mu_exp, child_flat, c)
+        distances = dist_flat.reshape(B, N)
+        temp = temperature_override if temperature_override is not None else torch.as_tensor(self.temperature, device=distances.device, dtype=distances.dtype)
+        scores = -distances / temp
+
+        if mask is not None:
+            scores = scores.masked_fill(~mask, float("-inf"))
+
+        alpha = torch.softmax(scores, dim=1)
+        weighted_mean = (alpha.unsqueeze(-1) * children_states).sum(dim=1)
+        return project_to_klein(weighted_mean, c)
 

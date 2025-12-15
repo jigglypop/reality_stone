@@ -3,12 +3,6 @@ import sys
 
 import torch
 from transformers import GPT2Tokenizer
-from reality_stone.models.transformer_converter import (
-    RSULFTransformerConverter,
-    wrap_rsulf_as_causal_lm,
-    save_rsulf_causal_lm,
-    load_rsulf_causal_lm,
-)
 
 CURRENT_DIR = os.path.dirname(__file__)
 if CURRENT_DIR not in sys.path:
@@ -22,9 +16,13 @@ from encoder import (
     distill_structural_potentials,
     distill_gpt2_to_rsulf,
     distill_syntax_head,
+    build_gpt2_rsffn_model,
+    distill_gpt2_ffn_only,
+    distill_gpt2_rsffn_e2e,
+    distill_gpt2_rsffn_curriculum,
+    distill_gpt2_rsffn_curriculum_two_phase,
+    RSFFNTrainer,
 )
-from decoder import rsulf_generate_text_pure
-from trainer import fit_riemannian_decoder
 from eval_distill import eval_teacher_vs_rsulf
 
 
@@ -64,6 +62,13 @@ def run_structural_rsulf_experiment(original_model, tokenizer, device, prompt, h
 
 
 def run_rsulf_rank_sweep(original_model, tokenizer, device, prompt, human_decoder=None):
+    from reality_stone.models.transformer_converter import (
+        RSULFTransformerConverter,
+        wrap_rsulf_as_causal_lm,
+        save_rsulf_causal_lm,
+    )
+    from trainer import fit_riemannian_decoder
+    from decoder import rsulf_generate_text_pure
     print("\n2. RS-ULF 변환 테스트")
     full_rank_r = original_model.config.n_embd
     start_r = int(os.environ.get("RSULF_START_R", str(full_rank_r)))
@@ -217,6 +222,220 @@ def run_rsulf_rank_sweep(original_model, tokenizer, device, prompt, human_decode
         current_r = max(1, int(next_r))
 
 
+def run_rsffn_only_experiment(original_model, tokenizer, device, prompt):
+    k = int(os.environ.get("RSFFN_K", "64"))
+    replace_last_n = int(os.environ.get("RSFFN_LAST_N", "3"))
+    steps = int(os.environ.get("RSFFN_STEPS", "200"))
+    lr = float(os.environ.get("RSFFN_LR", "1e-3"))
+    batch_size = int(os.environ.get("RSFFN_BS", "4"))
+    seq_len = int(os.environ.get("RSFFN_SEQ_LEN", "32"))
+    mode = os.environ.get("RSFFN_MODE", "ffn").strip().lower()
+    student = build_gpt2_rsffn_model(original_model, device=device, k=k, replace_last_n=replace_last_n)
+    load_path = os.environ.get("RSFFN_LOAD_PATH", "").strip()
+    if load_path:
+        state = torch.load(load_path, map_location=device)
+        if isinstance(state, dict):
+            student.load_state_dict(state, strict=False)
+    if mode in ("pipeline", "fullpipe"):
+        stages_s = os.environ.get("RSFFN_STAGES", "1,3,6,12")
+        stages = []
+        for part in stages_s.split(","):
+            p = part.strip()
+            if not p:
+                continue
+            stages.append(int(p))
+        if not stages:
+            stages = [1, 3, 6, 12]
+        stage_ffn_steps = int(os.environ.get("RSFFN_STAGE_FFN_STEPS", "200"))
+        stage_e2e_steps = int(os.environ.get("RSFFN_STAGE_E2E_STEPS", "100"))
+        ffn_lr = float(os.environ.get("RSFFN_FFN_LR", "2e-3"))
+        e2e_lr = float(os.environ.get("RSFFN_LR", str(lr)))
+        logits_mse_w = float(os.environ.get("RSFFN_LOGITS_MSE_W", "0.2"))
+        hidden_last_w = float(os.environ.get("RSFFN_HLAST_W", "0.1"))
+        hidden_layers_w = float(os.environ.get("RSFFN_HLAYERS_W", "0.02"))
+        kl_w = float(os.environ.get("RSFFN_KL_W", "1.0"))
+        kl_t = float(os.environ.get("RSFFN_KL_T", "2.0"))
+        trainer = RSFFNTrainer(original_model, student, tokenizer, device=device, lr=e2e_lr)
+        for n in stages:
+            student.set_replace_last_n(int(n))
+            student.set_trainable_last_n(int(n))
+            trainer.set_lr(ffn_lr)
+            trainer.train_ffn_only(steps=stage_ffn_steps, batch_size=batch_size, seq_len=seq_len)
+            trainer.set_lr(e2e_lr)
+            trainer.train_e2e(
+                steps=stage_e2e_steps,
+                batch_size=batch_size,
+                seq_len=seq_len,
+                logits_mse_weight=logits_mse_w,
+                kl_weight=kl_w,
+                kl_temperature=kl_t,
+                hidden_last_weight=hidden_last_w,
+                hidden_layers_weight=hidden_layers_w,
+            )
+            with torch.no_grad():
+                held_enc = tokenizer(
+                    [prompt, "In summary, the key idea is", "Q: What is the answer?\nA:"],
+                    return_tensors="pt",
+                    padding="max_length",
+                    truncation=True,
+                    max_length=seq_len,
+                )
+                held = held_enc["input_ids"].to(device)
+                held_mask = held_enc.get("attention_mask")
+                ev_s = eval_teacher_vs_rsulf(original_model, student, tokenizer, device, held, attention_mask=held_mask)
+                print(
+                    f"   [PIPE stage={n}] ppl_t={ev_s.teacher_ppl:.2f} ppl_rs={ev_s.rsulf_ppl:.2f} "
+                    f"logits_cos={ev_s.logits_cos:.4f} rel_l2={ev_s.logits_rel_l2:.4f}"
+                )
+            save_dir = os.environ.get("RSFFN_SAVE_DIR", "").strip()
+            if save_dir:
+                os.makedirs(save_dir, exist_ok=True)
+                torch.save(student.state_dict(), os.path.join(save_dir, f"rsffn_k{k}_n{n}.pt"))
+        replace_last_n = int(max(stages))
+    elif mode in ("curriculum2", "two", "two_phase", "two-phase"):
+        stages_s = os.environ.get("RSFFN_STAGES", "1,3,6,12")
+        stages = []
+        for part in stages_s.split(","):
+            p = part.strip()
+            if not p:
+                continue
+            stages.append(int(p))
+        if not stages:
+            stages = [1, 3, 6, 12]
+        stage_ffn_steps = int(os.environ.get("RSFFN_STAGE_FFN_STEPS", "50"))
+        stage_e2e_steps = int(os.environ.get("RSFFN_STAGE_E2E_STEPS", "20"))
+        logits_mse_w = float(os.environ.get("RSFFN_LOGITS_MSE_W", "0.2"))
+        hidden_last_w = float(os.environ.get("RSFFN_HLAST_W", "0.1"))
+        hidden_layers_w = float(os.environ.get("RSFFN_HLAYERS_W", "0.02"))
+        kl_w = float(os.environ.get("RSFFN_KL_W", "1.0"))
+        kl_t = float(os.environ.get("RSFFN_KL_T", "2.0"))
+        ffn_lr = float(os.environ.get("RSFFN_FFN_LR", str(lr)))
+        student = distill_gpt2_rsffn_curriculum_two_phase(
+            original_model,
+            student,
+            tokenizer,
+            device,
+            stages=stages,
+            stage_ffn_steps=stage_ffn_steps,
+            stage_e2e_steps=stage_e2e_steps,
+            batch_size=batch_size,
+            seq_len=seq_len,
+            lr=lr,
+            ffn_lr=ffn_lr,
+            logits_mse_weight=logits_mse_w,
+            hidden_last_weight=hidden_last_w,
+            hidden_layers_weight=hidden_layers_w,
+            kl_weight=kl_w,
+            kl_temperature=kl_t,
+        )
+        replace_last_n = int(max(stages))
+    elif mode in ("curriculum", "sched", "schedule"):
+        stages_s = os.environ.get("RSFFN_STAGES", "1,3,6,12")
+        stage_steps = int(os.environ.get("RSFFN_STAGE_STEPS", str(max(1, steps))))
+        stages = []
+        for part in stages_s.split(","):
+            p = part.strip()
+            if not p:
+                continue
+            stages.append(int(p))
+        if not stages:
+            stages = [1, 3, 6, 12]
+        logits_mse_w = float(os.environ.get("RSFFN_LOGITS_MSE_W", "1.0"))
+        hidden_last_w = float(os.environ.get("RSFFN_HLAST_W", "0.2"))
+        hidden_layers_w = float(os.environ.get("RSFFN_HLAYERS_W", "0.05"))
+        kl_w = float(os.environ.get("RSFFN_KL_W", "0.5"))
+        kl_t = float(os.environ.get("RSFFN_KL_T", "2.0"))
+        student = distill_gpt2_rsffn_curriculum(
+            original_model,
+            student,
+            tokenizer,
+            device,
+            stages=stages,
+            stage_steps=stage_steps,
+            batch_size=batch_size,
+            seq_len=seq_len,
+            lr=lr,
+            logits_mse_weight=logits_mse_w,
+            hidden_last_weight=hidden_last_w,
+            hidden_layers_weight=hidden_layers_w,
+            kl_weight=kl_w,
+            kl_temperature=kl_t,
+        )
+        replace_last_n = int(max(stages))
+    elif mode in ("e2e", "logits", "full"):
+        logits_mse_w = float(os.environ.get("RSFFN_LOGITS_MSE_W", "1.0"))
+        hidden_last_w = float(os.environ.get("RSFFN_HLAST_W", "0.2"))
+        hidden_layers_w = float(os.environ.get("RSFFN_HLAYERS_W", "0.0"))
+        kl_w = float(os.environ.get("RSFFN_KL_W", "0.0"))
+        kl_t = float(os.environ.get("RSFFN_KL_T", "1.0"))
+        student = distill_gpt2_rsffn_e2e(
+            original_model,
+            student,
+            tokenizer,
+            device,
+            steps=steps,
+            batch_size=batch_size,
+            seq_len=seq_len,
+            lr=lr,
+            logits_mse_weight=logits_mse_w,
+            hidden_last_weight=hidden_last_w,
+            hidden_layers_weight=hidden_layers_w,
+            kl_weight=kl_w,
+            kl_temperature=kl_t,
+        )
+    else:
+        student = distill_gpt2_ffn_only(
+            original_model,
+            student,
+            tokenizer,
+            device,
+            steps=steps,
+            batch_size=batch_size,
+            seq_len=seq_len,
+            lr=lr,
+        )
+    save_path = os.environ.get("RSFFN_SAVE_PATH", "").strip()
+    if save_path:
+        torch.save(student.state_dict(), save_path)
+
+    student.set_replace_last_n(int(replace_last_n))
+    student.set_trainable_last_n(0)
+    with torch.no_grad():
+        held_enc = tokenizer(
+            [prompt, "In summary, the key idea is", "Q: What is the answer?\nA:"],
+            return_tensors="pt",
+            padding="max_length",
+            truncation=True,
+            max_length=seq_len,
+        )
+        held = held_enc["input_ids"].to(device)
+        held_mask = held_enc.get("attention_mask")
+        ev = eval_teacher_vs_rsulf(original_model, student, tokenizer, device, held, attention_mask=held_mask)
+        print(
+            f"   [EVAL RSFFN k={k} last_n={replace_last_n}] ppl_t={ev.teacher_ppl:.2f} ppl_rs={ev.rsulf_ppl:.2f} "
+            f"logits_cos={ev.logits_cos:.4f} rel_l2={ev.logits_rel_l2:.4f}"
+        )
+    gen_tokens = int(os.environ.get("RSFFN_GEN_TOKENS", "30"))
+    if gen_tokens > 0:
+        import time
+        start = time.time()
+        input_ids = tokenizer(prompt, return_tensors="pt")["input_ids"].to(device)
+        out_ids = student.generate_sample(
+            input_ids=input_ids,
+            max_new_tokens=int(gen_tokens),
+            temperature=0.8,
+            top_k=50,
+            top_p=0.95,
+            repetition_penalty=1.15,
+            eos_token_id=int(tokenizer.eos_token_id) if tokenizer.eos_token_id is not None else None,
+        )
+        text = tokenizer.decode(out_ids[0].tolist(), skip_special_tokens=True)
+        tsec = time.time() - start
+        _safe_print(f"   [RSFFN gen]: {text}")
+        print(f"   Time: {tsec:.4f}s")
+    return student
+
+
 def test_gpt2_conversion():
     print("=== [Reality Stone] GPT-2 변환 테스트 ===")
     device = select_device()
@@ -224,6 +443,8 @@ def test_gpt2_conversion():
     prompt = "The secret of the universe is"
     load_path = os.environ.get("RSULF_LOAD_PATH", "").strip()
     if load_path:
+        from reality_stone.models.transformer_converter import load_rsulf_causal_lm
+        from decoder import rsulf_generate_text_pure
         tokenizer = GPT2Tokenizer.from_pretrained(model_name)
         tokenizer.pad_token = tokenizer.eos_token
         rs_lm = load_rsulf_causal_lm(load_path, device=device)
@@ -237,7 +458,10 @@ def test_gpt2_conversion():
 
     print("\n1. Loading Original GPT-2...")
     tokenizer, original_model = load_gpt2_components(model_name, device)
-    run_rsulf_rank_sweep(original_model, tokenizer, device, prompt, human_decoder=None)
+    if os.environ.get("RSFFN_ONLY", "").strip():
+        run_rsffn_only_experiment(original_model, tokenizer, device, prompt)
+    else:
+        run_rsulf_rank_sweep(original_model, tokenizer, device, prompt, human_decoder=None)
     print("\n=== 요약 ===")
     print(f"프롬프트 : {prompt}")
     print("done")

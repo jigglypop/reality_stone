@@ -45,12 +45,23 @@ class GlobalManifoldLearner:
         print("Collecting weights...")
         idx = 0
         for name, module in self.model.named_modules():
+            wq = None
+            wk = None
             if hasattr(module, 'q_proj') and hasattr(module, 'k_proj'):
                 wq = module.q_proj.weight.detach().cpu().numpy().astype(np.float32)
                 wk = module.k_proj.weight.detach().cpu().numpy().astype(np.float32)
-                
-                self.layers_wq.append(wq)
-                self.layers_wk.append(wk)
+            elif hasattr(module, 'c_attn') and hasattr(module.c_attn, 'weight'):
+                c_attn_w = module.c_attn.weight.detach().cpu().numpy().astype(np.float32)
+                d = self.d_model
+                if c_attn_w.shape == (d, 3 * d):
+                    wq = c_attn_w[:, :d].T
+                    wk = c_attn_w[:, d:2*d].T
+                elif c_attn_w.shape == (3 * d, d):
+                    wq = c_attn_w[:d, :]
+                    wk = c_attn_w[d:2*d, :]
+            if wq is not None and wk is not None:
+                self.layers_wq.append(np.ascontiguousarray(wq))
+                self.layers_wk.append(np.ascontiguousarray(wk))
                 self.layer_indices.append(idx)
                 self.layer_map[idx] = name
                 idx += 1
@@ -251,14 +262,25 @@ class SymplecticModelWrapper(nn.Module):
                 hyper_metric=rust_hyper_metric,
                 dt=self.dt
             )
+
+    def _get_layers(self):
+        if hasattr(self.original_model, 'layers'):
+            return list(self.original_model.layers)
+        if hasattr(self.original_model, 'transformer') and hasattr(self.original_model.transformer, 'h'):
+            return list(self.original_model.transformer.h)
+        if hasattr(self.original_model, 'model') and hasattr(self.original_model.model, 'layers'):
+            return list(self.original_model.model.layers)
+        raise AttributeError("Could not find transformer layers")
             
     def forward(self, x):
         q = x
         p = torch.zeros_like(q)
+        layers = self._get_layers()
         
-        for i, layer in enumerate(self.original_model.layers):
+        for i, layer in enumerate(layers):
             if i in self.symplectic_layers:
-                base_out = layer(q)
+                out = layer(q)
+                base_out = out[0] if isinstance(out, (tuple, list)) else out
                 kick = base_out - q
                 q_np = q.detach().cpu().numpy().astype(np.float32)
                 p_np = p.detach().cpu().numpy().astype(np.float32)
@@ -269,6 +291,7 @@ class SymplecticModelWrapper(nn.Module):
                 q = torch.from_numpy(q_out_np).to(q.device)
                 p = torch.from_numpy(p_out_np).to(p.device)
             else:
-                q = layer(q)
+                out = layer(q)
+                q = out[0] if isinstance(out, (tuple, list)) else out
                 
         return q

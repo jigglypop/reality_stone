@@ -35,6 +35,31 @@ def _safe_print(text: str) -> None:
         print(safe)
 
 
+def _parse_int_list(value: str) -> list[int]:
+    raw = (value or "").strip()
+    if not raw:
+        return []
+    for ch in [",", "/", "|", ";", "\n", "\t"]:
+        raw = raw.replace(ch, " ")
+    parts = []
+    for p in raw.split(" "):
+        s = p.strip()
+        if not s:
+            continue
+        try:
+            parts.append(int(s))
+        except Exception:
+            continue
+    out: list[int] = []
+    seen = set()
+    for x in parts:
+        if x in seen:
+            continue
+        seen.add(x)
+        out.append(x)
+    return out
+
+
 def select_device():
     if torch.cuda.is_available():
         device = "cuda"
@@ -71,6 +96,34 @@ def run_rsulf_rank_sweep(original_model, tokenizer, device, prompt, human_decode
     from decoder import rsulf_generate_text_pure
     print("\n2. RS-ULF 변환 테스트")
     full_rank_r = original_model.config.n_embd
+    ranks_env = os.environ.get("RSULF_RANKS", "").strip()
+    ranks = _parse_int_list(ranks_env)
+    if ranks:
+        orig_ranks = os.environ.pop("RSULF_RANKS", None)
+        orig_start = os.environ.get("RSULF_START_R", None)
+        orig_min = os.environ.get("RSULF_MIN_R", None)
+        last = None
+        for r in ranks:
+            r_int = int(r)
+            if r_int < 1:
+                r_int = 1
+            print(f"\n=== Testing RS-ULF with rank r={r_int} ===")
+            os.environ["RSULF_START_R"] = str(r_int)
+            os.environ["RSULF_MIN_R"] = str(r_int)
+            last = run_rsulf_rank_sweep(original_model, tokenizer, device, prompt, human_decoder=human_decoder)
+        if orig_ranks is not None:
+            os.environ["RSULF_RANKS"] = orig_ranks
+        else:
+            os.environ.pop("RSULF_RANKS", None)
+        if orig_start is not None:
+            os.environ["RSULF_START_R"] = orig_start
+        else:
+            os.environ.pop("RSULF_START_R", None)
+        if orig_min is not None:
+            os.environ["RSULF_MIN_R"] = orig_min
+        else:
+            os.environ.pop("RSULF_MIN_R", None)
+        return last
     start_r = int(os.environ.get("RSULF_START_R", str(full_rank_r)))
     if start_r < 1:
         start_r = 1
@@ -223,6 +276,38 @@ def run_rsulf_rank_sweep(original_model, tokenizer, device, prompt, human_decode
 
 
 def run_rsffn_only_experiment(original_model, tokenizer, device, prompt):
+    ks_env = os.environ.get("RSFFN_KS", "").strip()
+    ks = _parse_int_list(ks_env)
+    if ks:
+        orig_ks = os.environ.pop("RSFFN_KS", None)
+        orig_k = os.environ.get("RSFFN_K", None)
+        load_tpl = os.environ.get("RSFFN_LOAD_PATH", "")
+        save_tpl = os.environ.get("RSFFN_SAVE_PATH", "")
+        last = None
+        if str(save_tpl).strip() and "{k}" not in str(save_tpl):
+            os.environ["RSFFN_SAVE_PATH"] = ""
+        for k0 in ks:
+            k_int = int(k0)
+            if k_int < 1:
+                k_int = 1
+            print(f"\n--- Testing RSFFN with k={k_int} ---")
+            os.environ["RSFFN_K"] = str(k_int)
+            if "{k}" in str(load_tpl):
+                os.environ["RSFFN_LOAD_PATH"] = str(load_tpl).format(k=k_int)
+            if "{k}" in str(save_tpl):
+                os.environ["RSFFN_SAVE_PATH"] = str(save_tpl).format(k=k_int)
+            last = run_rsffn_only_experiment(original_model, tokenizer, device, prompt)
+        if orig_ks is not None:
+            os.environ["RSFFN_KS"] = orig_ks
+        else:
+            os.environ.pop("RSFFN_KS", None)
+        if orig_k is not None:
+            os.environ["RSFFN_K"] = orig_k
+        else:
+            os.environ.pop("RSFFN_K", None)
+        os.environ["RSFFN_LOAD_PATH"] = str(load_tpl)
+        os.environ["RSFFN_SAVE_PATH"] = str(save_tpl)
+        return last
     k = int(os.environ.get("RSFFN_K", "64"))
     replace_last_n = int(os.environ.get("RSFFN_LAST_N", "3"))
     steps = int(os.environ.get("RSFFN_STEPS", "200"))

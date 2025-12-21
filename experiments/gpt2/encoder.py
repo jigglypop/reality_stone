@@ -65,14 +65,15 @@ class RSFFNPrototype(nn.Module):
         self.out_scale = nn.Parameter(torch.tensor(1.0))
 
     def forward(self, h: torch.Tensor) -> torch.Tensor:
-        tau = torch.exp(self.log_tau).clamp_min(1e-4)
+        tau = torch.exp(self.log_tau).clamp(1e-4, 10.0)
         logits = (self.router(h) + self.bias) / tau
         w = torch.softmax(logits, dim=-1)
         a = w[..., : self.k] - w[..., self.k :]
         delta_u = torch.matmul(a, self.U.t())
         eta = torch.sigmoid(self.eta_logit)
         delta_z = h * self.z_scale
-        return self.out_scale * ((1.0 - eta) * delta_z + eta * delta_u)
+        out_scale = self.out_scale.clamp(0.25, 4.0)
+        return out_scale * ((1.0 - eta) * delta_z + eta * delta_u)
 
     @torch.no_grad()
     def init_from_gpt2_ffn(self, w1: torch.Tensor, w2: torch.Tensor) -> None:
@@ -414,12 +415,13 @@ class RSFFNTrainer:
                     with autocast(enabled=self.use_amp):
                         f_teacher = block_t.mlp(h)
                     f_teacher = f_teacher.to(dtype=h.dtype)
-                if block_s.replace:
+                # IMPORTANT: keep the forward trajectory on the TEACHER path so later-layer teacher inputs stay valid.
+                # We only distill RSFFN(h) -> f_teacher(h) at each replaced layer (local FFN distillation),
+                # without letting student outputs corrupt subsequent teacher activations.
+                if bool(block_s.replace):
                     f_student = block_s.rsffn(h)
                     loss = loss + self._masked_mse(f_student, f_teacher, attention_mask)
-                    x = h1 + f_student.detach()
-                else:
-                    x = h1 + f_teacher.detach()
+                x = h1 + f_teacher.detach()
             self.optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.student_lm.all_rsffn_parameters(), 1.0)
@@ -440,6 +442,8 @@ class RSFFNTrainer:
     ) -> None:
         self.original_model.eval()
         self.student_lm.eval()
+        logits_norm_weight = float(os.environ.get("RSFFN_LOGITS_NORM_W", "0.0"))
+        scale_reg_weight = float(os.environ.get("RSFFN_SCALE_REG_W", "0.0"))
         if _tqdm is not None:
             iterator = _tqdm(range(int(steps)), desc="[rsffn_pipeline_e2e]", leave=False)
         else:
@@ -465,6 +469,11 @@ class RSFFNTrainer:
                 loss = s_logits.new_tensor(0.0)
                 if float(logits_mse_weight) > 0.0:
                     loss = loss + float(logits_mse_weight) * self._masked_mse(s_logits, t_logits, attention_mask)
+                if float(logits_norm_weight) > 0.0:
+                    eps = float(1e-8)
+                    s_norm = torch.sqrt((s_logits * s_logits).mean(dim=-1) + eps).unsqueeze(-1)
+                    t_norm = torch.sqrt((t_logits * t_logits).mean(dim=-1) + eps).unsqueeze(-1)
+                    loss = loss + float(logits_norm_weight) * self._masked_mse(s_norm, t_norm, attention_mask)
                 if float(hidden_last_weight) > 0.0:
                     loss = loss + float(hidden_last_weight) * self._masked_mse(s_last, t_last, attention_mask)
                 if float(hidden_layers_weight) > 0.0:
@@ -485,6 +494,14 @@ class RSFFNTrainer:
                     kl = (kl_tok * m).sum() / m.sum().clamp_min(1.0)
                     kl = kl * (T * T)
                     loss = loss + float(kl_weight) * kl
+                if float(scale_reg_weight) > 0.0:
+                    reg = s_logits.new_tensor(0.0)
+                    for b in self.student_lm.blocks:
+                        if not bool(b.replace):
+                            continue
+                        reg = reg + (b.rsffn.log_tau * b.rsffn.log_tau)
+                        reg = reg + ((b.rsffn.out_scale - 1.0) * (b.rsffn.out_scale - 1.0))
+                    loss = loss + float(scale_reg_weight) * reg
             self.optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.student_lm.all_rsffn_parameters(), 1.0)

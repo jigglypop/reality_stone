@@ -1112,8 +1112,14 @@ class GridCombatEnv:
             return done, winner, alive0, alive1
 
         # 무교전이 일정 턴 지속되면 조기 종료 + 큰 페널티(퇴화 방지)
-        no_attack_limit = int(self.config.get("no_attack_limit", 20))
-        if self.no_attack_steps >= no_attack_limit:
+        # - 교전이 시작된 뒤에는(=any_attack) 잠깐의 재배치/추격이 생길 수 있으므로 limit을 더 크게 둬서 "교전이 이어지게" 한다.
+        base_limit = int(self.config.get("no_attack_limit", 20))
+        # 기본은 "교전이 한 번이라도 발생하면 max_steps까지는 계속 진행"에 가깝게 둔다.
+        # (교전 도중 잠깐의 재배치/추격 구간으로 인해 조기 종료되는 것을 방지)
+        after_limit_default = int(max(base_limit, int(self.max_steps)))
+        after_limit = int(self.config.get("no_attack_limit_after", after_limit_default))
+        no_attack_limit = after_limit if bool(self.any_attack) else base_limit
+        if self.no_attack_steps >= int(no_attack_limit):
             done = True
             if not self.any_attack:
                 winner = -1

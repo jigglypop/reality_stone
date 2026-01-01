@@ -79,6 +79,7 @@ class DesignOptimizer:
         sigma: float = 0.1,
         lr: float = 0.1,
         n_samples: int = 4,
+        seed_repeats: int = 1,
         train_episodes: int = 80,
         eval_episodes: int = 6,
         use_parallel: bool = True,
@@ -86,6 +87,14 @@ class DesignOptimizer:
         base_seed: int = 42,
         verbose: bool = True,
         *,
+        # objective weights (ultimate goal: win-rate 50:50)
+        win_weight: float = 400.0,
+        blowout_weight: float = 20.0,
+        blowout_threshold: float = 0.95,
+        draw_weight: float = 20.0,
+        draw_weight_no_engagement: float = 200.0,
+        w2_weight: float = 0.2,
+        no_engagement_penalty: float = 100.0,
         lbo_loss_weight: float = 0.05,
         use_metric_lbo: bool = True,
         metric_tau: float = 0.35,
@@ -108,11 +117,19 @@ class DesignOptimizer:
         self.sigma = sigma # 탐색 노이즈 표준편차
         self.lr = lr       # 학습률
         self.n_samples = n_samples # ES 샘플 수 (짝수 권장)
+        self.seed_repeats = int(max(1, int(seed_repeats)))
         self.train_episodes = train_episodes
         self.eval_episodes = eval_episodes
         self.use_parallel = use_parallel
         self.base_seed = base_seed
         self.verbose = verbose
+        self.win_weight = float(win_weight)
+        self.blowout_weight = float(blowout_weight)
+        self.blowout_threshold = float(blowout_threshold)
+        self.draw_weight = float(draw_weight)
+        self.draw_weight_no_engagement = float(draw_weight_no_engagement)
+        self.w2_weight = float(w2_weight)
+        self.no_engagement_penalty = float(no_engagement_penalty)
         self.lbo_loss_weight = float(lbo_loss_weight)
         self.use_metric_lbo = bool(use_metric_lbo)
         self.metric_tau = float(metric_tau)
@@ -339,8 +356,11 @@ class DesignOptimizer:
         return float(max(1e-6, self.sigma))
 
     def get_loss(self, stats: Dict) -> float:
-        # 다팩션 지원: 모든 팩션 쌍의 승률이 0.5에 가깝도록
+        # 궁극 목표: 50:50 밸런스 (승률 기반). draw는 별도 페널티로 다룬다.
         n_factions = int(stats.get("n_factions", 2))
+
+        dist_samples = stats.get("distance_samples", [])
+        engaged = len(dist_samples) > 0
         
         if n_factions > 2 and "win_matrix" in stats:
             # 다팩션: 모든 쌍의 승률 균형
@@ -351,23 +371,29 @@ class DesignOptimizer:
             
             for (i, j), win_rate in win_matrix.items():
                 if i < j:  # 중복 방지
-                    win_diff_sum += (win_rate - 0.5) ** 2
-                    if win_rate <= 0.05 or win_rate >= 0.95:
+                    p_ij = float(win_rate)
+                    p_ji = float(win_matrix.get((j, i), 0.0))
+                    decisive = float(p_ij + p_ji)
+                    p_decisive = (p_ij / decisive) if decisive > 1e-8 else 0.5
+                    win_diff_sum += (p_decisive - 0.5) ** 2
+                    if p_decisive <= (1.0 - float(self.blowout_threshold)) or p_decisive >= float(self.blowout_threshold):
                         blowout_count += 1
                     n_pairs += 1
             
             win_diff = win_diff_sum / max(1, n_pairs)
-            blowout_penalty = 2.0 * blowout_count
+            blowout_penalty = float(self.blowout_weight) * float(blowout_count)
         else:
-            # 2팩션: 기존 방식 (p0_win_rate가 없으면 0.5로 처리)
+            # 2팩션: draw를 제외한 "결정적 승부" 비율로 50:50을 맞춘다.
             p0 = float(stats.get("p0_win_rate", 0.5))
-            win_diff = (p0 - 0.5) ** 2
+            p1 = float(stats.get("p1_win_rate", 0.5))
+            decisive = float(p0 + p1)
+            p0_decisive = (p0 / decisive) if decisive > 1e-8 else 0.5
+            win_diff = (p0_decisive - 0.5) ** 2
             blowout_penalty = 0.0
-            if p0 <= 0.05 or p0 >= 0.95:
-                blowout_penalty = 2.0
+            if p0_decisive <= (1.0 - float(self.blowout_threshold)) or p0_decisive >= float(self.blowout_threshold):
+                blowout_penalty = float(self.blowout_weight)
         
         # 2. 분포 정합 손실: Wasserstein 거리
-        dist_samples = stats.get("distance_samples", [])
         if dist_samples:
             target_samples = _normal_quantiles(mean=float(self.target_dist_mean), std=1.0, n=len(dist_samples), clamp_min=0.0)
             w2_dist = wasserstein_distance_1d(dist_samples, target_samples)
@@ -375,15 +401,15 @@ class DesignOptimizer:
             w2_dist = 0.0
 
         # 2-b. 교전이 아예 없으면 강한 페널티
-        no_engagement_penalty = 0.0
-        if len(dist_samples) == 0:
-            no_engagement_penalty = 10.0
+        no_engagement_penalty = 0.0 if engaged else float(self.no_engagement_penalty)
         
         # 3. 무승부 페널티
-        draw_penalty = float(stats["draw_rate"]) * 120.0
+        draw_rate = float(stats.get("draw_rate", 0.0))
+        dw = float(self.draw_weight) if engaged else float(self.draw_weight_no_engagement)
+        draw_penalty = draw_rate * dw
         
         # 총 손실
-        total_loss = win_diff * 40.0 + blowout_penalty + w2_dist * 1.0 + draw_penalty + no_engagement_penalty
+        total_loss = float(self.win_weight) * float(win_diff) + blowout_penalty + float(self.w2_weight) * float(w2_dist) + draw_penalty + no_engagement_penalty
         return total_loss
 
     def get_harmonic_loss(self, stats_pos: Dict, stats_neg: Dict) -> float:
@@ -659,16 +685,86 @@ class DesignOptimizer:
         """
         동일 seed(CRN)에서 center/pos/neg를 함께 평가하여, 설계공간 LBO(2차차분)를 계산할 수 있게 한다.
         """
+        repeats = int(max(1, int(getattr(self, "seed_repeats", 1))))
         n_factions = int(design_center.get("n_factions", 2))
-        if n_factions > 2:
-            stats_c = run_simulation_all_pairs(design_center, train_episodes=self.train_episodes, eval_episodes=self.eval_episodes, seed=seed)
-            stats_p = run_simulation_all_pairs(design_pos, train_episodes=self.train_episodes, eval_episodes=self.eval_episodes, seed=seed)
-            stats_n = run_simulation_all_pairs(design_neg, train_episodes=self.train_episodes, eval_episodes=self.eval_episodes, seed=seed)
-        else:
-            stats_c = run_simulation(design_center, train_episodes=self.train_episodes, eval_episodes=self.eval_episodes, seed=seed)
-            stats_p = run_simulation(design_pos, train_episodes=self.train_episodes, eval_episodes=self.eval_episodes, seed=seed)
-            stats_n = run_simulation(design_neg, train_episodes=self.train_episodes, eval_episodes=self.eval_episodes, seed=seed)
-        return stats_c, stats_p, stats_n
+
+        def merge_stats(stats_list: List[Dict[str, Any]]) -> Dict[str, Any]:
+            if not stats_list:
+                return {}
+            if len(stats_list) == 1:
+                return stats_list[0]
+
+            # distance samples: concat, then recompute mean/std
+            all_dist: List[float] = []
+            for s in stats_list:
+                all_dist.extend(list(s.get("distance_samples", []) or []))
+
+            if n_factions > 2 and all("win_matrix" in s for s in stats_list):
+                acc: Dict[Tuple[int, int], float] = {}
+                cnt: Dict[Tuple[int, int], int] = {}
+                for s in stats_list:
+                    wm = s.get("win_matrix", {}) or {}
+                    for k, v in wm.items():
+                        kk = (int(k[0]), int(k[1]))
+                        acc[kk] = float(acc.get(kk, 0.0)) + float(v)
+                        cnt[kk] = int(cnt.get(kk, 0)) + 1
+                win_matrix = {k: float(acc[k]) / float(max(1, cnt.get(k, 0))) for k in acc.keys()}
+                draw_rate = float(np.mean([float(s.get("draw_rate", 0.0)) for s in stats_list]))
+                avg_distance = float(np.mean(np.asarray(all_dist, dtype=np.float64))) if all_dist else 0.0
+                distance_std = float(np.std(np.asarray(all_dist, dtype=np.float64))) if all_dist else 0.0
+                out = {
+                    "n_factions": int(n_factions),
+                    "win_matrix": win_matrix,
+                    "draw_rate": draw_rate,
+                    "avg_distance": avg_distance,
+                    "distance_std": distance_std,
+                    "distance_samples": all_dist,
+                }
+                out["p0_win_rate"] = float(win_matrix.get((0, 1), 0.5))
+                out["p1_win_rate"] = float(win_matrix.get((1, 0), 0.5))
+                return out
+
+            # 2-faction (or fallback): average scalar stats
+            p0 = float(np.mean([float(s.get("p0_win_rate", 0.5)) for s in stats_list]))
+            p1 = float(np.mean([float(s.get("p1_win_rate", 0.5)) for s in stats_list]))
+            draw_rate = float(np.mean([float(s.get("draw_rate", 0.0)) for s in stats_list]))
+            avg_distance = float(np.mean(np.asarray(all_dist, dtype=np.float64))) if all_dist else 0.0
+            distance_std = float(np.std(np.asarray(all_dist, dtype=np.float64))) if all_dist else 0.0
+            out = dict(stats_list[0])
+            out.update(
+                {
+                    "p0_win_rate": p0,
+                    "p1_win_rate": p1,
+                    "draw_rate": draw_rate,
+                    "avg_distance": avg_distance,
+                    "distance_std": distance_std,
+                    "distance_samples": all_dist,
+                }
+            )
+            return out
+
+        stats_cs: List[Dict[str, Any]] = []
+        stats_ps: List[Dict[str, Any]] = []
+        stats_ns: List[Dict[str, Any]] = []
+        for r in range(repeats):
+            # CRN: repeat마다 base seed만 바꾸고, center/pos/neg는 동일 seed를 공유한다.
+            seed_r = int(seed + r * 100_000)
+            if n_factions > 2:
+                stats_cs.append(
+                    run_simulation_all_pairs(design_center, train_episodes=self.train_episodes, eval_episodes=self.eval_episodes, seed=seed_r)
+                )
+                stats_ps.append(
+                    run_simulation_all_pairs(design_pos, train_episodes=self.train_episodes, eval_episodes=self.eval_episodes, seed=seed_r)
+                )
+                stats_ns.append(
+                    run_simulation_all_pairs(design_neg, train_episodes=self.train_episodes, eval_episodes=self.eval_episodes, seed=seed_r)
+                )
+            else:
+                stats_cs.append(run_simulation(design_center, train_episodes=self.train_episodes, eval_episodes=self.eval_episodes, seed=seed_r))
+                stats_ps.append(run_simulation(design_pos, train_episodes=self.train_episodes, eval_episodes=self.eval_episodes, seed=seed_r))
+                stats_ns.append(run_simulation(design_neg, train_episodes=self.train_episodes, eval_episodes=self.eval_episodes, seed=seed_r))
+
+        return merge_stats(stats_cs), merge_stats(stats_ps), merge_stats(stats_ns)
 
     def _sample_antithetic_pairs(self, step_index: int) -> Tuple[List[Tuple[int, Dict[str, float], Dict[str, float], int]], List[Dict[str, float]]]:
         """
@@ -680,9 +776,11 @@ class DesignOptimizer:
         pairs: List[Tuple[int, Dict[str, float], Dict[str, float], int]] = []
         epsilons: List[Dict[str, float]] = []
 
+        # NOTE: simulation 내부에서 np.random.seed를 건드리므로, ES의 epsilon은 로컬 RNG로 고정해 재현성을 확보한다.
+        rng = np.random.default_rng(int(self.base_seed + step_index * 10_000 + 7))
         half = int(self.n_samples // 2)
         for i in range(half):
-            epsilon = {k: float(np.random.randn()) for k in self.optimizable_keys}
+            epsilon = {k: float(rng.standard_normal()) for k in self.optimizable_keys}
             epsilons.append(epsilon)
 
             design_pos = self.mean_design.copy()
@@ -883,10 +981,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--sigma", type=float, default=0.1)
     p.add_argument("--lr", type=float, default=0.1)
     p.add_argument("--n-samples", type=int, default=4)
+    p.add_argument("--seed-repeats", type=int, default=1)
     p.add_argument("--train-episodes", type=int, default=80)
     p.add_argument("--eval-episodes", type=int, default=6)
     p.add_argument("--no-parallel", action="store_true")
     p.add_argument("--quiet", action="store_true")
+    p.add_argument("--no-torsion", action="store_true")
+    p.add_argument("--fixed-budget", action="store_true")
     args = p.parse_args(argv)
 
     init = _default_initial_design(seed=int(args.seed))
@@ -896,23 +997,62 @@ def main(argv: list[str] | None = None) -> int:
         sigma=float(args.sigma),
         lr=float(args.lr),
         n_samples=int(args.n_samples),
+        seed_repeats=int(args.seed_repeats),
         train_episodes=int(args.train_episodes),
         eval_episodes=int(args.eval_episodes),
         use_parallel=not bool(args.no_parallel),
         base_seed=int(args.seed),
         verbose=not bool(args.quiet),
+        use_torsion=not bool(args.no_torsion),
     )
 
     if not bool(args.quiet):
         if rs is not None:
             print(f"[rs] rust_ext={getattr(rs, '_has_rust_ext', False)} cuda={getattr(rs, '_has_cuda', False)}")
-        print(f"[start] steps={int(args.steps)} n_samples={int(args.n_samples)} train={int(args.train_episodes)} eval={int(args.eval_episodes)}")
+        if bool(args.fixed_budget):
+            print(
+                f"[start] steps={int(args.steps)} n_samples={int(args.n_samples)} "
+                f"train={int(args.train_episodes)} eval={int(args.eval_episodes)} repeats={int(args.seed_repeats)} (fixed)"
+            )
+        else:
+            # late-stage: eval > train (balance estimation focus)
+            train_start = int(args.train_episodes)
+            train_end = min(train_start, max(10, train_start // 4))
+            eval_start = int(args.eval_episodes)
+            eval_end = max(eval_start, int(train_end + 1))
+            rep_start = int(args.seed_repeats)
+            rep_end = max(rep_start, 3)
+            print(
+                f"[start] steps={int(args.steps)} n_samples={int(args.n_samples)} "
+                f"train={train_start}->{train_end} eval={eval_start}->{eval_end} repeats={rep_start}->{rep_end} (anneal)"
+            )
 
     for step in range(int(args.steps)):
+        # 후반으로 갈수록 "교전(평가) > 학습(훈련)" 비중으로 전환한다.
+        if not bool(args.fixed_budget) and int(args.steps) > 1:
+            t = float(step) / float(max(1, int(args.steps) - 1))
+            train_start = int(args.train_episodes)
+            train_end = min(train_start, max(10, train_start // 4))
+            eval_start = int(args.eval_episodes)
+            eval_end = max(eval_start, int(train_end + 1))
+            rep_start = int(args.seed_repeats)
+            rep_end = max(rep_start, 3)
+
+            train_cur = int(round(train_start + t * float(train_end - train_start)))
+            eval_cur = int(round(eval_start + t * float(eval_end - eval_start)))
+            rep_cur = int(round(rep_start + t * float(rep_end - rep_start)))
+
+            opt.train_episodes = int(max(1, train_cur))
+            opt.eval_episodes = int(max(1, eval_cur))
+            opt.seed_repeats = int(max(1, rep_cur))
+
         loss, design = opt.step(step)
         if not bool(args.quiet):
-            p0 = float(design.get("p0_win_rate", 0.0)) if isinstance(design, dict) else 0.0
-            print(f"[step {step:04d}] loss={loss:.4f} width={design.get('width')} height={design.get('height')}")
+            print(
+                f"[step {step:04d}] loss={loss:.4f} "
+                f"train={int(getattr(opt, 'train_episodes', 0))} eval={int(getattr(opt, 'eval_episodes', 0))} repeats={int(getattr(opt, 'seed_repeats', 0))} "
+                f"width={design.get('width')} height={design.get('height')}"
+            )
 
     if not bool(args.quiet):
         print("[done] final_design:")

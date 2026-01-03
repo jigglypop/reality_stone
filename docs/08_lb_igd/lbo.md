@@ -51,7 +51,6 @@ $$
 V(x)=
 \max_a \mathbb{E}\Big[
 \int_0^{\Delta t} e^{-\rho t} r(X_t,a)\,dt
-
 +
 e^{-\rho\Delta t} V(X_{\Delta t})
 \Big].

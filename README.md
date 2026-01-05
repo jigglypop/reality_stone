@@ -24,9 +24,10 @@ L = (운동 에너지) - (잠재 에너지)
 1. **벨만 방정식을 좌표계로**: 강화학습의 가치 함수를 신경망의 기본 좌표계로 사용
 2. **리만 메트릭을 공간 구조로**: 학습 가능한 기하학적 구조로 계층 관계 자연스럽게 표현
 3. **라그랑지안을 최적화 원리로**: 물리적 최소작용원리로 측지선 경로 탐색
-4. **3개 하이퍼볼릭 레이어 병렬**: Poincaré, Lorentz, Klein 모델 동시 활용
+4. **3개 하이퍼볼릭 레이어 병렬**: Poincare, Lorentz, Klein 모델 동시 활용
 5. **시간축 창의성**: 시간 미분으로 창의성 정량화
 6. **자연 그라디언트**: Fisher 정보 행렬 기반 최적화
+7. **Bellman-LBO 완전 정합**: 이산 벨만을 라플라스-벨트라미 PDE로 재매개화 (정리 4.2, 4.3)
 
 ## 성능 목표
 
@@ -86,6 +87,73 @@ Level 7: 자연 그라디언트 (Fisher 정보)
 - **배치 고유값 분해**: 100배 속도 향상
 - **Fast SPD Mixing**: 10-100배 속도 향상
 - **Mixed Precision**: FP16 학습 지원
+
+### 5. LB-IGD (Laplace-Beltrami Inverse Game Design)
+
+게임 밸런스 설계를 **확산 PDE 기반 연속 최적화**로 푸는 프레임워크입니다.
+
+#### 핵심 정리
+
+**정리 4.2 (Bellman <-> LBO 완전 정합)**
+
+연속시간 Markov reward process에서 생성자가 라플라스-벨트라미이면:
+
+```
+V(x) := E_x[ integral_0^inf exp(-rho*t) r(X_t) dt ]
+```
+
+는 다음 PDE를 만족합니다:
+
+```
+(rho - nu * Delta_g) V = r
+```
+
+- 그래프 이산화: `(rho*I + nu*L) v = r` (희소 선형 시스템)
+- 승률 치환: `r(x) = P(x)` 또는 `r(x) = -J(x)`
+
+**정리 4.3 (토션/드리프트 확장)**
+
+시냅스 방향성(STDP)을 넣으면 생성자에 1차 드리프트가 추가됩니다:
+
+```
+(rho - nu*Delta_g - b.grad_g) V = r
+```
+
+- 그래프 이산화: `(rho*I + nu*L_sym + kappa*A) v = r`
+- `A = (W - W^T)/2`: 반대칭 성분 (토션/방향성)
+
+#### 뇌와의 연결
+
+뉴런 막의 케이블 방정식에서 출발해 동일한 수학이 유도됩니다:
+
+```
+tau_m * dV/dt = lambda^2 * d^2V/dx^2 - (V - V_rest) + R_m * I_syn
+         |
+         v  (정리: nu = lambda^2/tau_m, rho = 1/tau_m)
+         |
+    dU/dt = nu*Delta_g*U - rho*U + r
+         |
+         v  (시냅스 방향성)
+         |
+    dU/dt = nu*Delta_g*U + b.grad_g*U - rho*U + r
+         |
+         v  (정상 상태)
+         |
+    (rho - nu*Delta_g - b.grad_g) V = r   <-- 정리 4.3
+```
+
+이 프레임워크가 "억지"가 아닌 이유: 뇌 물리 상수(막 시간상수, 공간상수)가 수학 파라미터(rho, nu)로 직접 대응됩니다.
+
+#### 실질적 이득
+
+| 이산 Bellman 반복 | 연속 PDE: (rho - L)V = r |
+|------------------|--------------------------|
+| 수렴까지 반복 | 한 번에 해 (선형 solve) |
+| 노이즈에 민감 | 스무딩 내장 |
+| 파라미터 의미 불명확 | 물리적 해석 가능 |
+| 뇌와 분리된 모델 | 뇌 물리와 동일 구조 |
+
+자세한 내용: `docs/08_lb_igd/01_guide.md`
 
 
 ## 설치 및 빌드
@@ -224,11 +292,19 @@ python -m tests.klein --quick
 ```
 reality_stone/
 ├── docs/                               # 문서
-│   ├── COMPLETE_AGI_ARCHITECTURE.md   # ⭐ 완전한 AGI 아키텍처
-│   ├── AGI_IMPLEMENTATION_ROADMAP.md  # ⭐ 구현 로드맵
-│   ├── CORE_EQUATIONS.md              # 핵심 수식
-│   ├── IMPLEMENTATION_GUIDE.md        # 구현 가이드
-│   ├── BELLMAN_RIEMANNIAN_SUMMARY.md  # 요약
+│   ├── 08_lb_igd/                      # LB-IGD 이론 문서
+│   │   ├── 01_guide.md                 # 개요/목차
+│   │   ├── 02_bellman.md               # 제1장: 벨만과 설계 최적화
+│   │   ├── 03_lbo.md                   # 제2장: 라플라스-벨트라미 (핵심)
+│   │   ├── 04_blackbox.md              # 제3장: ES/블랙박스 최적화
+│   │   ├── 05_evaluation.md            # 제4장: 평가 프로토콜
+│   │   ├── 06_inverse.md               # 제5장: 역설계
+│   │   └── 07_synapse.md               # 부록: 뇌와의 연결
+│   ├── COMPLETE_AGI_ARCHITECTURE.md    # 완전한 AGI 아키텍처
+│   ├── AGI_IMPLEMENTATION_ROADMAP.md   # 구현 로드맵
+│   ├── CORE_EQUATIONS.md               # 핵심 수식
+│   ├── IMPLEMENTATION_GUIDE.md         # 구현 가이드
+│   ├── BELLMAN_RIEMANNIAN_SUMMARY.md   # 요약
 │   ├── unified_geometric_agi_architecture.md  # 통합 조감도
 │   └── ...
 ├── src/                                # Rust 코어
@@ -247,6 +323,15 @@ reality_stone/
 │   │   └── ...
 │   ├── layers/                         # Autograd 레이어
 │   └── optimizers/                     # 최적화기
+├── experiments/                        # 실험
+│   ├── lbigd/                          # LB-IGD 실험
+│   │   └── core/                       # 핵심 모듈
+│   │       ├── designer.py             # ES + CRN + LBO 가중
+│   │       ├── lbo.py                  # 그래프 라플라시안
+│   │       ├── metric.py               # 연결 업데이트
+│   │       ├── dopamine.py             # 도파민 게이트 (3-factor)
+│   │       └── simulation.py           # 평가 시뮬레이션
+│   └── gpt2/                           # GPT-2 실험
 ├── examples/                           # 예제
 │   ├── bellman_riemannian_demo.py
 │   ├── train_on_real_data.py
@@ -342,6 +427,15 @@ python -m tests.klein    --quick --epochs 2 --batch-size 256
 - **LagrangianEnergySystem**: 라그랑지안 기반 최적화
 - **TemporalCreativityModule**: 시간 미분으로 창의성 측정
 - **NaturalGradientOptimizer**: Fisher 정보 행렬 기반 최적화
+
+### 새로운 기능 (LB-IGD: Bellman-LBO 완전 정합)
+- **정리 4.2**: 연속시간 MRP에서 Bellman <-> LBO 완전 동치 증명 (`docs/08_lb_igd/03_lbo.md`)
+- **정리 4.3**: 토션/드리프트(STDP 방향성) 확장 및 증명
+- **승률 치환**: r(x) = P(x)로 두면 값함수가 "승률 지형의 LBO 스무딩"
+- **그래프 이산화**: (rho*I + nu*L + kappa*A)v = r 형태의 희소 선형 시스템
+- **뇌 물리 유도**: 케이블 방정식에서 Delta_g + 드리프트 유도 (`docs/08_lb_igd/07_synapse.md`)
+- **물리 상수 대응**: tau_m <-> 1/rho, lambda <-> sqrt(nu/rho) (실험값과 직접 대응)
+- **LB-IGD 문서 체계**: 7개 문서로 구성된 완전한 이론 체계 (`docs/08_lb_igd/`)
 
 ### 기존 기능 개선
 - Poincaré/Lorentz/Klein 레이어 및 연산의 Python Autograd 경로 정비

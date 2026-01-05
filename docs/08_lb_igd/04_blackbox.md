@@ -1,9 +1,10 @@
 ## 제3장 확률적 블랙박스 최적화: ES 유도와 교전 거리 분포 정합
 
-> 본 문서는 **LB-IGD (Laplace–Beltrami Inverse Game Design)** 프로젝트의 이론 문서입니다. (코드 엔트리: `main.py`)
+> 본 문서는 **LB-IGD (Laplace-Beltrami Inverse Game Design)** 프로젝트의 이론 문서입니다.
 >
-> - 관련 문서: 제1장 `docs/bellman.md`, 제2장 `docs/lbo.md`, 제4장 `docs/evaluation.md`
-> - 코드 대응: `src/core/designer.py` (ES + CRN + LBO 가중, 거리 분포 정합 항)
+> - **읽기 순서**: 제1장 `02_bellman.md` → 제2장 `03_lbo.md` → 제3장 (현재) → 제4장 `05_evaluation.md` → 제5장 `06_inverse.md`
+> - **부록**: `07_synapse.md`
+> - **코드 대응**: `experiments/lbigd/core/designer.py` (ES + CRN + LBO 가중)
 
 ### 초록
 설계 변수 \(x\)는 게임(MDP) \(\mathcal{M}_x\)를 정의합니다. 그리고 그 게임에서 self-play로 학습된 정책 \(\pi_x^*\)를 통해 통계 \(y(x;\omega)\)를 관측하고, 이를 바탕으로 “밸런스 손실” \(L\)을 계산합니다. 이 구조는 내부에 학습이 들어가고(내부 루프), 외부에서는 설계를 바꾸는(외부 루프) 형태이므로 본질적으로 **확률적 bilevel(2중) 최적화**입니다.

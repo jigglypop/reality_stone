@@ -240,6 +240,7 @@ class DesignOptimizer:
         self._metric_w: np.ndarray | None = None
         self._metric_mask: np.ndarray | None = None
         self._torsion_sign: np.ndarray | None = None
+        self._last_center_summary: Dict[str, float] | None = None
         if self.use_metric_lbo and len(self.optimizable_keys) > 2:
             self._metric_w, self._metric_mask, self._torsion_sign = self._init_metric_graph()
 
@@ -936,6 +937,23 @@ class DesignOptimizer:
         # J_sigma(x) ~ E[J(x + sigma*epsilon)]
         pairs, epsilons = self._sample_antithetic_pairs(step_index=step_index)
         eval_results = self._evaluate_triplets(pairs)
+
+        # 현재(mean) 설계의 "성능"을 같은 프로토콜에서 요약해 둔다.
+        try:
+            centers = [stats_c for _, stats_c, _, _ in eval_results]
+            if centers:
+                p0 = float(np.mean([float(s.get("p0_win_rate", 0.5)) for s in centers]))
+                p1 = float(np.mean([float(s.get("p1_win_rate", 0.5)) for s in centers]))
+                decisive = float(p0 + p1)
+                p0_dec = float(p0 / decisive) if decisive > 1e-8 else 0.5
+                draw = float(np.mean([float(s.get("draw_rate", 0.0)) for s in centers]))
+                dist = float(np.mean([float(s.get("avg_distance", 0.0)) for s in centers]))
+                self._last_center_summary = {"p0": p0, "p1": p1, "p0_dec": p0_dec, "draw": draw, "dist": dist}
+            else:
+                self._last_center_summary = None
+        except Exception:
+            self._last_center_summary = None
+
         gradients, results = self._accumulate_es_gradients(eval_results, epsilons)
 
         # 평균 그라디언트로 업데이트
@@ -951,8 +969,8 @@ class DesignOptimizer:
         # mean 자체도 클램프 (폭주/0으로 붕괴 방지)
         self.mean_design = self._clamp_design(self.mean_design)
             
-        # 첫 원소(loss_pos)의 평균으로 로깅용 스칼라를 만든다
-        avg_loss = float(np.mean([r[0] for r in results])) if results else 0.0
+        # 로깅용 스칼라: (+/-) 평균 손실
+        avg_loss = float(np.mean([(float(r[0]) + float(r[1])) * 0.5 for r in results])) if results else 0.0
         return avg_loss, self.mean_design
 
 
@@ -1048,11 +1066,20 @@ def main(argv: list[str] | None = None) -> int:
 
         loss, design = opt.step(step)
         if not bool(args.quiet):
-            print(
-                f"[step {step:04d}] loss={loss:.4f} "
-                f"train={int(getattr(opt, 'train_episodes', 0))} eval={int(getattr(opt, 'eval_episodes', 0))} repeats={int(getattr(opt, 'seed_repeats', 0))} "
-                f"width={design.get('width')} height={design.get('height')}"
-            )
+            s = getattr(opt, "_last_center_summary", None)
+            if isinstance(s, dict) and s:
+                print(
+                    f"[step {step:04d}] loss={loss:.4f} "
+                    f"train={int(getattr(opt, 'train_episodes', 0))} eval={int(getattr(opt, 'eval_episodes', 0))} repeats={int(getattr(opt, 'seed_repeats', 0))} "
+                    f"center(p0_dec={float(s.get('p0_dec', 0.5)):.3f} draw={float(s.get('draw', 0.0)):.2f} dist={float(s.get('dist', 0.0)):.2f}) "
+                    f"width={design.get('width')} height={design.get('height')}"
+                )
+            else:
+                print(
+                    f"[step {step:04d}] loss={loss:.4f} "
+                    f"train={int(getattr(opt, 'train_episodes', 0))} eval={int(getattr(opt, 'eval_episodes', 0))} repeats={int(getattr(opt, 'seed_repeats', 0))} "
+                    f"width={design.get('width')} height={design.get('height')}"
+                )
 
     if not bool(args.quiet):
         print("[done] final_design:")

@@ -1,10 +1,11 @@
 ## 제2장 라플라스–벨트라미(LBO): 벨만 → HJB → 이토(Itô) → 라플라시안 → (다양체) LBO → (설계공간) 2차 차분 정규화
 
-> 본 문서는 LB-IGD/Faction Chess IGD에서 **“왜 라플라시안/라플라스–벨트라미(LBO) 관점이 필요한가?”**를
+> 본 문서는 LB-IGD에서 **"왜 라플라시안/라플라스-벨트라미(LBO) 관점이 필요한가?"**를
 > 강화학습의 기반인 **벨만 방정식**에서 출발해, 필요한 만큼만(최소한의 증명 스케치) 연결해서 설명합니다.
 >
-> - 관련 문서: 제1장 `docs/bellman.md`(계층적 정식화), 제3장 `docs/blackbox.md`(ES), 제4장 `docs/evaluation.md`(평가 프로토콜)
-> - 코드 대응: `src/core/designer.py`(설계공간 LBO), `src/core/lbo.py`(그래프 라플라시안), `tests/test.py`
+> - **읽기 순서**: 제1장 `02_bellman.md` → 제2장 (현재) → 제3장 `04_blackbox.md` → 제4장 `05_evaluation.md` → 제5장 `06_inverse.md`
+> - **부록**: `07_synapse.md` (뇌와의 연결, 정리 4.2/4.3의 물리적 유도)
+> - **코드 대응**: `experiments/lbigd/core/designer.py`, `lbo.py`, `laplace_beltrami_matrix` (Rust)
 
 ---
 
@@ -16,7 +17,7 @@
 - (플레이 레벨) 가치함수: \(V(s)\) 또는 \(V(x)\)
 - (설계 레벨) 승률 지형: \(P(x)\in[0,1]\)
   - 2팩션이면 보통 \(P(x)=\mathrm{WinRate}_{p0}(x)\)
-  - 다팩션이면 \(P(x)\)를 쌍대결 승률행렬 \(W_{f,g}(x)\)로 본다(`evaluation.md`)
+  - 다팩션이면 \(P(x)\)를 쌍대결 승률행렬 \(W_{f,g}(x)\)로 본다(`05_evaluation.md`)
 
 ---
 
@@ -159,6 +160,248 @@ $$
 유클리드 공간에서는 \(g=I\), \(|g|=1\)이므로 \(\Delta_g=\sum_i \partial_{ii}=\Delta\)로 돌아갑니다.
 
 ---
+
+#### 4.2 정리(완전 정합): 연속시간 “벨만 원리”는 \((\rho-\nu\Delta_g)V=r\)로 정확히 쓴다
+여기서는 “벨만 방정식을 라플라스–벨트라미로 대체”가 **정확히(동치로) 성립하는** 최소 조건을 정리합니다.
+핵심은 **(i) 이산 시간을 없애 연속시간으로 보내고**, **(ii) 최적화(행동 선택)를 없애거나(=action이 없는 MRP) 정책을 고정**하는 것입니다.
+
+> 요약: 제어가 없는(혹은 정책 고정된) 연속시간 MDP에서는 Bellman(동적계획 원리)이 **선형**이고, 생성자(generator)가 \( \nu\Delta_g\)이면 Bellman은 정확히 \((\rho-\nu\Delta_g)V=r\)가 됩니다.
+
+##### 정리 4.2 (할인된 연속시간 Markov reward process의 Bellman ↔ LBO)
+\((\mathcal{M},g)\)를 경계가 없는(compact) 리만 다양체로 두고, \((X_t)_{t\ge 0}\)를 \(\mathcal{M}\) 위 확산 과정이라 하자.
+이 과정의 생성자(generator)가
+
+$$
+(\mathcal{L}f)(x) = \nu\,\Delta_g f(x)
+$$
+
+인 경우(예: 분산 스케일이 \(\nu\)인 Brownian motion), 보상(러닝 리워드) \(r:\mathcal{M}\to\mathbb{R}\) (유계 연속; 고전해를 원하면 \(C^2\) 정도로 충분)와 할인율 \(\rho>0\)에 대해
+
+$$
+V(x)\;:=\;\mathbb{E}_x\Big[\int_0^\infty e^{-\rho t}\,r(X_t)\,dt\Big]
+$$
+
+로 정의한 함수 \(V\)는 다음을 만족한다.
+
+1) (Bellman / DPP) 임의의 \(\Delta t>0\)에 대해
+
+$$
+V(x)
+=
+\mathbb{E}_x\Big[
+\int_0^{\Delta t} e^{-\rho t}\,r(X_t)\,dt
++
+e^{-\rho\Delta t}\,V(X_{\Delta t})
+\Big].
+$$
+
+2) (PDE) \(V\)는 (고전해의 의미로)
+
+$$
+\boxed{\;\rho V(x)-\nu\,\Delta_g V(x)=r(x)\;}
+$$
+
+를 만족한다.
+또한 \(\mathcal{M}\)이 compact이고 \(r\)가 충분히 매끄럽다면, 위 PDE의 **유계 해는 유일**하다.
+
+##### 증명
+**(1) DPP(Bellman) 증명.**
+\(\int_0^\infty\) 적분을 \([0,\Delta t]\)와 \([\Delta t,\infty)\)로 쪼개면
+
+$$
+\int_0^\infty e^{-\rho t}r(X_t)\,dt
+=
+\int_0^{\Delta t} e^{-\rho t}r(X_t)\,dt
++
+e^{-\rho\Delta t}\int_0^\infty e^{-\rho s}r(X_{\Delta t+s})\,ds
+$$
+
+이다. 양변에 \(\mathbb{E}_x[\cdot]\)를 취하고, 마르코프 성질로
+
+$$
+\mathbb{E}_x\Big[\int_0^\infty e^{-\rho s}r(X_{\Delta t+s})\,ds\;\Big|\;\mathcal{F}_{\Delta t}\Big]
+=V(X_{\Delta t})
+$$
+
+이므로 1)이 성립한다.
+
+**(2) PDE 증명(“Bellman → LBO”).**
+1)의 양변에서 \(V(x)\)를 이항하고 \(\Delta t\)로 나눈 뒤 \(\Delta t\to 0\) 극한을 취한다.
+먼저
+
+$$
+\frac{1-e^{-\rho\Delta t}}{\Delta t}\to \rho
+$$
+
+이고, 생성자의 정의(임의의 충분히 매끄러운 \(f\)에 대해)
+
+$$
+\mathcal{L}f(x)
+:=
+\lim_{\Delta t\to 0}\frac{\mathbb{E}_x[f(X_{\Delta t})]-f(x)}{\Delta t}
+$$
+
+를 \(f=V\)에 적용하면
+
+$$
+\lim_{\Delta t\to 0}\frac{\mathbb{E}_x[V(X_{\Delta t})]-V(x)}{\Delta t}=\mathcal{L}V(x).
+$$
+
+또한 \(\Delta t\to 0\)에서 \(\frac{1}{\Delta t}\mathbb{E}_x[\int_0^{\Delta t} e^{-\rho t} r(X_t)\,dt]\to r(x)\) (연속성과 dominated convergence로 충분) 이다.
+따라서 1)로부터
+
+$$
+0
+=
+r(x) - \rho V(x) + \mathcal{L}V(x)
+$$
+
+가 되고, \(\mathcal{L}=\nu\Delta_g\)를 대입하면 \(\rho V-\nu\Delta_g V=r\)가 된다.
+
+> (엄밀한 버전 메모) 위 “\(\Delta t\to 0\)” 논리는 \(V\)가 생성자의 정의역에 있어야 한다.
+> 이를 가장 깔끔하게 쓰려면 반군 \(P_t f(x):=\mathbb{E}_x[f(X_t)]\)를 두고
+>
+> $$
+> V(x)=\int_0^\infty e^{-\rho t}\,(P_t r)(x)\,dt
+> $$
+>
+> (즉 \(V=R_\rho r\), resolvent)로 정의한 뒤,
+> \(\partial_t P_t r = \mathcal{L} P_t r\)를 이용해 적분 부분적분으로
+>
+> $$
+> (\rho I-\mathcal{L})V=r
+> $$
+>
+> 를 얻는 방식이 표준적이다. \(r\)가 매끄럽고 \(\mathcal{M}\)이 compact이면 elliptic regularity로 \(V\in C^2\) (더 나아가 \(C^\infty\))가 따라와 “고전해”로도 정당화된다.
+
+**(3) 유일성(“완전 정합”을 닫는 부분).**
+만약 \(u\)가 \(\rho u-\nu\Delta_g u=0\)을 만족하는 유계 \(C^2\) 함수라 하자.
+\(\mathcal{M}\)이 경계가 없고 compact이면 적분 부분적분(그린 정리)로
+
+$$
+\int_{\mathcal{M}} u\,\Delta_g u\,d\mathrm{vol}_g
+=
+-\int_{\mathcal{M}}\|\nabla_g u\|_g^2\,d\mathrm{vol}_g
+$$
+
+이므로, 방정식에 \(u\)를 곱해 적분하면
+
+$$
+0
+=
+\rho\int_{\mathcal{M}} u^2\,d\mathrm{vol}_g
++
+\nu\int_{\mathcal{M}}\|\nabla_g u\|_g^2\,d\mathrm{vol}_g.
+$$
+
+\(\rho,\nu>0\)이므로 두 적분항은 각각 \(0\)이어야 하고, 따라서 \(u\equiv 0\)이다.
+유계 해의 차이는 동차해이므로, 해는 유일하다.
+
+##### 구현/부호(중요)
+수치 구현에서는 연산자를 보통 **양의 반정 definite(PSD)** 형태로 잡습니다.
+예를 들어 코드의 `laplace_beltrami_matrix`는 그래프 라플라시안 \(L=D-W\) (PSD) 형태이며, 이때 연속체의 \(\Delta_g\)와는 부호가 반대인 근사(대략 \(\Delta_g \approx -L\))가 되는 것이 일반적입니다.
+따라서 \(\rho V-\nu\Delta_g V=r\)를 그대로 이산화하면 흔히
+
+$$
+(\rho I + \nu L)\,v = r
+$$
+
+같은 **선형 시스템**으로 떨어집니다(부호 규약을 한 번만 고정하면 혼동이 사라집니다).
+
+##### (이 레포 적용) “승률로 치환”은 \(r(x)\) 선택의 문제다
+LB‑IGD에서는 설계 \(x\)의 품질을 승률/승률행렬에서 계산한 스칼라로 둡니다.
+따라서 정리 4.2의 \(r(x)\)를 아래처럼 두면 “Bellman을 LBO로 대체”가 정확히 **문제 정의 차원에서** 완료됩니다.
+
+- \(r(x)=P(x)\): \(V\)는 “확산(Δ\_g) 하에서의 할인 누적 승률”이므로, **승률 지형을 LBO로 스무딩한 값**이 된다.
+- \(r(x)=-J(x)\): 여기서 \(J(x)\)는 `designer.py`가 쓰는 승률 기반 손실(밸런스/퇴화 방지/분포 정합 등)이다. 이때 \(V\)는 “스무딩된 목적(보상)”이 되어, 노이즈가 큰 \(J\)를 직접 쓰는 것보다 안정적인 스칼라 필드를 얻는다.
+
+이산화는 위의 \((\rho I+\nu L)v=r\) 선형시스템으로 구현 가능하며, \(L\)은 (i) 설계 샘플들로 만든 그래프 라플라시안 또는 (ii) `laplace_beltrami_matrix`로 만든 커널 기반 라플라시안으로 두면 된다.
+
+#### 4.3 (확장) “뉴런 토션/전기 방향(비가역성)”을 넣으면: \(\Delta_g\)는 유지되고 1차항(드리프트)이 추가된다
+정리 4.2는 생성자가 \(\mathcal{L}=\nu\Delta_g\)인 **가역(reversible)** 확산을 가정했다.
+“토션/전기 방향”을 수학적으로 넣는 가장 단순한 방법은, 생성자에 **방향성(순환/비가역)을 만드는 1차항**을 추가하는 것이다.
+
+##### 정리 4.3 (토션 드리프트 포함 Bellman ↔ 선형 PDE)
+\((\mathcal{M},g)\) 위의 마르코프 과정 \((X_t)\)의 생성자가
+
+$$
+(\mathcal{L}f)(x)=\nu\,\Delta_g f(x) + b(x)\cdot\nabla_g f(x)
+$$
+
+로 주어진다고 하자. 여기서 \(b\)는 다양체 위의 벡터장이다(해석적으로는 충분히 매끄럽다고 가정).
+보상 \(r:\mathcal{M}\to\mathbb{R}\), 할인율 \(\rho>0\)에 대해
+
+$$
+V(x):=\mathbb{E}_x\Big[\int_0^\infty e^{-\rho t}r(X_t)\,dt\Big]
+$$
+
+로 정의하면, \(V\)는 다음을 만족한다.
+
+$$
+\boxed{\;\rho V(x)-\nu\,\Delta_g V(x)-b(x)\cdot\nabla_g V(x)=r(x)\;}
+$$
+
+또한 \(\rho>0\)이고 \(\mathcal{M}\)이 compact이면(표준 조건 하에서) 유계 해는 유일하다.
+
+##### 증명
+정리 4.2의 “엄밀한 버전 메모”에서 쓴 반군/레졸벤트 논리가 그대로 적용된다.
+즉 \(P_t f(x)=\mathbb{E}_x[f(X_t)]\)를 두고
+
+$$
+V(x)=\int_0^\infty e^{-\rho t}\,(P_t r)(x)\,dt
+$$
+
+로 정의하면(=레졸벤트 \(R_\rho r\)), \(\partial_t P_t r=\mathcal{L}P_t r\)와 적분 부분적분으로
+\((\rho I-\mathcal{L})V=r\)를 얻는다. \(\mathcal{L}=\nu\Delta_g+b\cdot\nabla_g\)를 대입하면 결론이 나온다.
+유일성은 \(u\)가 \((\rho I-\mathcal{L})u=0\)이면 \(P_t u=e^{\rho t}u\)가 되어 유계성과 모순임을 이용하는 표준 최대원리/반군 논증으로 닫을 수 있다(혹은 \(b\)가 발산 0 등 추가 조건 하에서 에너지법으로도 가능).
+
+##### (그래프 이산화) 토션은 “비대칭 성분”으로 들어가며, 선형시스템은 여전히 풀린다
+그래프에서 “전기 방향/토션”을 가장 단순하게 넣는 방법은 가중치 행렬 \(W\)의 비대칭 성분을 분리하는 것이다:
+
+$$
+S=\frac{W+W^\top}{2}\quad(\text{대칭}),\qquad
+A=\frac{W-W^\top}{2}\quad(\text{반대칭}).
+$$
+
+대칭 성분으로부터 PSD 라플라시안 \(L_{\text{sym}}:=D_S-S\)를 만들고, 반대칭 성분은 **드리프트(방향성) 연산자**로 본다.
+그러면 “정리 4.3”의 이산 대응은 보통
+
+$$
+(\rho I+\nu L_{\text{sym}}+\kappa A)\,v=r
+$$
+
+꼴이 된다(\(\kappa\)는 토션 스케일).
+
+**정리(가역+토션 혼합 행렬의 가역성).**
+\(M:=H+K\)에서 \(H\)가 대칭 양의정부호(SPD), \(K\)가 반대칭(skew-symmetric)이면 \(M\)은 가역이다.
+
+**증명.** \(Mx=0\)이면 \(x^\top Hx=-x^\top Kx\). 그런데 \(x^\top Kx=0\)이므로 \(x^\top Hx=0\).
+SPD이므로 \(x=0\). 따라서 영공간이 자명하여 \(M\)은 가역이다. □
+
+즉 \(\rho>0\)이면(그리고 \(L_{\text{sym}}\)이 PSD이면) 위 선형시스템은 **토션을 넣어도** 잘 정의된다.
+
+##### (푸리에 전기 신호) 시간 의존 보상/토션은 모드별 레졸벤트로 분해된다
+전기 신호를 \(t\)에 대한 푸리에 급수로 두자(예: \(r(t,x)=\sum_k r_k(x)e^{i\omega_k t}\)).
+무한 지평 할인 누적값을
+
+$$
+V(t,x):=\mathbb{E}_{t,x}\Big[\int_t^\infty e^{-\rho (s-t)}\,r(s,X_s)\,ds\Big]
+$$
+
+로 정의하면(시간 의존 reward), 표준 DPP로
+
+$$
+(\partial_t+\rho-\mathcal{L})V(t,x)=r(t,x)
+$$
+
+를 얻는다. 선형이므로 푸리에 모드별로
+
+$$
+(\rho+i\omega_k-\mathcal{L})V_k(x)=r_k(x)
+$$
+
+가 되며, 각 모드의 응답을 풀어 합하면 \(V(t,x)\)가 된다.
+즉 “푸리에 전기 신호”는 수학적으로 **\(\rho\to\rho+i\omega_k\)** 로 바뀐 레졸벤트를 모드별로 푸는 문제로 떨어진다.
 
 ### 5. 설계공간에서의 LBO: “진짜 \(\Delta_g\)” 대신 “차분 기반 곡률 측정”
 이 프로젝트의 설계공간 \(x\)는 이산(패턴 ID, 유닛 수)과 연속(스탯) 변수가 섞여 있고, 코드에서 클램프/정수화를 거칩니다.

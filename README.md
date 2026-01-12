@@ -11,12 +11,8 @@ Reality Stone은 **벨만-리만 통합 이론**, **하이퍼볼릭 기하학**,
 
 ```
 δ∫L dt = 0
-```
 
-여기서 라그랑지안 L은:
-```
-L = (운동 에너지) - (잠재 에너지)
-  = (1/2) g_μν ẋ^μ ẋ^ν - (-Q*(x) + V_reg(x,g))
+L = (1/2) g_μν ẋ^μ ẋ^ν - (-Q*(x) + V_reg(x,g))
 ```
 
 ## 핵심 혁신
@@ -27,21 +23,9 @@ L = (운동 에너지) - (잠재 에너지)
 4. **3개 하이퍼볼릭 레이어 병렬**: Poincare, Lorentz, Klein 모델 동시 활용
 5. **시간축 창의성**: 시간 미분으로 창의성 정량화
 6. **자연 그라디언트**: Fisher 정보 행렬 기반 최적화
-7. **Bellman-LBO 완전 정합**: 이산 벨만을 라플라스-벨트라미 PDE로 재매개화 (정리 4.2, 4.3)
-
-## 성능 목표
-
-- **압축률**: 2-3배 (860억 → 340억 파라미터)
-- **학습 속도**: 2-3배 빠른 수렴
-- **추론 능력**: 1.2-1.5배 향상 (동일 데이터 조건)
-- **계층적 추론**: 1.4-2.0배 향상
-
-현재 릴리스: 0.2.0, 라이선스: MIT, Python 3.8–3.12, PyTorch 2.0+ 지원.
-
+7. **Bellman-LBO 완전 정합**: 이산 벨만을 라플라스-벨트라미 PDE로 재매개화
 
 ## 아키텍처 계층
-
-Reality Stone은 7개 계층으로 구성됩니다:
 
 ```
 Level 0: 물리적 기반 (최소 작용의 원리)
@@ -50,7 +34,7 @@ Level 1: 벨만 좌표계 (강화학습 통합)
     ↓
 Level 2: 리만 메트릭 (학습 가능한 기하학)
     ↓
-Level 3: 3개 하이퍼볼릭 레이어 (Poincaré, Lorentz, Klein)
+Level 3: 3개 하이퍼볼릭 레이어 (Poincare, Lorentz, Klein)
     ↓
 Level 4: 계층적 LLM (Sentence-Topic 구조)
     ↓
@@ -63,394 +47,147 @@ Level 7: 자연 그라디언트 (Fisher 정보)
 
 ## 주요 기능
 
-### 1. 벨만-리만 통합
-- **BellmanCoordinateSystem**: 가치 함수 기반 좌표계
-- **RiemannianMetricTensor**: 상태 의존적 메트릭 학습
-- **LagrangianEnergySystem**: 물리적 에너지 최소화
-- **TemporalCreativityModule**: 시간 미분 창의성 측정
+### 벨만-리만 통합
+- `BellmanCoordinateSystem`: 가치 함수 기반 좌표계
+- `RiemannianMetricTensor`: 상태 의존적 메트릭 학습
+- `LagrangianEnergySystem`: 물리적 에너지 최소화
+- `TemporalCreativityModule`: 시간 미분 창의성 측정
 
-### 2. 하이퍼볼릭 기하학 (Rust + CUDA)
-- **3개 모델 병렬**: Poincaré, Lorentz, Klein
-- **고성능 커널**: CUDA 최적화 (10-100배 가속)
-- **동적 곡률**: 레이어별 학습 가능한 곡률
-- **모델 변환**: 3개 기하학 간 seamless 변환
+### 하이퍼볼릭 기하학 (Rust + CUDA)
+- 3개 모델 병렬: Poincare, Lorentz, Klein
+- 고성능 커널: CUDA 최적화 (10-100배 가속)
+- 동적 곡률: 레이어별 학습 가능한 곡률
 
-### 3. 계층적 LLM
-- **Tree Processor**: Bottom-up & Top-down 메시지 패싱
-- **Sentence-Topic Head**: 문장-주제 계층 구조
-- **Metric Attention**: SPD 메트릭 기반 어텐션
-- **Structural Edit**: 문장 구조 편집 (Replace/Insert/Delete/Reorder)
-- **Top-Down Decoder**: 계층적 생성
+### 계층적 LLM
+- Tree Processor: Bottom-up & Top-down 메시지 패싱
+- Sentence-Topic Head: 문장-주제 계층 구조
+- Metric Attention: SPD 메트릭 기반 어텐션
 
-### 4. 최적화
-- **Natural Gradient**: Fisher 정보 행렬 기반
-- **배치 고유값 분해**: 100배 속도 향상
-- **Fast SPD Mixing**: 10-100배 속도 향상
-- **Mixed Precision**: FP16 학습 지원
+### LB-IGD (Laplace-Beltrami Inverse Game Design)
 
-### 5. LB-IGD (Laplace-Beltrami Inverse Game Design)
+게임 밸런스 설계를 확산 PDE 기반 연속 최적화로 푸는 프레임워크.
 
-게임 밸런스 설계를 **확산 PDE 기반 연속 최적화**로 푸는 프레임워크입니다.
-
-#### 핵심 정리
-
-**정리 4.2 (Bellman <-> LBO 완전 정합)**
-
-연속시간 Markov reward process에서 생성자가 라플라스-벨트라미이면:
-
-```
-V(x) := E_x[ integral_0^inf exp(-rho*t) r(X_t) dt ]
-```
-
-는 다음 PDE를 만족합니다:
-
-```
-(rho - nu * Delta_g) V = r
-```
-
-- 그래프 이산화: `(rho*I + nu*L) v = r` (희소 선형 시스템)
-- 승률 치환: `r(x) = P(x)` 또는 `r(x) = -J(x)`
-
-**정리 4.3 (토션/드리프트 확장)**
-
-시냅스 방향성(STDP)을 넣으면 생성자에 1차 드리프트가 추가됩니다:
+- **정리 4.2**: 연속시간 MRP에서 Bellman과 LBO가 완전 동치
+- **정리 4.3**: 시냅스 방향성(STDP)을 드리프트로 확장
+- **뇌 물리 대응**: 케이블 방정식에서 동일한 수학이 유도됨
 
 ```
 (rho - nu*Delta_g - b.grad_g) V = r
 ```
 
-- 그래프 이산화: `(rho*I + nu*L_sym + kappa*A) v = r`
-- `A = (W - W^T)/2`: 반대칭 성분 (토션/방향성)
-
-#### 뇌와의 연결
-
-뉴런 막의 케이블 방정식에서 출발해 동일한 수학이 유도됩니다:
-
-```
-tau_m * dV/dt = lambda^2 * d^2V/dx^2 - (V - V_rest) + R_m * I_syn
-         |
-         v  (정리: nu = lambda^2/tau_m, rho = 1/tau_m)
-         |
-    dU/dt = nu*Delta_g*U - rho*U + r
-         |
-         v  (시냅스 방향성)
-         |
-    dU/dt = nu*Delta_g*U + b.grad_g*U - rho*U + r
-         |
-         v  (정상 상태)
-         |
-    (rho - nu*Delta_g - b.grad_g) V = r   <-- 정리 4.3
-```
-
-이 프레임워크가 "억지"가 아닌 이유: 뇌 물리 상수(막 시간상수, 공간상수)가 수학 파라미터(rho, nu)로 직접 대응됩니다.
-
-#### 실질적 이득
-
-| 이산 Bellman 반복 | 연속 PDE: (rho - L)V = r |
-|------------------|--------------------------|
-| 수렴까지 반복 | 한 번에 해 (선형 solve) |
-| 노이즈에 민감 | 스무딩 내장 |
-| 파라미터 의미 불명확 | 물리적 해석 가능 |
-| 뇌와 분리된 모델 | 뇌 물리와 동일 구조 |
-
-자세한 내용: `docs/08_lb_igd/01_guide.md`
+자세한 내용: [docs/08_lb_igd/01_guide.md](docs/08_lb_igd/01_guide.md)
 
 
-## 설치 및 빌드
+## 설치
 
-사전 준비물
-- Python 3.8 이상, pip
-- Rust toolchain (stable), Cargo
-- PyTorch 2.0 이상
-- CUDA 사용 시: NVIDIA CUDA Toolkit 설치, 환경 변수 `CUDA_HOME` 또는 `CUDA_PATH` 설정
-
-가상환경 생성 및 필수 패키지 설치
-```bash
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-CPU 전용 빌드
-```bash
-maturin develop
-python -c "import reality_stone as rs; print(rs._has_rust_ext, rs._has_cuda)"
-```
-
-CUDA 빌드
-```bash
-export CUDA_HOME=/usr/local/cuda   # Windows: set CUDA_PATH=C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.x
-maturin develop --features cuda --release
-python -c "import reality_stone as rs; print(rs._has_rust_ext, rs._has_cuda)"
-```
-
-주의: 기본 CUDA 아키텍처 플래그는 `sm_70`입니다. 다른 GPU를 사용한다면 `build.rs`의 `-arch=sm_70`을 환경에 맞게 수정하세요.
-
-
-## 빠른 시작
-
-### 1. 설치
+**사전 준비물**: Python 3.8+, Rust toolchain, PyTorch 2.0+, (선택) CUDA Toolkit
 
 ```bash
 git clone https://github.com/jigglypop/reality_stone.git
 cd reality_stone
-python -m venv .venv
-source .venv/bin/activate
 
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
+# CPU 빌드
 maturin develop --release
 
+# CUDA 빌드 (선택)
+export CUDA_HOME=/usr/local/cuda  # Windows: set CUDA_PATH=...
 maturin develop --features cuda --release
 ```
 
-### 2. 완전한 AGI 모델
+## 빠른 시작
+
+### AGI 모델
 
 ```python
 from reality_stone.models.agi import RealityStoneAGI, AGIConfig
+import torch
 
 config = AGIConfig(
-    state_dim=128,
-    action_dim=10,
-    hidden_dim=256,
-    num_layers=4,
-    num_topics=8,
-    use_encryption=True,
-    enable_top_down=True,
-    enable_structural_edit=True
+    state_dim=128, action_dim=10, hidden_dim=256,
+    num_layers=4, num_topics=8
 )
-
 model = RealityStoneAGI(config)
 
-state = torch.randn(16, 128)
-action = torch.randn(16, 10)
-key = torch.randn(16, 32)
-
-outputs = model(state, action, key, return_all=True)
-
-print(f"Value: {outputs['value']}")
-print(f"Policy: {outputs['policy']}")
-print(f"Creativity: {outputs['creativity']}")
-print(f"Lagrangian Loss: {outputs['lagrangian_loss']}")
+outputs = model(
+    torch.randn(16, 128),  # state
+    torch.randn(16, 10),   # action
+    torch.randn(16, 32),   # key
+    return_all=True
+)
+# outputs: value, policy, creativity, lagrangian_loss
 ```
 
-### 3. 계층적 LLM
+### 하이퍼볼릭 레이어
 
 ```python
-from reality_stone.models.hierarchical_sentence_topic_llm import (
-    HierarchicalLLMConfig,
-    train_hierarchical_llm_from_text
-)
-
-config = HierarchicalLLMConfig(
-    d_model=128,
-    num_topics=8,
-    use_fast_spd_mixing=True,
-    enable_top_down=True,
-    enable_structural_edit=True
-)
-
-model, info = train_hierarchical_llm_from_text(
-    data_path="data/text.txt",
-    config=config,
-    epochs=10,
-    batch_size=4
-)
-```
-
-### 4. 하이퍼볼릭 레이어
-
-```python
-import torch
 import reality_stone as rs
 
-u = torch.randn(4, 8)
-v = torch.randn(4, 8)
 y = rs.poincare_ball_layer(u, v, c=1e-3, t=0.7)
-
-x = torch.randn(2, 4)
-y = torch.randn(2, 4)
 d = rs.poincare_distance(x, y, c=1e-3)
 xL = rs.poincare_to_lorentz(x, c=1e-3)
 ```
 
-### 5. 데모 실행
+### 데모 및 테스트
 
 ```bash
 python examples/bellman_riemannian_demo.py
-
-python examples/train_on_real_data.py
-
 python -m tests.poincare --quick
 python -m tests.lorentz --quick
 python -m tests.klein --quick
 ```
 
-
 ## 프로젝트 구조
 
 ```
 reality_stone/
-├── docs/                               # 문서
-│   ├── 08_lb_igd/                      # LB-IGD 이론 문서
-│   │   ├── 01_guide.md                 # 개요/목차
-│   │   ├── 02_bellman.md               # 제1장: 벨만과 설계 최적화
-│   │   ├── 03_lbo.md                   # 제2장: 라플라스-벨트라미 (핵심)
-│   │   ├── 04_blackbox.md              # 제3장: ES/블랙박스 최적화
-│   │   ├── 05_evaluation.md            # 제4장: 평가 프로토콜
-│   │   ├── 06_inverse.md               # 제5장: 역설계
-│   │   └── 07_synapse.md               # 부록: 뇌와의 연결
-│   ├── COMPLETE_AGI_ARCHITECTURE.md    # 완전한 AGI 아키텍처
-│   ├── AGI_IMPLEMENTATION_ROADMAP.md   # 구현 로드맵
-│   ├── CORE_EQUATIONS.md               # 핵심 수식
-│   ├── IMPLEMENTATION_GUIDE.md         # 구현 가이드
-│   ├── BELLMAN_RIEMANNIAN_SUMMARY.md   # 요약
-│   ├── unified_geometric_agi_architecture.md  # 통합 조감도
-│   └── ...
-├── src/                                # Rust 코어
-│   ├── layers/                         # 하이퍼볼릭 레이어
-│   │   ├── poincare.rs
-│   │   ├── lorentz.rs
-│   │   ├── klein.rs
-│   │   └── cuda/                       # CUDA 커널
-│   ├── ops/                            # 연산자
-│   └── bindings/                       # PyO3 바인딩
-├── python/reality_stone/               # Python API
-│   ├── models/                         # 모델
-│   │   ├── agi.py                      # ⭐ 통합 AGI 모델
-│   │   ├── hierarchical_sentence_topic_llm.py  # 계층적 LLM
-│   │   ├── bellman.py                  # 벨만 좌표계
-│   │   └── ...
-│   ├── layers/                         # Autograd 레이어
-│   └── optimizers/                     # 최적화기
-├── experiments/                        # 실험
-│   ├── lbigd/                          # LB-IGD 실험
-│   │   └── core/                       # 핵심 모듈
-│   │       ├── designer.py             # ES + CRN + LBO 가중
-│   │       ├── lbo.py                  # 그래프 라플라시안
-│   │       ├── metric.py               # 연결 업데이트
-│   │       ├── dopamine.py             # 도파민 게이트 (3-factor)
-│   │       └── simulation.py           # 평가 시뮬레이션
-│   └── gpt2/                           # GPT-2 실험
-├── examples/                           # 예제
-│   ├── bellman_riemannian_demo.py
-│   ├── train_on_real_data.py
-│   └── ...
-└── tests/                              # 테스트
+├── src/                     # Rust 코어 (하이퍼볼릭 레이어, CUDA 커널)
+├── python/reality_stone/    # Python API (모델, 레이어, 최적화기)
+├── experiments/lbigd/       # LB-IGD 실험 (ES+LBO 기반 게임 밸런스)
+├── docs/                    # 문서
+│   └── 08_lb_igd/           # LB-IGD 이론 (Bellman-LBO 증명)
+├── examples/                # 예제
+└── tests/                   # 테스트
 ```
 
-## 데이터 플로우
+## API 요약
 
-```
-Python Input
-    ↓
-벨만 좌표 인코딩
-    ↓
-리만 메트릭 계산
-    ↓
-[Poincaré] ← PyO3 → Rust/CUDA
-[Lorentz]  ← PyO3 → Rust/CUDA  (병렬)
-[Klein]    ← PyO3 → Rust/CUDA
-    ↓
-메트릭 가중 결합
-    ↓
-계층적 LLM 처리
-    ↓
-라그랑지안 최적화
-    ↓
-시간 미분 (창의성)
-    ↓
-자연 그라디언트 업데이트
-    ↓
-Output (Value + Policy + Generated Text)
-```
-
-
-## API 개요 (Python)
-
-상위 함수
-- `poincare_ball_layer(u, v, c, t)`
-- `lorentz_layer(u, v, c, t)`
-- `klein_layer(u, v, c, t)`
-
-거리/변환
-- `poincare_distance(x, y, c)`
-- `poincare_to_lorentz(x, c)`, `poincare_to_klein(x, c)`
-- `lorentz_to_poincare(x, c)`, `lorentz_to_klein(x, c)`
-- `klein_to_poincare(x, c)`, `klein_to_lorentz(x, c)`
-
-레이어
-- `PoincareBallLayer`, `LorentzLayer`, `KleinLayer`
-- 하이퍼볼릭 선형 변형: `HyperbolicLinear`, `GeodesicLinear`, `EquivalentHyperbolicLinear`
-- 압축: `SplineLinear`
-
-기타
-- 투영: `project_to_ball(x, epsilon)`
-- 메트릭 합성: `from reality_stone import metrikey` (SPD 메트릭/합성/암시적 변환 함수 제공)
-
-
-## 테스트 실행
-
-### 벨만-리만 데모
-```bash
-python examples/bellman_riemannian_demo.py
-```
-
-### 하이퍼볼릭 레이어 테스트
-```bash
-python -m tests.poincare --mode both --quick --epochs 2 --batch-size 256
-python -m tests.lorentz  --quick --epochs 2 --batch-size 256
-python -m tests.klein    --quick --epochs 2 --batch-size 256
-```
-
-공통 옵션: `--device {auto,cpu,cuda}`, `--data-dir tests/data`, `--epochs`, `--batch-size`, `--lr`, `--t`, `--c`, `--quick`, `--seed`
-
+| 분류 | 함수/클래스 |
+|------|-------------|
+| 레이어 | `poincare_ball_layer`, `lorentz_layer`, `klein_layer` |
+| 거리 | `poincare_distance`, `lorentz_distance`, `klein_distance` |
+| 변환 | `poincare_to_lorentz`, `lorentz_to_klein`, ... |
+| 클래스 | `PoincareBallLayer`, `LorentzLayer`, `KleinLayer` |
+| 선형 | `HyperbolicLinear`, `GeodesicLinear`, `SplineLinear` |
+| 메트릭 | `metrikey` (SPD 메트릭 합성/변환) |
 
 ## 문제 해결
 
-- Rust 확장 모듈을 찾지 못함: `maturin develop`로 빌드 후 다시 시도하세요.
-- CUDA가 비활성으로 표시됨: `CUDA_HOME`/`CUDA_PATH` 확인, GPU 드라이버/Toolkit 설치 상태 점검, CUDA 피처로 빌드했는지 확인.
-- Windows 빌드: Visual C++ Build Tools 설치 필요. PowerShell 대신 CMD/Developer Prompt 또는 Git Bash 사용 가능.
-- CUDA 아키텍처 오류: `build.rs`의 `-arch=sm_70`을 환경에 맞게 수정.
-- NumPy 2.x와의 호환성: 현재 `numpy>=1.21,<2.0`을 사용합니다.
+| 문제 | 해결 |
+|------|------|
+| Rust 모듈 없음 | `maturin develop` 실행 |
+| CUDA 비활성 | `CUDA_HOME` 설정 후 `--features cuda`로 빌드 |
+| Windows 빌드 | Visual C++ Build Tools 필요 |
+| CUDA 아키텍처 오류 | `build.rs`의 `-arch=sm_70` 수정 |
 
+## 문서
 
-## 변경 사항 요약 (v0.2.0)
+- [LB-IGD 가이드](docs/08_lb_igd/01_guide.md) - Bellman-LBO 완전 정합 이론
+- [AGI 아키텍처](docs/COMPLETE_AGI_ARCHITECTURE.md) - 전체 설계
+- [핵심 수식](docs/CORE_EQUATIONS.md) - 수학적 기초
+- [구현 가이드](docs/IMPLEMENTATION_GUIDE.md) - 모듈별 구현
 
-### 새로운 기능 (벨만-리만 통합)
-- **벨만-리만 통합 아키텍처**: 벨만 방정식, 리만 기하학, 라그랑지안 역학 통합
-- **핵심 수식 문서화**: `docs/CORE_EQUATIONS.md` - 모든 핵심 수식과 이론적 근거
-- **구현 가이드**: `docs/IMPLEMENTATION_GUIDE.md` - 모듈별 상세 구현 방법
-- **데모 예제**: `examples/bellman_riemannian_demo.py` - 실행 가능한 완전한 데모
-- **BellmanCoordinateSystem**: 벨만 방정식을 좌표계로 사용
-- **RiemannianMetricTensor**: 상태 의존적 메트릭 학습 + 암호화
-- **LagrangianEnergySystem**: 라그랑지안 기반 최적화
-- **TemporalCreativityModule**: 시간 미분으로 창의성 측정
-- **NaturalGradientOptimizer**: Fisher 정보 행렬 기반 최적화
+## 성능 목표
 
-### 새로운 기능 (LB-IGD: Bellman-LBO 완전 정합)
-- **정리 4.2**: 연속시간 MRP에서 Bellman <-> LBO 완전 동치 증명 (`docs/08_lb_igd/03_lbo.md`)
-- **정리 4.3**: 토션/드리프트(STDP 방향성) 확장 및 증명
-- **승률 치환**: r(x) = P(x)로 두면 값함수가 "승률 지형의 LBO 스무딩"
-- **그래프 이산화**: (rho*I + nu*L + kappa*A)v = r 형태의 희소 선형 시스템
-- **뇌 물리 유도**: 케이블 방정식에서 Delta_g + 드리프트 유도 (`docs/08_lb_igd/07_synapse.md`)
-- **물리 상수 대응**: tau_m <-> 1/rho, lambda <-> sqrt(nu/rho) (실험값과 직접 대응)
-- **LB-IGD 문서 체계**: 7개 문서로 구성된 완전한 이론 체계 (`docs/08_lb_igd/`)
+| 항목 | 목표 |
+|------|------|
+| 압축률 | 2-3배 (860억 → 340억) |
+| 학습 속도 | 2-3배 |
+| 추론 능력 | 1.2-1.5배 |
 
-### 기존 기능 개선
-- Poincaré/Lorentz/Klein 레이어 및 연산의 Python Autograd 경로 정비
-- 동적/레이어별 곡률 API 추가: `poincare_ball_layer_layerwise_cpu` 및 정확한 backward
-- 스플라인 압축 레이어 `SplineLinear` 추가 및 `from_linear` 최적화 파이프라인 도입
-- 하이퍼볼릭 선형 변형 레이어군 추가: `HyperbolicLinear`, `GeodesicLinear`, `EquivalentHyperbolicLinear`
-- `metrikey` 서브모듈 공개: SPD 메트릭 합성/적용, 암시적 변환 체인
+---
 
-### 성능 예측
-- 압축률: 2-3배 (860억 → 340억 파라미터)
-- 학습 속도: 2-3배 (Natural Gradient + 라그랑지안)
-- 추론 능력: 1.2-1.5배 (동일 데이터 조건)
-
-
-## 라이선스
-
-MIT License
-
+v0.2.0 | MIT License | Python 3.8-3.12 | PyTorch 2.0+

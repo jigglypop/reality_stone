@@ -16,6 +16,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from experiments.lbigd.core.lbo import solve_resolvent  # noqa: E402
+from experiments.lbigd.core.lbo import build_laplacian_matrix, laplacian_mul  # noqa: E402
+from experiments.lbigd.core.metric import ring, update as update_metric  # noqa: E402
+from experiments.lbigd.core.dopamine import DopamineGate  # noqa: E402
 
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+|[가-힣]+")
@@ -357,57 +360,636 @@ def _search(
     return out
 
 
+def _lowfreq_signal(n: int) -> np.ndarray:
+    x = np.arange(int(n), dtype=np.float64)
+    return (0.8 * np.sin(2.0 * np.pi * x / float(n)) + 0.2 * np.sin(4.0 * np.pi * x / float(n))).astype(np.float64)
+
+
+def _mse(a: np.ndarray, b: np.ndarray) -> float:
+    d = a - b
+    return float(np.mean(d * d))
+
+
+def _rolling_sigma(x: np.ndarray, win: int) -> np.ndarray:
+    out = np.full((x.shape[0],), np.nan, dtype=np.float64)
+    if x.shape[0] < int(win) + 2:
+        return out
+    for t in range(int(win), x.shape[0]):
+        seg = x[(t - int(win)) : t]
+        out[t] = float(np.std(seg, ddof=1))
+    return out
+
+
+def _phase_mean(*, t: np.ndarray, valid: np.ndarray, lo: int, hi: int, values: Dict[str, np.ndarray]) -> Dict[str, float]:
+    m = valid & (t >= int(lo)) & (t < int(hi))
+    out: Dict[str, float] = {"n": float(np.sum(m))}
+    for k, v in values.items():
+        out[k] = float(np.mean(v[m])) if np.any(m) else float("nan")
+    return out
+
+
+def _mean_std(vals: List[float]) -> Tuple[float, float]:
+    v = np.array(vals, dtype=np.float64)
+    return float(v.mean()), float(v.std(ddof=1)) if v.size > 1 else 0.0
+
+
+def _run_collapse(
+    *,
+    seeds: int,
+    n: int,
+    steps: int,
+    dt: float,
+    alpha: float,
+    k0: int,
+    win: int,
+    burn: int,
+    noise_low: float,
+    noise_high: float,
+    t1: int,
+    t2: int,
+    verbose: bool,
+) -> None:
+    """
+    CP2 tool: reproduce docs/09_intelligence/06_붕괴와_회복.md idea.
+    - stable: low noise
+    - collapse: high noise injection
+    - recovery: low noise again
+    """
+    eps = 1e-8
+    w = ring(int(n), weight=1.0)
+    L = build_laplacian_matrix(w.astype(np.float32)).astype(np.float64)
+    _, evecs = np.linalg.eigh(L)
+    y = _lowfreq_signal(int(n))
+
+    def noise_t(t: int) -> float:
+        if t < int(t1):
+            return float(noise_low)
+        if t < int(t2):
+            return float(noise_high)
+        return float(noise_low)
+
+    rows = []
+    for seed in range(int(seeds)):
+        rng = np.random.default_rng(int(seed))
+        u = np.zeros((int(n),), dtype=np.float64)
+        err = np.zeros((int(steps),), dtype=np.float64)
+        r_low = np.zeros((int(steps),), dtype=np.float64)
+        a1 = np.zeros((int(steps),), dtype=np.float64)
+
+        for t in range(int(steps)):
+            x = y + noise_t(t) * rng.standard_normal((int(n),), dtype=np.float64)
+            du = float(alpha) * (x - u) - laplacian_mul(w, u.astype(np.float32)).astype(np.float64)
+            u = u + float(dt) * du
+
+            err[t] = _mse(u, y)
+            a = u @ evecs
+            e = a * a
+            e_tot = float(np.sum(e)) + eps
+            e_low = float(np.sum(e[1 : (min(int(k0), int(n) - 1) + 1)]))
+            r_low[t] = e_low / e_tot
+            a1[t] = float(a[1])
+
+        da1 = np.diff(a1) / float(dt)  # (steps-1,)
+        sig = _rolling_sigma(da1, int(win))  # (steps-1,)
+        t_idx = np.arange(1, int(steps))
+        err1 = err[1:]
+        r1 = r_low[1:]
+        I = r1 * (1.0 / (sig + eps))
+        valid = np.isfinite(I)
+
+        stable = _phase_mean(t=t_idx, valid=valid, lo=int(burn), hi=int(t1), values={"err": err1, "I": I})
+        collapse = _phase_mean(t=t_idx, valid=valid, lo=int(t1), hi=int(t2), values={"err": err1, "I": I})
+        recovery = _phase_mean(t=t_idx, valid=valid, lo=int(t2), hi=int(steps), values={"err": err1, "I": I})
+        corr = float(np.corrcoef(I[valid], err1[valid])[0, 1]) if int(np.sum(valid)) >= 3 else float("nan")
+
+        rows.append({"stable": stable, "collapse": collapse, "recovery": recovery, "corr": corr})
+        if verbose:
+            print(f"[seed={seed}] stable err={stable['err']:.6f} I={stable['I']:.6f} | collapse err={collapse['err']:.6f} I={collapse['I']:.6f} | recovery err={recovery['err']:.6f} I={recovery['I']:.6f} | corr={corr:.4f}")
+
+    e_st_m, e_st_s = _mean_std([float(r["stable"]["err"]) for r in rows])
+    e_c_m, e_c_s = _mean_std([float(r["collapse"]["err"]) for r in rows])
+    e_r_m, e_r_s = _mean_std([float(r["recovery"]["err"]) for r in rows])
+    I_st_m, I_st_s = _mean_std([float(r["stable"]["I"]) for r in rows])
+    I_c_m, I_c_s = _mean_std([float(r["collapse"]["I"]) for r in rows])
+    I_r_m, I_r_s = _mean_std([float(r["recovery"]["I"]) for r in rows])
+    corr_m, corr_s = _mean_std([float(r["corr"]) for r in rows])
+
+    print("collapse_report")
+    print(f"- seeds: {int(seeds)}")
+    print(f"- n={int(n)} steps={int(steps)} dt={float(dt)} alpha={float(alpha)} k0={int(k0)} win={int(win)} burn={int(burn)}")
+    print(f"- noise: stable={float(noise_low)} collapse={float(noise_high)} recovery={float(noise_low)}")
+    print(f"- phases: stable=[{int(burn)},{int(t1)}) collapse=[{int(t1)},{int(t2)}) recovery=[{int(t2)},{int(steps)})")
+    print(f"- stable   err: {e_st_m:.6f} ± {e_st_s:.6f} | I: {I_st_m:.6f} ± {I_st_s:.6f}")
+    print(f"- collapse err: {e_c_m:.6f} ± {e_c_s:.6f} | I: {I_c_m:.6f} ± {I_c_s:.6f}")
+    print(f"- recovery err: {e_r_m:.6f} ± {e_r_s:.6f} | I: {I_r_m:.6f} ± {I_r_s:.6f}")
+    print(f"- corr(I,err): {corr_m:.6f} ± {corr_s:.6f}")
+
+
+def _run_gate(
+    *,
+    seeds: int,
+    n: int,
+    steps1: int,
+    steps2: int,
+    dt: float,
+    alpha: float,
+    noise: float,
+    k0: int,
+    win: int,
+    burn: int,
+    verbose: bool,
+) -> None:
+    """
+    CP2 tool: reproduce "geometry shift + recovery mechanism" (Gate ON/OFF).
+    """
+    eps = 1e-8
+    total = int(steps1) + int(steps2)
+
+    def simulate(seed: int, gate_enabled: bool) -> Dict[str, float]:
+        rng_perm = np.random.default_rng(int(seed))
+        y_base = _lowfreq_signal(int(n))
+        perm = rng_perm.permutation(int(n))
+        y2 = y_base[perm]
+
+        rng = np.random.default_rng(int(seed))
+        w = ring(int(n), weight=1.0)
+        u = np.zeros((int(n),), dtype=np.float64)
+
+        gate = DopamineGate(ratio=1.6, hold_steps=12) if gate_enabled else None
+        triggers = 0
+
+        # metric update params
+        tau = 0.35
+        topk = 6
+        metric_lr = 0.25
+        metric_decay = 0.01
+        w_max = 1.0
+
+        err = np.zeros((total,), dtype=np.float64)
+        r_low = np.zeros((total,), dtype=np.float64)
+        a1 = np.zeros((total,), dtype=np.float64)
+
+        # eigenvectors for current w (recompute only when w changes)
+        L = build_laplacian_matrix(w.astype(np.float32)).astype(np.float64)
+        _, evecs = np.linalg.eigh(L)
+        phi1_prev = evecs[:, 1].copy()
+
+        def refresh_modes() -> None:
+            nonlocal evecs, phi1_prev
+            L2 = build_laplacian_matrix(w.astype(np.float32)).astype(np.float64)
+            _, ev = np.linalg.eigh(L2)
+            if float(np.dot(ev[:, 1], phi1_prev)) < 0.0:
+                ev[:, 1] *= -1.0
+            phi1_prev = ev[:, 1].copy()
+            evecs = ev
+
+        for t in range(total):
+            y = y_base if t < int(steps1) else y2
+            x = y + float(noise) * rng.standard_normal((int(n),), dtype=np.float64)
+            du = float(alpha) * (x - u) - laplacian_mul(w, u.astype(np.float32)).astype(np.float64)
+            u = u + float(dt) * du
+
+            err[t] = _mse(u, y)
+            a = u @ evecs
+            e = a * a
+            e_tot = float(np.sum(e)) + eps
+            e_low = float(np.sum(e[1 : (min(int(k0), int(n) - 1) + 1)]))
+            r_low[t] = e_low / e_tot
+            a1[t] = float(a[1])
+
+            if not gate_enabled:
+                continue
+
+            if gate is not None and gate.update(float(err[t])):
+                triggers += 1
+                w = update_metric(
+                    w,
+                    u.astype(np.float32, copy=False),
+                    lr=float(metric_lr),
+                    tau=float(tau),
+                    topk=int(topk),
+                    decay=float(metric_decay),
+                    w_max=float(w_max),
+                )
+                refresh_modes()
+
+        da1 = np.diff(a1) / float(dt)
+        sig = _rolling_sigma(da1, int(win))
+        t_idx = np.arange(1, total)
+        err1 = err[1:]
+        r1 = r_low[1:]
+        I = r1 * (1.0 / (sig + eps))
+        valid = np.isfinite(I)
+
+        stable = _phase_mean(t=t_idx, valid=valid, lo=int(burn), hi=int(steps1), values={"err": err1, "r": r1, "I": I})
+        early = _phase_mean(t=t_idx, valid=valid, lo=int(steps1), hi=int(steps1) + 60, values={"err": err1, "r": r1, "I": I})
+        tail = _phase_mean(t=t_idx, valid=valid, lo=total - 120, hi=total, values={"err": err1, "r": r1, "I": I})
+        corr = float(np.corrcoef(I[valid], err1[valid])[0, 1]) if int(np.sum(valid)) >= 3 else float("nan")
+
+        return {
+            "triggers": float(triggers),
+            "e_st": float(stable["err"]),
+            "e_early": float(early["err"]),
+            "e_tail": float(tail["err"]),
+            "r_early": float(early["r"]),
+            "r_tail": float(tail["r"]),
+            "I_early": float(early["I"]),
+            "I_tail": float(tail["I"]),
+            "corr": float(corr),
+        }
+
+    rows_on = [simulate(seed=i, gate_enabled=True) for i in range(int(seeds))]
+    rows_off = [simulate(seed=i, gate_enabled=False) for i in range(int(seeds))]
+
+    imp = np.array([rows_off[i]["e_tail"] - rows_on[i]["e_tail"] for i in range(int(seeds))], dtype=np.float64)
+
+    print("gate_report")
+    print(f"- seeds: {int(seeds)}")
+    print(f"- n={int(n)} steps1={int(steps1)} steps2={int(steps2)} dt={float(dt)} alpha={float(alpha)} noise={float(noise)} k0={int(k0)} win={int(win)} burn={int(burn)}")
+    on_tr_m, on_tr_s = _mean_std([float(r["triggers"]) for r in rows_on])
+    print(f"- gate_on triggers: {on_tr_m:.3f} ± {on_tr_s:.3f}")
+    for label, rows in [("gate_on", rows_on), ("gate_off", rows_off)]:
+        e_st_m, e_st_s = _mean_std([float(r["e_st"]) for r in rows])
+        e_early_m, e_early_s = _mean_std([float(r["e_early"]) for r in rows])
+        e_tail_m, e_tail_s = _mean_std([float(r["e_tail"]) for r in rows])
+        r_early_m, r_early_s = _mean_std([float(r["r_early"]) for r in rows])
+        r_tail_m, r_tail_s = _mean_std([float(r["r_tail"]) for r in rows])
+        I_early_m, I_early_s = _mean_std([float(r["I_early"]) for r in rows])
+        I_tail_m, I_tail_s = _mean_std([float(r["I_tail"]) for r in rows])
+        corr_m, corr_s = _mean_std([float(r["corr"]) for r in rows])
+
+        print(f"- {label} phase1 err: {e_st_m:.6f} ± {e_st_s:.6f}")
+        print(f"- {label} phase2 early err: {e_early_m:.6f} ± {e_early_s:.6f} | R_low: {r_early_m:.6f} ± {r_early_s:.6f} | I: {I_early_m:.6f} ± {I_early_s:.6f}")
+        print(f"- {label} phase2 tail  err: {e_tail_m:.6f} ± {e_tail_s:.6f} | R_low: {r_tail_m:.6f} ± {r_tail_s:.6f} | I: {I_tail_m:.6f} ± {I_tail_s:.6f}")
+        print(f"- {label} corr(I,err): {corr_m:.6f} ± {corr_s:.6f}")
+
+    print(f"- tail_err_improvement(off-on): {float(imp.mean()):.6f} ± {float(imp.std(ddof=1)) if imp.size>1 else 0.0:.6f}")
+
+
+def _format_context(hits: List[Tuple[float, float, Chunk]], *, max_context_chars: int, chunk_chars: int) -> Tuple[str, List[str]]:
+    """
+    Returns:
+      context_text: concatenated context blocks for prompting
+      sources: list of "path :: title" strings
+    """
+    blocks: List[str] = []
+    sources: List[str] = []
+    used = 0
+    for rank, (_score, _raw, c) in enumerate(hits, start=1):
+        src = f"{c.path} :: {c.title}"
+        sources.append(src)
+        txt = c.text.strip().replace("\r\n", "\n").replace("\r", "\n")
+        if int(chunk_chars) > 0 and len(txt) > int(chunk_chars):
+            txt = txt[: int(chunk_chars)].rstrip() + " ..."
+        block = f"[CONTEXT {rank}] {src}\n{txt}"
+        if used + len(block) + 2 > int(max_context_chars):
+            break
+        blocks.append(block)
+        used += len(block) + 2
+    return "\n\n".join(blocks).strip(), sources
+
+
+def _run_chat(
+    *,
+    roots: List[str],
+    query: str,
+    topk: int,
+    rho: float,
+    nu: float,
+    adj_weight: float,
+    link_weight: float,
+    max_chars: int,
+    model_name: str,
+    device: str,
+    max_new_tokens: int,
+    temperature: float,
+    top_p: float,
+    seed: int,
+    max_context_chars: int,
+    chunk_chars: int,
+    no_llm: bool,
+) -> None:
+    chunks = _build_chunks(list(roots), max_chars=int(max_chars))
+    if not chunks:
+        print("chat_report")
+        print("- error: no markdown chunks found")
+        return
+
+    w = _build_graph(chunks, adj_weight=float(adj_weight), link_weight=float(link_weight))
+    hits = _search(chunks=chunks, w=w, query=str(query), topk=int(topk), rho=float(rho), nu=float(nu))
+    ctx, sources = _format_context(hits, max_context_chars=int(max_context_chars), chunk_chars=int(chunk_chars))
+    draft = _answer_from_hits(str(query), hits, max_items=6)
+
+    # Always print something quickly (even if HF download/model load takes time).
+    print("chat_report")
+    print(f"- query: {query}")
+    print(f"- sources: {len(sources)}")
+    for s in sources[: max(1, int(topk))]:
+        print(f"  - {s}")
+    print()
+    print("answer_draft:")
+    if draft:
+        for s in draft:
+            print(f"- {s}")
+    else:
+        print("- 모르겠다")
+    print()
+
+    if bool(no_llm):
+        return
+
+    # Build an instruction-ish prompt (works best with instruct models; still usable for tiny GPT2).
+    prompt_parts = [
+        "너는 문서 기반 어시스턴트다.",
+        "아래 CONTEXT에 있는 내용만으로 질문에 답해라.",
+        "CONTEXT에 근거가 없으면 \"모르겠다\"라고 답해라.",
+        "",
+        ctx,
+    ]
+    if draft:
+        prompt_parts += [
+            "",
+            "[DRAFT]",
+            "\n".join([f"- {s}" for s in draft]),
+        ]
+    prompt_parts += [
+        "",
+        f"[QUESTION]\n{query}",
+        "",
+        "[ANSWER]",
+    ]
+    prompt = "\n".join([p for p in prompt_parts if p is not None]).strip() + "\n"
+
+    answer_text = None
+    llm_status = None
+    try:
+        import warnings
+        import torch  # type: ignore
+        from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore
+
+        warnings.filterwarnings("ignore", category=FutureWarning)
+        warnings.filterwarnings("ignore", category=UserWarning)
+
+        if device == "auto":
+            use_cuda = bool(getattr(torch, "cuda", None) is not None and torch.cuda.is_available())
+            device = "cuda" if use_cuda else "cpu"
+
+        tok = AutoTokenizer.from_pretrained(model_name)
+        if tok.pad_token_id is None and tok.eos_token_id is not None:
+            tok.pad_token = tok.eos_token
+
+        mdl = AutoModelForCausalLM.from_pretrained(model_name)
+        mdl.eval()
+        mdl.to(device)
+
+        torch.manual_seed(int(seed))
+        if device == "cuda":
+            torch.cuda.manual_seed_all(int(seed))
+
+        max_in = int(getattr(tok, "model_max_length", 1024) or 1024)
+        if max_in > 8192:
+            max_in = 1024
+        enc = tok(prompt, return_tensors="pt", truncation=True, max_length=int(max_in))
+        enc = {k: v.to(device) for k, v in enc.items()}
+
+        do_sample = bool(float(temperature) > 0.0)
+        gen_kwargs = {
+            "max_new_tokens": int(max_new_tokens),
+            "do_sample": bool(do_sample),
+            "pad_token_id": int(tok.pad_token_id) if tok.pad_token_id is not None else None,
+            "eos_token_id": int(tok.eos_token_id) if tok.eos_token_id is not None else None,
+            # Basic anti-looping
+            "repetition_penalty": 1.08,
+            "no_repeat_ngram_size": 3,
+        }
+        if do_sample:
+            gen_kwargs["temperature"] = float(max(1e-6, float(temperature)))
+            gen_kwargs["top_p"] = float(top_p)
+
+        gen = mdl.generate(**enc, **gen_kwargs)
+
+        out = tok.decode(gen[0], skip_special_tokens=True)
+        # Extract only the completion after the last [ANSWER]
+        if "[ANSWER]" in out:
+            out = out.split("[ANSWER]", maxsplit=1)[-1]
+        answer_text = out.strip()
+        if answer_text:
+            # Heuristic quality gate: tiny non-instruct LMs can loop or ignore Korean.
+            def _has_korean(s: str) -> bool:
+                return any("가" <= ch <= "힣" for ch in s)
+
+            def _is_degenerate(ans: str, q: str) -> bool:
+                toks = [t for t in re.split(r"\s+", ans.strip().lower()) if t]
+                if len(toks) >= 30:
+                    freq: Dict[str, int] = {}
+                    for t in toks:
+                        freq[t] = freq.get(t, 0) + 1
+                    most = max(freq.values()) if freq else 0
+                    if most / max(1, len(toks)) > 0.4:
+                        return True
+                if len(toks) >= 20 and len(set(toks)) <= 5:
+                    return True
+                if _has_korean(q) and not _has_korean(ans):
+                    return True
+                return False
+
+            if _is_degenerate(answer_text, str(query)):
+                llm_status = "degenerate_output"
+                answer_text = None
+        else:
+            answer_text = None
+    except Exception as e:
+        llm_status = str(e)
+        answer_text = None
+
+    if answer_text is not None:
+        print()
+        print("answer:")
+        print(answer_text)
+        return
+
+    # Fallback: keep the already-printed draft and add LLM status.
+    if llm_status is not None:
+        print("llm_status:")
+        print(llm_status)
+        print()
+
+
 def main() -> int:
     _configure_stdio_utf8()
-    p = argparse.ArgumentParser(description="LBO-based doc retriever (CP0).")
-    p.add_argument("--roots", nargs="*", default=["docs/09_intelligence", "README.md"], help="Files/dirs to index.")
-    p.add_argument("--query", type=str, required=True, help="Search query.")
-    p.add_argument("--topk", type=int, default=5, help="Number of results.")
-    p.add_argument("--rho", type=float, default=1.0, help="Resolvent rho (>0).")
-    p.add_argument("--nu", type=float, default=0.5, help="Resolvent nu (>=0).")
-    p.add_argument("--adj-weight", type=float, default=1.0, help="Within-file adjacency edge weight.")
-    p.add_argument("--link-weight", type=float, default=0.7, help="Markdown link edge weight.")
-    p.add_argument("--max-chars", type=int, default=6000, help="Max characters per chunk (splits long sections).")
-    p.add_argument("--show", type=int, default=400, help="Show up to N chars per result (0 = no text).")
-    p.add_argument("--answer", action="store_true", help="Print an extractive answer draft from retrieved chunks.")
-    p.add_argument("--answer-items", type=int, default=6, help="Max number of answer bullet points.")
-    args = p.parse_args()
+    p = argparse.ArgumentParser(description="Reality Stone assistant (search + no-download tools).")
+    sub = p.add_subparsers(dest="cmd")
 
-    chunks = _build_chunks(list(args.roots), max_chars=int(args.max_chars))
-    if not chunks:
-        print("No markdown chunks found.")
+    # Backward-compat: old usage `python experiments/assistant.py --query ...`
+    argv = sys.argv[1:]
+    if not argv or (argv and argv[0].startswith("-")):
+        argv = ["search"] + argv
+
+    p_search = sub.add_parser("search", help="LBO-based doc retriever (CP0/CP1).")
+    p_search.add_argument("--roots", nargs="*", default=["docs/09_intelligence", "README.md"], help="Files/dirs to index.")
+    p_search.add_argument("--query", type=str, required=True, help="Search query.")
+    p_search.add_argument("--topk", type=int, default=5, help="Number of results.")
+    p_search.add_argument("--rho", type=float, default=1.0, help="Resolvent rho (>0).")
+    p_search.add_argument("--nu", type=float, default=0.5, help="Resolvent nu (>=0).")
+    p_search.add_argument("--adj-weight", type=float, default=1.0, help="Within-file adjacency edge weight.")
+    p_search.add_argument("--link-weight", type=float, default=0.7, help="Markdown link edge weight.")
+    p_search.add_argument("--max-chars", type=int, default=6000, help="Max characters per chunk (splits long sections).")
+    p_search.add_argument("--show", type=int, default=400, help="Show up to N chars per result (0 = no text).")
+    p_search.add_argument("--answer", action="store_true", help="Print an extractive answer draft from retrieved chunks.")
+    p_search.add_argument("--answer-items", type=int, default=6, help="Max number of answer bullet points.")
+
+    p_col = sub.add_parser("collapse", help="No-download collapse/recovery validation (noise injection).")
+    p_col.add_argument("--seeds", type=int, default=10)
+    p_col.add_argument("--n", type=int, default=64)
+    p_col.add_argument("--steps", type=int, default=900)
+    p_col.add_argument("--dt", type=float, default=0.15)
+    p_col.add_argument("--alpha", type=float, default=2.0)
+    p_col.add_argument("--k0", type=int, default=10)
+    p_col.add_argument("--win", type=int, default=60)
+    p_col.add_argument("--burn", type=int, default=-1, help="Burn-in start step for stable phase (default: 2*win).")
+    p_col.add_argument("--noise-low", type=float, default=0.25)
+    p_col.add_argument("--noise-high", type=float, default=2.0)
+    p_col.add_argument("--t1", type=int, default=300, help="Collapse start step.")
+    p_col.add_argument("--t2", type=int, default=600, help="Recovery start step.")
+    p_col.add_argument("--verbose", action="store_true")
+
+    p_gate = sub.add_parser("gate", help="No-download gate on/off validation (geometry shift).")
+    p_gate.add_argument("--seeds", type=int, default=5)
+    p_gate.add_argument("--n", type=int, default=64)
+    p_gate.add_argument("--steps1", type=int, default=250)
+    p_gate.add_argument("--steps2", type=int, default=350)
+    p_gate.add_argument("--dt", type=float, default=0.15)
+    p_gate.add_argument("--alpha", type=float, default=2.0)
+    p_gate.add_argument("--noise", type=float, default=0.6)
+    p_gate.add_argument("--k0", type=int, default=10)
+    p_gate.add_argument("--win", type=int, default=60)
+    p_gate.add_argument("--burn", type=int, default=-1, help="Burn-in start step for phase1 stats (default: 2*win).")
+    p_gate.add_argument("--verbose", action="store_true")
+
+    p_chat = sub.add_parser("chat", help="CP3: search + small HF causal LM answer (minimal LLM).")
+    p_chat.add_argument("--roots", nargs="*", default=["docs/09_intelligence", "README.md"], help="Files/dirs to index.")
+    p_chat.add_argument("--query", type=str, required=True, help="Question to answer.")
+    p_chat.add_argument("--topk", type=int, default=5)
+    p_chat.add_argument("--rho", type=float, default=1.0)
+    p_chat.add_argument("--nu", type=float, default=0.5)
+    p_chat.add_argument("--adj-weight", type=float, default=1.0)
+    p_chat.add_argument("--link-weight", type=float, default=0.7)
+    p_chat.add_argument("--max-chars", type=int, default=6000)
+    p_chat.add_argument("--model", type=str, default="sshleifer/tiny-gpt2", help="HF model name or local path.")
+    p_chat.add_argument("--device", type=str, default="auto", help="auto|cpu|cuda")
+    p_chat.add_argument("--max-new-tokens", type=int, default=192)
+    p_chat.add_argument("--temperature", type=float, default=0.2)
+    p_chat.add_argument("--top-p", type=float, default=0.95)
+    p_chat.add_argument("--seed", type=int, default=0)
+    p_chat.add_argument("--max-context-chars", type=int, default=8000)
+    p_chat.add_argument("--chunk-chars", type=int, default=2000)
+    p_chat.add_argument("--no-llm", action="store_true", help="Skip HF model generation and only print answer_draft + sources.")
+
+    args = p.parse_args(argv)
+    cmd = str(getattr(args, "cmd", "") or "")
+    if not cmd:
+        p.print_help()
         return 2
 
-    w = _build_graph(chunks, adj_weight=float(args.adj_weight), link_weight=float(args.link_weight))
+    if cmd == "search":
+        chunks = _build_chunks(list(args.roots), max_chars=int(args.max_chars))
+        if not chunks:
+            print("No markdown chunks found.")
+            return 2
 
-    hits = _search(
-        chunks=chunks,
-        w=w,
-        query=str(args.query),
-        topk=int(args.topk),
-        rho=float(args.rho),
-        nu=float(args.nu),
-    )
+        w = _build_graph(chunks, adj_weight=float(args.adj_weight), link_weight=float(args.link_weight))
+        hits = _search(
+            chunks=chunks,
+            w=w,
+            query=str(args.query),
+            topk=int(args.topk),
+            rho=float(args.rho),
+            nu=float(args.nu),
+        )
 
-    print(f"indexed_chunks={len(chunks)} query={args.query!r}")
-    if bool(args.answer):
-        ans = _answer_from_hits(str(args.query), hits, max_items=int(args.answer_items))
-        if ans:
-            print()
-            print("answer_draft:")
-            for s in ans:
-                print(f"- {s}")
-            print()
-    for rank, (score, raw, c) in enumerate(hits, start=1):
-        print(f"[{rank}] score={score:.4f} raw={raw:.4f} {c.path} :: {c.title}")
-        if int(args.show) > 0:
-            snippet = c.text.replace("\r\n", "\n").replace("\r", "\n").strip()
-            if len(snippet) > int(args.show):
-                snippet = snippet[: int(args.show)].rstrip() + " ..."
-            print(snippet)
-            print()
+        print(f"indexed_chunks={len(chunks)} query={args.query!r}")
+        if bool(args.answer):
+            ans = _answer_from_hits(str(args.query), hits, max_items=int(args.answer_items))
+            if ans:
+                print()
+                print("answer_draft:")
+                for s in ans:
+                    print(f"- {s}")
+                print()
+        for rank, (score, raw, c) in enumerate(hits, start=1):
+            print(f"[{rank}] score={score:.4f} raw={raw:.4f} {c.path} :: {c.title}")
+            if int(args.show) > 0:
+                snippet = c.text.replace("\r\n", "\n").replace("\r", "\n").strip()
+                if len(snippet) > int(args.show):
+                    snippet = snippet[: int(args.show)].rstrip() + " ..."
+                print(snippet)
+                print()
+        return 0
 
-    return 0
+    if cmd == "collapse":
+        burn = int(args.burn)
+        if burn < 0:
+            burn = int(max(1, 2 * int(args.win)))
+        _run_collapse(
+            seeds=int(args.seeds),
+            n=int(args.n),
+            steps=int(args.steps),
+            dt=float(args.dt),
+            alpha=float(args.alpha),
+            k0=int(args.k0),
+            win=int(args.win),
+            burn=int(burn),
+            noise_low=float(args.noise_low),
+            noise_high=float(args.noise_high),
+            t1=int(args.t1),
+            t2=int(args.t2),
+            verbose=bool(args.verbose),
+        )
+        return 0
+
+    if cmd == "gate":
+        burn = int(args.burn)
+        if burn < 0:
+            burn = int(max(1, 2 * int(args.win)))
+        _run_gate(
+            seeds=int(args.seeds),
+            n=int(args.n),
+            steps1=int(args.steps1),
+            steps2=int(args.steps2),
+            dt=float(args.dt),
+            alpha=float(args.alpha),
+            noise=float(args.noise),
+            k0=int(args.k0),
+            win=int(args.win),
+            burn=int(burn),
+            verbose=bool(args.verbose),
+        )
+        return 0
+
+    if cmd == "chat":
+        _run_chat(
+            roots=list(args.roots),
+            query=str(args.query),
+            topk=int(args.topk),
+            rho=float(args.rho),
+            nu=float(args.nu),
+            adj_weight=float(args.adj_weight),
+            link_weight=float(args.link_weight),
+            max_chars=int(args.max_chars),
+            model_name=str(args.model),
+            device=str(args.device),
+            max_new_tokens=int(args.max_new_tokens),
+            temperature=float(args.temperature),
+            top_p=float(args.top_p),
+            seed=int(args.seed),
+            max_context_chars=int(args.max_context_chars),
+            chunk_chars=int(args.chunk_chars),
+            no_llm=bool(args.no_llm),
+        )
+        return 0
+
+    print("Unknown command. Use: search | collapse | gate | chat")
+    return 2
 
 
 if __name__ == "__main__":

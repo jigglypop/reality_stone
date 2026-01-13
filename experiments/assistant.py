@@ -743,6 +743,8 @@ def _run_chat(
     max_context_chars: int,
     chunk_chars: int,
     no_llm: bool,
+    trust_remote_code: bool,
+    debug_llm: bool,
 ) -> None:
     chunks = _build_chunks(list(roots), max_chars=int(max_chars))
     if not chunks:
@@ -800,6 +802,7 @@ def _run_chat(
 
     answer_text = None
     llm_status = None
+    llm_raw = None
     try:
         import warnings
         import torch  # type: ignore
@@ -812,23 +815,62 @@ def _run_chat(
             use_cuda = bool(getattr(torch, "cuda", None) is not None and torch.cuda.is_available())
             device = "cuda" if use_cuda else "cpu"
 
-        tok = AutoTokenizer.from_pretrained(model_name)
+        tok = AutoTokenizer.from_pretrained(model_name, trust_remote_code=bool(trust_remote_code))
         if tok.pad_token_id is None and tok.eos_token_id is not None:
             tok.pad_token = tok.eos_token
 
-        mdl = AutoModelForCausalLM.from_pretrained(model_name)
+        load_kwargs = {"trust_remote_code": bool(trust_remote_code)}
+        if device == "cuda":
+            load_kwargs["torch_dtype"] = torch.float16
+            # Load with accelerate dispatch when available (reduces peak memory).
+            try:
+                load_kwargs["device_map"] = "auto"
+                mdl = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
+            except Exception:
+                load_kwargs.pop("device_map", None)
+                mdl = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
+                mdl.to(device)
+        else:
+            mdl = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
+            mdl.to(device)
         mdl.eval()
-        mdl.to(device)
+
+        try:
+            model_device = next(mdl.parameters()).device
+        except Exception:
+            model_device = torch.device(device)
 
         torch.manual_seed(int(seed))
-        if device == "cuda":
+        if str(model_device).startswith("cuda"):
             torch.cuda.manual_seed_all(int(seed))
 
         max_in = int(getattr(tok, "model_max_length", 1024) or 1024)
         if max_in > 8192:
             max_in = 1024
-        enc = tok(prompt, return_tensors="pt", truncation=True, max_length=int(max_in))
-        enc = {k: v.to(device) for k, v in enc.items()}
+
+        # Prefer chat_template when available (real instruct models behave much better).
+        enc = None
+        if hasattr(tok, "apply_chat_template"):
+            try:
+                user_parts = [ctx]
+                if draft:
+                    user_parts += ["", "[DRAFT]", "\n".join([f"- {s}" for s in draft])]
+                user_parts += ["", f"[QUESTION]\n{query}", "", "답은 한국어로, 핵심 정의→식→붕괴/회복 연결 순서로 짧게. 근거가 없으면 '모르겠다'."]
+                messages = [
+                    {"role": "system", "content": "너는 문서 기반 어시스턴트다. CONTEXT에 있는 내용만 사용한다."},
+                    {"role": "user", "content": "\n".join([p for p in user_parts if p is not None]).strip()},
+                ]
+                ids = tok.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, return_tensors="pt")
+                if not isinstance(ids, torch.Tensor):
+                    ids = torch.tensor(ids, dtype=torch.long).unsqueeze(0)
+                if ids.shape[-1] > int(max_in):
+                    ids = ids[:, -int(max_in) :]
+                enc = {"input_ids": ids.to(model_device), "attention_mask": torch.ones_like(ids, device=model_device)}
+            except Exception:
+                enc = None
+        if enc is None:
+            enc2 = tok(prompt, return_tensors="pt", truncation=True, max_length=int(max_in))
+            enc = {k: v.to(model_device) for k, v in enc2.items()}
 
         do_sample = bool(float(temperature) > 0.0)
         gen_kwargs = {
@@ -846,11 +888,11 @@ def _run_chat(
 
         gen = mdl.generate(**enc, **gen_kwargs)
 
-        out = tok.decode(gen[0], skip_special_tokens=True)
-        # Extract only the completion after the last [ANSWER]
-        if "[ANSWER]" in out:
-            out = out.split("[ANSWER]", maxsplit=1)[-1]
+        prompt_len = int(enc["input_ids"].shape[-1])
+        new_tokens = gen[0][prompt_len:]
+        out = tok.decode(new_tokens, skip_special_tokens=True)
         answer_text = out.strip()
+        llm_raw = answer_text
         if answer_text:
             # Heuristic quality gate: tiny non-instruct LMs can loop or ignore Korean.
             def _has_korean(s: str) -> bool:
@@ -917,13 +959,34 @@ def _run_chat(
                     return True
 
                 # Grounding check: require at least one "key" token from draft that's not just the query term.
+                ans_compact = re.sub(r"\s+", "", ans.strip().lower())
+                has_domain = any(
+                    kw in ans_compact
+                    for kw in [
+                        "저주파",
+                        "고주파",
+                        "r_low",
+                        "sigma",
+                        "라플라시안",
+                        "lbo",
+                        "스펙트럼",
+                        "모드",
+                        "고유",
+                        "다양체",
+                        "붕괴",
+                        "회복",
+                        "안정성",
+                        "비율",
+                    ]
+                ) or ("σ" in ans) or ("\\sigma" in ans) or ("\\phi" in ans) or ("\\lambda" in ans)
+
                 q_set = _token_set(q)
                 d_text = "\n".join(draft) if draft else ""
                 d_set = _token_set(d_text)
                 a_set = _token_set(ans)
                 key = {t for t in d_set if t not in q_set}
                 key_strong = {t for t in key if len(t) >= 3}
-                if key_strong and len(a_set & key_strong) == 0:
+                if (not has_domain) and key_strong and len(a_set & key_strong) == 0:
                     return True
 
                 return False
@@ -948,6 +1011,13 @@ def _run_chat(
         print("llm_status:")
         print(llm_status)
         print()
+        if bool(debug_llm) and llm_raw:
+            raw = str(llm_raw).strip()
+            if len(raw) > 800:
+                raw = raw[:800].rstrip() + " ..."
+            print("llm_raw:")
+            print(raw)
+            print()
 
 
 def main() -> int:
@@ -1019,6 +1089,8 @@ def main() -> int:
     p_chat.add_argument("--max-context-chars", type=int, default=8000)
     p_chat.add_argument("--chunk-chars", type=int, default=2000)
     p_chat.add_argument("--no-llm", action="store_true", help="Skip HF model generation and only print answer_draft + sources.")
+    p_chat.add_argument("--trust-remote-code", action="store_true", help="Allow loading models that require custom code on HF.")
+    p_chat.add_argument("--debug-llm", action="store_true", help="Print truncated raw LLM output when it is rejected as degenerate.")
 
     args = p.parse_args(argv)
     cmd = str(getattr(args, "cmd", "") or "")
@@ -1120,6 +1192,8 @@ def main() -> int:
             max_context_chars=int(args.max_context_chars),
             chunk_chars=int(args.chunk_chars),
             no_llm=bool(args.no_llm),
+            trust_remote_code=bool(args.trust_remote_code),
+            debug_llm=bool(args.debug_llm),
         )
         return 0
 

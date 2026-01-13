@@ -649,6 +649,81 @@ def _format_context(hits: List[Tuple[float, float, Chunk]], *, max_context_chars
     return "\n\n".join(blocks).strip(), sources
 
 
+def _strip_md(s: str) -> str:
+    t = s.strip()
+    if t.startswith("- "):
+        t = t[2:].lstrip()
+    if t.startswith(">"):
+        t = t.lstrip(">").lstrip()
+    # remove emphasis markers
+    t = t.replace("**", "").replace("__", "")
+    t = t.replace("`", "")
+    # collapse whitespace
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+def _draft_to_paragraph(query: str, draft: List[str]) -> str:
+    # Simple extractive paragraph: select a few informative lines and stitch.
+    if not draft:
+        return "모르겠다."
+
+    domain_keywords = [
+        "저주파",
+        "고주파",
+        "모드",
+        "스펙트럼",
+        "라플라시안",
+        "lbo",
+        "리만",
+        "다양체",
+        "고유값",
+        "고유함수",
+        "안정성",
+        "비율",
+        "σ",
+        "r_low",
+        "i=",
+        "i(",
+        "지수",
+        "붕괴",
+        "회복",
+    ]
+
+    scored: List[Tuple[float, str]] = []
+    for line in draft:
+        t = _strip_md(line)
+        if not t or len(t) < 8:
+            continue
+        low = t.lower()
+        score = 0.0
+        for kw in domain_keywords:
+            if kw in t or kw in low:
+                score += 2.0
+        # prefer longer, contentful lines
+        score += min(2.0, len(t) / 120.0)
+        scored.append((score, t))
+
+    if not scored:
+        return " ".join([_strip_md(x) for x in draft if _strip_md(x)])[:400].rstrip() + "."
+
+    scored.sort(key=lambda x: -x[0])
+    picked: List[str] = []
+    seen = set()
+    for _s, t in scored:
+        if t in seen:
+            continue
+        seen.add(t)
+        picked.append(t)
+        if len(picked) >= 3:
+            break
+
+    out = " ".join(picked).strip()
+    if out and out[-1] not in ".!?":
+        out += "."
+    return out
+
+
 def _run_chat(
     *,
     roots: List[str],
@@ -693,6 +768,9 @@ def _run_chat(
             print(f"- {s}")
     else:
         print("- 모르겠다")
+    print()
+    print("answer_extractive:")
+    print(_draft_to_paragraph(str(query), draft))
     print()
 
     if bool(no_llm):
@@ -802,13 +880,26 @@ def _run_chat(
                 return out
 
             def _is_degenerate(ans: str, q: str) -> bool:
+                # Compression ratio heuristic: repetitive text compresses extremely well.
+                try:
+                    import zlib
+
+                    raw = ans.encode("utf-8", errors="ignore")
+                    if len(raw) >= 200:
+                        comp = zlib.compress(raw, level=6)
+                        ratio = len(comp) / float(len(raw))
+                        if ratio < 0.35:
+                            return True
+                except Exception:
+                    pass
+
                 toks = [t for t in re.split(r"\s+", ans.strip().lower()) if t]
                 if len(toks) >= 30:
                     freq: Dict[str, int] = {}
                     for t in toks:
                         freq[t] = freq.get(t, 0) + 1
                     most = max(freq.values()) if freq else 0
-                    if most / max(1, len(toks)) > 0.4:
+                    if most / max(1, len(toks)) > 0.30:
                         return True
                 if len(toks) >= 20 and len(set(toks)) <= 5:
                     return True
@@ -818,7 +909,7 @@ def _run_chat(
                     bigrams = list(zip(toks, toks[1:]))
                     if bigrams:
                         uniq_ratio = len(set(bigrams)) / float(len(bigrams))
-                        if uniq_ratio < 0.65:
+                        if uniq_ratio < 0.80:
                             return True
 
                 # If the question is Korean but answer has no Korean, it's likely unusable.
@@ -831,7 +922,8 @@ def _run_chat(
                 d_set = _token_set(d_text)
                 a_set = _token_set(ans)
                 key = {t for t in d_set if t not in q_set}
-                if key and len(a_set & key) == 0:
+                key_strong = {t for t in key if len(t) >= 3}
+                if key_strong and len(a_set & key_strong) == 0:
                     return True
 
                 return False

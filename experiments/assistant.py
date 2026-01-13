@@ -778,6 +778,29 @@ def _run_chat(
             def _has_korean(s: str) -> bool:
                 return any("가" <= ch <= "힣" for ch in s)
 
+            def _normalize_token(t: str) -> str:
+                s = t.strip().lower()
+                if not s:
+                    return s
+                s = re.sub(r"^[^0-9a-z가-힣]+|[^0-9a-z가-힣]+$", "", s)
+                if len(s) <= 1:
+                    return s
+                # Light Korean particle stripping (heuristic, used only for gating).
+                suffixes = ["으로", "에서", "까지", "부터", "에게", "한테", "라도", "이나", "이나", "만", "도", "의", "을", "를", "은", "는", "이", "가", "과", "와", "에", "로"]
+                for suf in suffixes:
+                    if len(s) > len(suf) + 1 and s.endswith(suf):
+                        s = s[: -len(suf)]
+                        break
+                return s
+
+            def _token_set(text: str) -> set[str]:
+                out: set[str] = set()
+                for tok in _TOKEN_RE.findall(text):
+                    n = _normalize_token(tok)
+                    if len(n) >= 2:
+                        out.add(n)
+                return out
+
             def _is_degenerate(ans: str, q: str) -> bool:
                 toks = [t for t in re.split(r"\s+", ans.strip().lower()) if t]
                 if len(toks) >= 30:
@@ -789,8 +812,28 @@ def _run_chat(
                         return True
                 if len(toks) >= 20 and len(set(toks)) <= 5:
                     return True
+
+                # Repetitive bigram pattern check
+                if len(toks) >= 20:
+                    bigrams = list(zip(toks, toks[1:]))
+                    if bigrams:
+                        uniq_ratio = len(set(bigrams)) / float(len(bigrams))
+                        if uniq_ratio < 0.65:
+                            return True
+
+                # If the question is Korean but answer has no Korean, it's likely unusable.
                 if _has_korean(q) and not _has_korean(ans):
                     return True
+
+                # Grounding check: require at least one "key" token from draft that's not just the query term.
+                q_set = _token_set(q)
+                d_text = "\n".join(draft) if draft else ""
+                d_set = _token_set(d_text)
+                a_set = _token_set(ans)
+                key = {t for t in d_set if t not in q_set}
+                if key and len(a_set & key) == 0:
+                    return True
+
                 return False
 
             if _is_degenerate(answer_text, str(query)):

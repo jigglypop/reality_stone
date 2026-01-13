@@ -1,14 +1,31 @@
 # 지능의 기하학적 이론 (Geometric Theory of Intelligence)
 
-## 개요
+## 초록
 
-본 문서군은 라플라스-벨트라미 연산자(LBO)에 기반한 지능의 수학적 이론을 제시한다. 지능을 구조적 속성이 아닌 리만 다양체 위의 동역학적 상태로 정의하며, 이를 통해 생물학적 지능과 인공 지능을 통합적으로 설명한다.
+본 문서군은 라플라스-벨트라미 연산자(LBO)에 기반한 지능의 수학적 이론을 제시한다. 지능을 구조적 속성이 아닌 리만 다양체 위의 동역학적 상태로 정의하고, 스펙트럼 모드 분해를 통해 “전역(저주파) 통합”과 “시간적 안정성”을 하나의 스칼라 지표로 정식화한다. 이 프레임워크는 생물학적 뇌(피질 표면)와 인공 시스템(파라미터/설계 공간)을 동일한 연산자-동역학 언어로 연결하며, 붕괴/회복·압축·학습 안정성 등 현상을 스펙트럼 상전이 관점에서 해석한다.
+
+## 키워드
+
+Laplace–Beltrami operator, spectral decomposition, manifold diffusion, connectome harmonics, stability, collapse & recovery
 
 ## 핵심 명제
 
 $$I = \frac{\sum_{k \leq k_0} a_k^2}{\sum_k a_k^2} \times \frac{1}{\sigma(\dot{a}_1)}$$
 
 > **지능 = 저주파 모드를 크게, 오래 유지하는 능력**
+
+## 기여 (Contributions)
+
+1. **정의(지능 지수)**: 모드 에너지 분포(저주파 비율)와 저주파 안정성을 결합한 지능 지수 \(I\)를 제안한다.
+2. **구조-상태 분리**: \(\phi_k\)(구조/아키텍처)와 \(a_k(t)\)(운용/학습 상태)를 분리해 인간·AI·게임 설계를 하나의 수학 언어로 통합한다.
+3. **접힘 원리**: 접힘(주름/압축 경계)을 LBO 고유함수의 노드 집합과 연결한다.
+4. **붕괴/회복 모델**: 저주파 붕괴와 고주파 점유를 스펙트럼 상전이로 정식화하고, 회복을 스펙트럼 재균형으로 해석한다.
+
+## 표기법 메모 (Notation)
+
+- **\(\varrho(x,t)\)**: 정보 밀도(확산 방정식의 상태 변수)
+- **\(\rho\)**: 감쇠/할인율(정리 4.2/4.3 및 이산 resolvent에서 사용)
+- **\(\mathbf{I}\)**: 단위행렬(지능 지수 \(I\)와 구분)
 
 ## 문서 구조
 
@@ -32,14 +49,11 @@ $$I = \frac{\sum_{k \leq k_0} a_k^2}{\sum_k a_k^2} \times \frac{1}{\sigma(\dot{a
 - 정리 4.3 (토션 확장) -> 방향성 정보 처리
 - `experiments/lbigd/core/lbo.py` -> 핵심 연산 구현
 
-## 정합성 검증 결과
+## 재현성(코드 대응) 메모
 
-| 검증 항목 | 결과 | 비고 |
-|---------|------|------|
-| 수학적 정합성 | O | 정리 4.2, 4.3과 일치 |
-| 물리적 해석 | O | 07_synapse.md와 일치 |
-| 코드 대응 | O | lbo.py 함수와 대응 |
-| 용어 일관성 | O | 기존 문서와 통일 |
+- `experiments/lbigd/core/lbo.py`: `build_laplacian_matrix()`, `solve_resolvent()`, `smooth_winrate()`
+- `experiments/lbigd/core/metric.py`: 메트릭/그래프 \(W\) 업데이트
+- `experiments/lbigd/core/dopamine.py`: 도파민 게이트(3-factor 학습의 이벤트 게이트)
 
 ## 읽기 순서
 
@@ -49,5 +63,5 @@ $$I = \frac{\sum_{k \leq k_0} a_k^2}{\sum_k a_k^2} \times \frac{1}{\sigma(\dot{a
 
 ## 버전
 
-- v1.0: 대화체 원문 (index.md 보관)
+- v1.0: 대화체 원문 (별도 보관)
 - v2.0: 논문체 분리 (현재)

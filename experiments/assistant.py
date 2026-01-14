@@ -133,12 +133,18 @@ def _merge_tiny_sections(sections: List[Tuple[str, int, str]]) -> List[Tuple[str
     while i < len(sections):
         title, level, body = sections[i]
         if _is_tiny_section(body) and i + 1 < len(sections):
-            n_title, n_level, n_body = sections[i + 1]
-            merged_title = f"{title} / {n_title}".strip()
-            merged_level = int(min(level, n_level))
-            merged_body = (body.rstrip() + "\n\n" + n_body.lstrip()).strip()
+            merged_title = str(title)
+            merged_level = int(level)
+            merged_body = str(body)
+            j = i
+            while j + 1 < len(sections) and _is_tiny_section(merged_body):
+                n_title, n_level, n_body = sections[j + 1]
+                merged_title = f"{merged_title} / {n_title}".strip()
+                merged_level = int(min(merged_level, int(n_level)))
+                merged_body = (merged_body.rstrip() + "\n\n" + str(n_body).lstrip()).strip()
+                j += 1
             out.append((merged_title, merged_level, merged_body))
-            i += 2
+            i = j + 1
             continue
         out.append((title, level, body))
         i += 1
@@ -176,6 +182,23 @@ def _extract_sentences(text: str) -> List[str]:
         block = block.strip()
         if not block:
             continue
+        # If a block looks like a list/table-ish region, prefer line-based splitting
+        # so we can cite individual bullet items.
+        is_listy = ("\n- " in block) or ("\n* " in block) or bool(re.search(r"\n\d+\.\s", block))
+        if is_listy:
+            for ln in block.splitlines():
+                ln = ln.strip()
+                if not ln:
+                    continue
+                for s in _SENT_SPLIT_RE.split(ln):
+                    t = s.strip()
+                    if not t:
+                        continue
+                    if len(t) > 400:
+                        t = t[:400].rstrip() + " ..."
+                    parts.append(t)
+            continue
+
         for s in _SENT_SPLIT_RE.split(block):
             t = s.strip()
             if not t:
@@ -187,12 +210,12 @@ def _extract_sentences(text: str) -> List[str]:
     return parts
 
 
-def _answer_from_hits(query: str, hits: List[Tuple[float, float, Chunk]], *, max_items: int) -> List[str]:
+def _answer_from_hits(query: str, hits: List[Tuple[float, float, Chunk]], *, max_items: int, cite: bool = False) -> List[str]:
     q = _tokenize(query)
     seen: set[str] = set()
     matched: List[Tuple[float, str]] = []
     fill: List[Tuple[float, str]] = []
-    for score, _raw, c in hits:
+    for rank, (score, _raw, c) in enumerate(hits, start=1):
         sents = _extract_sentences(c.text)
         kept = 0
         for sent in sents:
@@ -216,9 +239,25 @@ def _answer_from_hits(query: str, hits: List[Tuple[float, float, Chunk]], *, max
                     if k in toks:
                         overlap += float(min(int(v), int(toks[k])))
 
-            if overlap > 0.0:
+            # Bonus for key equation/definition lines even if they don't contain query tokens.
+            bonus = 0.0
+            s_compact = re.sub(r"\s+", "", s)
+            s_low = s.lower()
+            if ("i" in s_low and (":=" in s or "=" in s)) or ("\\boxed" in s_low and "i" in s_low):
+                bonus += 3.0
+            if "r_" in s_compact or "r_low" in s_low or "r_{\\text{low}}" in s_low:
+                bonus += 2.0
+            if "s_" in s_compact or "s_low" in s_low or "s_{\\text{low}}" in s_low:
+                bonus += 2.0
+            if ("\\sigma" in s_low) or ("sigma" in s_low) or ("σ" in s):
+                bonus += 1.0
+            if ("\\dot" in s_low) or ("a_1" in s_compact) or ("a1" in s_low):
+                bonus += 0.5
+
+            if overlap > 0.0 or bonus > 0.0:
                 seen.add(s)
-                matched.append((overlap * (1.0 + float(score)), s))
+                out_s = f"{s} [{rank}]" if bool(cite) else s
+                matched.append(((overlap + bonus) * (1.0 + float(score)), out_s))
                 kept += 1
                 continue
 
@@ -226,7 +265,8 @@ def _answer_from_hits(query: str, hits: List[Tuple[float, float, Chunk]], *, max
             # from high-scoring chunks as a fallback.
             if kept < 3:
                 seen.add(s)
-                fill.append(((1.0 + float(score)) / float(kept + 1), s))
+                out_s = f"{s} [{rank}]" if bool(cite) else s
+                fill.append(((1.0 + float(score)) / float(kept + 1), out_s))
                 kept += 1
 
     matched.sort(key=lambda x: -x[0])
@@ -275,6 +315,11 @@ def _build_chunks(roots: List[str], *, max_chars: int) -> List[Chunk]:
         for title, level, body in sections:
             for t2, l2, body2 in _split_long_section(title, level, body, max_chars=int(max_chars)):
                 toks = _tokenize(body2)
+                # Light title boost: headings carry the user intent (e.g., "지능 방정식") even when body is long.
+                t_toks = _tokenize(str(t2))
+                if t_toks:
+                    for k, v in t_toks.items():
+                        toks[k] = toks.get(k, 0) + 2 * int(v)
                 nrm = _norm(toks)
                 chunks.append(Chunk(id=cid, path=rel, title=t2, level=l2, text=body2, tokens=toks, norm=nrm))
                 cid += 1
@@ -637,13 +682,13 @@ def _format_context(hits: List[Tuple[float, float, Chunk]], *, max_context_chars
     used = 0
     for rank, (_score, _raw, c) in enumerate(hits, start=1):
         src = f"{c.path} :: {c.title}"
-        sources.append(src)
         txt = c.text.strip().replace("\r\n", "\n").replace("\r", "\n")
         if int(chunk_chars) > 0 and len(txt) > int(chunk_chars):
             txt = txt[: int(chunk_chars)].rstrip() + " ..."
         block = f"[CONTEXT {rank}] {src}\n{txt}"
         if used + len(block) + 2 > int(max_context_chars):
             break
+        sources.append(src)
         blocks.append(block)
         used += len(block) + 2
     return "\n\n".join(blocks).strip(), sources
@@ -684,6 +729,8 @@ def _draft_to_paragraph(query: str, draft: List[str]) -> str:
         "σ",
         "r_low",
         "i=",
+        "i:=",
+        "boxed",
         "i(",
         "지수",
         "붕괴",
@@ -700,6 +747,9 @@ def _draft_to_paragraph(query: str, draft: List[str]) -> str:
         for kw in domain_keywords:
             if kw in t or kw in low:
                 score += 2.0
+        # Explicit equation / definition lines deserve a boost.
+        if ("\\boxed" in low) or ("i :=" in low) or ("i:=" in low) or (low.startswith("i ") and "=" in low):
+            score += 4.0
         # prefer longer, contentful lines
         score += min(2.0, len(t) / 120.0)
         scored.append((score, t))
@@ -710,6 +760,14 @@ def _draft_to_paragraph(query: str, draft: List[str]) -> str:
     scored.sort(key=lambda x: -x[0])
     picked: List[str] = []
     seen = set()
+    # Ensure we include an equation/boxed definition line when present.
+    for _s, t in scored:
+        low = t.lower()
+        if ("\\boxed" in low) or ("i :=" in low) or ("i:=" in low) or ("i =" in low):
+            if t not in seen:
+                seen.add(t)
+                picked.append(t)
+            break
     for _s, t in scored:
         if t in seen:
             continue
@@ -755,14 +813,16 @@ def _run_chat(
     w = _build_graph(chunks, adj_weight=float(adj_weight), link_weight=float(link_weight))
     hits = _search(chunks=chunks, w=w, query=str(query), topk=int(topk), rho=float(rho), nu=float(nu))
     ctx, sources = _format_context(hits, max_context_chars=int(max_context_chars), chunk_chars=int(chunk_chars))
-    draft = _answer_from_hits(str(query), hits, max_items=6)
+    used_n = int(len(sources))
+    hits_used = hits[:used_n] if used_n > 0 else hits
+    draft = _answer_from_hits(str(query), hits_used, max_items=6, cite=True)
 
     # Always print something quickly (even if HF download/model load takes time).
     print("chat_report")
     print(f"- query: {query}")
     print(f"- sources: {len(sources)}")
-    for s in sources[: max(1, int(topk))]:
-        print(f"  - {s}")
+    for i, s in enumerate(sources[: max(1, int(topk))], start=1):
+        print(f"  - [{i}] {s}")
     print()
     print("answer_draft:")
     if draft:
@@ -778,21 +838,25 @@ def _run_chat(
     if bool(no_llm):
         return
 
-    # Build an instruction-ish prompt (works best with instruct models; still usable for tiny GPT2).
+    sources_text = "\n".join([f"[{i}] {s}" for i, s in enumerate(sources, start=1)]).strip()
+    facts_text = "\n".join([f"- {s}" for s in draft]).strip() if draft else "- 모르겠다."
+
+    # LLM prompt: keep it simple and grounded. Use extracted FACTS (already cited) + SOURCES list.
     prompt_parts = [
         "너는 문서 기반 어시스턴트다.",
-        "아래 CONTEXT에 있는 내용만으로 질문에 답해라.",
-        "CONTEXT에 근거가 없으면 \"모르겠다\"라고 답해라.",
+        "아래 FACTS에 있는 내용만으로 질문에 답해라.",
+        "FACTS에 근거가 없으면 \"모르겠다\"라고 답해라.",
+        "핵심 주장마다 반드시 [n] 출처를 붙여라. [n]은 SOURCES 번호를 따른다.",
+        "답변에는 SOURCES/FACTS/QUESTION/DRAFT/CONTEXT 같은 라벨을 다시 출력하지 마라.",
+        "답변은 한국어로만 작성하라. 한자/일본어/중국어(漢字) 사용 금지.",
+        "수식/LaTeX는 출력하지 마라(예: $, \\\\, \\frac, \\sum, \\boxed 금지). 의미 설명만 해라.",
+        "형식: 2~4문장, 각 문장 끝에 [n] 출처를 붙여라.",
         "",
-        ctx,
-    ]
-    if draft:
-        prompt_parts += [
-            "",
-            "[DRAFT]",
-            "\n".join([f"- {s}" for s in draft]),
-        ]
-    prompt_parts += [
+        "[SOURCES]",
+        sources_text,
+        "",
+        "[FACTS]",
+        facts_text,
         "",
         f"[QUESTION]\n{query}",
         "",
@@ -803,6 +867,7 @@ def _run_chat(
     answer_text = None
     llm_status = None
     llm_raw = None
+    attempt_notes: List[Tuple[str, str]] = []
     try:
         import warnings
         import torch  # type: ignore
@@ -815,187 +880,425 @@ def _run_chat(
             use_cuda = bool(getattr(torch, "cuda", None) is not None and torch.cuda.is_available())
             device = "cuda" if use_cuda else "cpu"
 
-        tok = AutoTokenizer.from_pretrained(model_name, trust_remote_code=bool(trust_remote_code))
-        if tok.pad_token_id is None and tok.eos_token_id is not None:
-            tok.pad_token = tok.eos_token
+        # Heuristic quality gate: tiny non-instruct LMs can loop or ignore Korean.
+        def _has_korean(s: str) -> bool:
+            return any("가" <= ch <= "힣" for ch in s)
 
-        load_kwargs = {"trust_remote_code": bool(trust_remote_code)}
-        if device == "cuda":
-            load_kwargs["torch_dtype"] = torch.float16
-            # Load with accelerate dispatch when available (reduces peak memory).
-            try:
-                load_kwargs["device_map"] = "auto"
-                mdl = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
-            except Exception:
-                load_kwargs.pop("device_map", None)
-                mdl = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
-                mdl.to(device)
-        else:
-            mdl = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
-            mdl.to(device)
-        mdl.eval()
+        def _has_cjk_ideograph(s: str) -> bool:
+            # Reject Hanja/Kanji-heavy outputs for Korean questions (common failure mode in small multilingual models).
+            return any("\u4e00" <= ch <= "\u9fff" for ch in s)
 
-        try:
-            model_device = next(mdl.parameters()).device
-        except Exception:
-            model_device = torch.device(device)
-
-        torch.manual_seed(int(seed))
-        if str(model_device).startswith("cuda"):
-            torch.cuda.manual_seed_all(int(seed))
-
-        max_in = int(getattr(tok, "model_max_length", 1024) or 1024)
-        if max_in > 8192:
-            max_in = 1024
-
-        # Prefer chat_template when available (real instruct models behave much better).
-        enc = None
-        if hasattr(tok, "apply_chat_template"):
-            try:
-                user_parts = [ctx]
-                if draft:
-                    user_parts += ["", "[DRAFT]", "\n".join([f"- {s}" for s in draft])]
-                user_parts += ["", f"[QUESTION]\n{query}", "", "답은 한국어로, 핵심 정의→식→붕괴/회복 연결 순서로 짧게. 근거가 없으면 '모르겠다'."]
-                messages = [
-                    {"role": "system", "content": "너는 문서 기반 어시스턴트다. CONTEXT에 있는 내용만 사용한다."},
-                    {"role": "user", "content": "\n".join([p for p in user_parts if p is not None]).strip()},
-                ]
-                ids = tok.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, return_tensors="pt")
-                if not isinstance(ids, torch.Tensor):
-                    ids = torch.tensor(ids, dtype=torch.long).unsqueeze(0)
-                if ids.shape[-1] > int(max_in):
-                    ids = ids[:, -int(max_in) :]
-                enc = {"input_ids": ids.to(model_device), "attention_mask": torch.ones_like(ids, device=model_device)}
-            except Exception:
-                enc = None
-        if enc is None:
-            enc2 = tok(prompt, return_tensors="pt", truncation=True, max_length=int(max_in))
-            enc = {k: v.to(model_device) for k, v in enc2.items()}
-
-        do_sample = bool(float(temperature) > 0.0)
-        gen_kwargs = {
-            "max_new_tokens": int(max_new_tokens),
-            "do_sample": bool(do_sample),
-            "pad_token_id": int(tok.pad_token_id) if tok.pad_token_id is not None else None,
-            "eos_token_id": int(tok.eos_token_id) if tok.eos_token_id is not None else None,
-            # Basic anti-looping
-            "repetition_penalty": 1.08,
-            "no_repeat_ngram_size": 3,
-        }
-        if do_sample:
-            gen_kwargs["temperature"] = float(max(1e-6, float(temperature)))
-            gen_kwargs["top_p"] = float(top_p)
-
-        gen = mdl.generate(**enc, **gen_kwargs)
-
-        prompt_len = int(enc["input_ids"].shape[-1])
-        new_tokens = gen[0][prompt_len:]
-        out = tok.decode(new_tokens, skip_special_tokens=True)
-        answer_text = out.strip()
-        llm_raw = answer_text
-        if answer_text:
-            # Heuristic quality gate: tiny non-instruct LMs can loop or ignore Korean.
-            def _has_korean(s: str) -> bool:
-                return any("가" <= ch <= "힣" for ch in s)
-
-            def _normalize_token(t: str) -> str:
-                s = t.strip().lower()
-                if not s:
-                    return s
-                s = re.sub(r"^[^0-9a-z가-힣]+|[^0-9a-z가-힣]+$", "", s)
-                if len(s) <= 1:
-                    return s
-                # Light Korean particle stripping (heuristic, used only for gating).
-                suffixes = ["으로", "에서", "까지", "부터", "에게", "한테", "라도", "이나", "이나", "만", "도", "의", "을", "를", "은", "는", "이", "가", "과", "와", "에", "로"]
-                for suf in suffixes:
-                    if len(s) > len(suf) + 1 and s.endswith(suf):
-                        s = s[: -len(suf)]
-                        break
+        def _normalize_token(t: str) -> str:
+            s = t.strip().lower()
+            if not s:
                 return s
+            s = re.sub(r"^[^0-9a-z가-힣]+|[^0-9a-z가-힣]+$", "", s)
+            if len(s) <= 1:
+                return s
+            # Light Korean particle stripping (heuristic, used only for gating).
+            suffixes = ["으로", "에서", "까지", "부터", "에게", "한테", "라도", "이나", "이나", "만", "도", "의", "을", "를", "은", "는", "이", "가", "과", "와", "에", "로"]
+            for suf in suffixes:
+                if len(s) > len(suf) + 1 and s.endswith(suf):
+                    s = s[: -len(suf)]
+                    break
+            return s
 
-            def _token_set(text: str) -> set[str]:
-                out: set[str] = set()
-                for tok in _TOKEN_RE.findall(text):
-                    n = _normalize_token(tok)
-                    if len(n) >= 2:
-                        out.add(n)
+        def _token_set(text: str) -> set[str]:
+            out: set[str] = set()
+            for tok in _TOKEN_RE.findall(text):
+                n = _normalize_token(tok)
+                if len(n) >= 2:
+                    out.add(n)
+            return out
+
+        def _is_degenerate(ans: str, q: str) -> bool:
+            # Compression ratio heuristic: repetitive text compresses extremely well.
+            try:
+                import zlib
+
+                raw = ans.encode("utf-8", errors="ignore")
+                if len(raw) >= 200:
+                    comp = zlib.compress(raw, level=6)
+                    ratio = len(comp) / float(len(raw))
+                    if ratio < 0.35:
+                        return True
+            except Exception:
+                pass
+
+            toks = [t for t in re.split(r"\s+", ans.strip().lower()) if t]
+            if len(toks) >= 30:
+                freq: Dict[str, int] = {}
+                for t in toks:
+                    freq[t] = freq.get(t, 0) + 1
+                most = max(freq.values()) if freq else 0
+                if most / max(1, len(toks)) > 0.30:
+                    return True
+            if len(toks) >= 20 and len(set(toks)) <= 5:
+                return True
+
+            # Repetitive bigram pattern check
+            if len(toks) >= 20:
+                bigrams = list(zip(toks, toks[1:]))
+                if bigrams:
+                    uniq_ratio = len(set(bigrams)) / float(len(bigrams))
+                    if uniq_ratio < 0.80:
+                        return True
+
+            # If the question is Korean but answer has no Korean, it's likely unusable.
+            if _has_korean(q) and not _has_korean(ans):
+                return True
+            # If the question is Korean but the answer contains many CJK ideographs (Hanja/Kanji),
+            # it's usually an unwanted language drift.
+            if _has_korean(q) and _has_cjk_ideograph(ans):
+                return True
+
+            # Enforce citations when we have sources.
+            ans_low = ans.strip().lower()
+            if "[context" in ans_low or "[sources" in ans_low or "[facts" in ans_low or "[question" in ans_low or "[draft" in ans_low:
+                return True
+            # We asked for no LaTeX/math in the final answer; reject when it shows up.
+            if any(x in ans for x in ["\\boxed", "\\frac", "\\sum", "\\begin", "\\end", "\\int", "$$"]):
+                return True
+            if ans.count("\\") >= 3 or "$" in ans:
+                return True
+            if sources:
+                refs = [int(x) for x in re.findall(r"\[(\d{1,3})\]", ans)]
+                if not refs:
+                    # Allow a strict "모르겠다" with no citations.
+                    if "모르겠다" in ans_low or "모릅니다" in ans_low:
+                        return False
+                    return True
+                max_ref = int(len(sources))
+                if any((r < 1 or r > max_ref) for r in refs):
+                    return True
+
+            # Grounding check: require at least one "key" token from draft that's not just the query term.
+            ans_compact = re.sub(r"\s+", "", ans.strip().lower())
+            has_domain = any(
+                kw in ans_compact
+                for kw in [
+                    "저주파",
+                    "고주파",
+                    "r_low",
+                    "sigma",
+                    "라플라시안",
+                    "lbo",
+                    "스펙트럼",
+                    "모드",
+                    "고유",
+                    "다양체",
+                    "붕괴",
+                    "회복",
+                    "안정성",
+                    "비율",
+                ]
+            ) or ("σ" in ans) or ("\\sigma" in ans) or ("\\phi" in ans) or ("\\lambda" in ans)
+
+            q_set = _token_set(q)
+            d_text = "\n".join(draft) if draft else ""
+            d_set = _token_set(d_text)
+            a_set = _token_set(ans)
+            key = {t for t in d_set if t not in q_set}
+            key_strong = {t for t in key if len(t) >= 3}
+            if (not has_domain) and key_strong and len(a_set & key_strong) == 0:
+                return True
+
+            return False
+
+        def _autocite(answer: str) -> str:
+            if not sources:
+                return answer
+            max_ref = int(len(sources))
+            # If already has valid citations, keep.
+            refs0 = [int(x) for x in re.findall(r"\[(\d{1,3})\]", answer)]
+            if refs0 and all((1 <= r <= max_ref) for r in refs0):
+                return answer
+
+            # Build draft token -> citations map.
+            draft_items: List[Tuple[set[str], List[int]]] = []
+            for raw in draft:
+                for ln in str(raw).splitlines():
+                    ln = ln.strip()
+                    if not ln:
+                        continue
+                    refs = [int(x) for x in re.findall(r"\[(\d{1,3})\]", ln)]
+                    refs = [r for r in refs if 1 <= r <= max_ref]
+                    if not refs:
+                        continue
+                    base = re.sub(r"\[(\d{1,3})\]", " ", ln)
+                    base = _strip_md(base)
+                    toks = _token_set(base)
+                    if toks:
+                        draft_items.append((toks, refs))
+            if not draft_items:
+                return answer
+
+            out_lines: List[str] = []
+            cited = 0
+            in_math = False
+            pending_refs: List[int] = []
+            for ln in str(answer).splitlines():
+                s = ln.rstrip("\r")
+                t = s.strip()
+                if "$$" in t:
+                    # Toggle math block state (handles both start/end markers).
+                    in_math = not in_math
+                    out_lines.append(s)
+                    # If we just ended a math block, attach pending refs on a new line.
+                    if (not in_math) and pending_refs:
+                        uniq = []
+                        seen = set()
+                        for r in pending_refs:
+                            if r not in seen:
+                                uniq.append(r)
+                                seen.add(r)
+                        out_lines.append(" ".join([f"[{r}]" for r in uniq]))
+                        pending_refs = []
+                        cited += 1
+                    continue
+
+                if not t:
+                    out_lines.append(s)
+                    continue
+
+                if in_math:
+                    # Never inject citations inside math blocks.
+                    out_lines.append(s)
+                    continue
+
+                if re.search(r"\[(\d{1,3})\]", t):
+                    out_lines.append(s)
+                    continue
+
+                toks = _token_set(_strip_md(t))
+                best_refs: List[int] | None = None
+                best = 0
+                for dtoks, refs in draft_items:
+                    inter = len(toks & dtoks)
+                    if inter > best:
+                        best = int(inter)
+                        best_refs = refs
+
+                # Require some overlap to avoid mis-citing.
+                if best_refs is not None and best >= 2:
+                    # If this looks like a math-ish line, stash refs and attach after the next math block (if any).
+                    if t.startswith("$") or ("\\frac" in t) or ("\\sigma" in t) or ("\\dot" in t):
+                        pending_refs += best_refs
+                        out_lines.append(s)
+                        continue
+
+                    uniq = []
+                    seen = set()
+                    for r in best_refs:
+                        if r not in seen:
+                            uniq.append(r)
+                            seen.add(r)
+                    out_lines.append(t.rstrip() + " " + " ".join([f"[{r}]" for r in uniq]))
+                    cited += 1
+                else:
+                    out_lines.append(s)
+
+            out = "\n".join(out_lines).strip()
+            refs1 = [int(x) for x in re.findall(r"\[(\d{1,3})\]", out)]
+            if cited > 0 and refs1 and all((1 <= r <= max_ref) for r in refs1):
                 return out
+            return answer
 
-            def _is_degenerate(ans: str, q: str) -> bool:
-                # Compression ratio heuristic: repetitive text compresses extremely well.
+        fallback_model = "Qwen/Qwen2.5-0.5B-Instruct"
+        models_to_try = [str(model_name)]
+        if str(model_name) != str(fallback_model):
+            models_to_try.append(str(fallback_model))
+
+        last_exc: Exception | None = None
+        for attempt_model in models_to_try:
+            tok = None
+            mdl = None
+            try:
+                tok = AutoTokenizer.from_pretrained(attempt_model, trust_remote_code=bool(trust_remote_code))
+                if tok.pad_token_id is None and tok.eos_token_id is not None:
+                    tok.pad_token = tok.eos_token
+
+                load_kwargs = {"trust_remote_code": bool(trust_remote_code)}
+                if device == "cuda":
+                    load_kwargs["torch_dtype"] = torch.float16
+                    # Load with accelerate dispatch when available (reduces peak memory).
+                    try:
+                        load_kwargs["device_map"] = "auto"
+                        mdl = AutoModelForCausalLM.from_pretrained(attempt_model, **load_kwargs)
+                    except Exception:
+                        load_kwargs.pop("device_map", None)
+                        mdl = AutoModelForCausalLM.from_pretrained(attempt_model, **load_kwargs)
+                        mdl.to(device)
+                else:
+                    mdl = AutoModelForCausalLM.from_pretrained(attempt_model, **load_kwargs)
+                    mdl.to(device)
+                mdl.eval()
+
                 try:
-                    import zlib
+                    model_device = next(mdl.parameters()).device
+                except Exception:
+                    model_device = torch.device(device)
 
-                    raw = ans.encode("utf-8", errors="ignore")
-                    if len(raw) >= 200:
-                        comp = zlib.compress(raw, level=6)
-                        ratio = len(comp) / float(len(raw))
-                        if ratio < 0.35:
-                            return True
+                torch.manual_seed(int(seed))
+                if str(model_device).startswith("cuda"):
+                    torch.cuda.manual_seed_all(int(seed))
+
+                max_in = int(getattr(tok, "model_max_length", 4096) or 4096)
+                max_in = int(min(max_in, 4096))
+                if max_in < 512:
+                    max_in = 512
+
+                # Prefer chat_template when available (real instruct models behave much better).
+                enc = None
+                if hasattr(tok, "apply_chat_template"):
+                    try:
+                        user_parts = [
+                            "[SOURCES]",
+                            sources_text,
+                            "",
+                            "[FACTS]",
+                            facts_text,
+                            "",
+                        ]
+                        user_parts += [
+                            "",
+                            f"[QUESTION]\n{query}",
+                            "",
+                            "답은 한국어로만. 한자/일본어/중국어(漢字) 금지. 수식/LaTeX 출력 금지($, \\\\, \\frac, \\sum, \\boxed 등). 2~4문장으로 짧게 설명하고, 각 문장 끝에 [1] 같은 출처를 붙여라. SOURCES/FACTS/QUESTION 같은 라벨은 출력하지 마라. 근거가 없으면 '모르겠다'.",
+                        ]
+                        messages = [
+                            {"role": "system", "content": "너는 문서 기반 어시스턴트다. FACTS에 있는 내용만 사용한다. 답변의 핵심 주장마다 반드시 [n] 형태로 출처를 붙인다."},
+                            {"role": "user", "content": "\n".join([p for p in user_parts if p is not None]).strip()},
+                        ]
+                        ids = tok.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, return_tensors="pt")
+                        if not isinstance(ids, torch.Tensor):
+                            ids = torch.tensor(ids, dtype=torch.long).unsqueeze(0)
+                        if ids.shape[-1] > int(max_in):
+                            ids = ids[:, -int(max_in) :]
+                        enc = {"input_ids": ids.to(model_device), "attention_mask": torch.ones_like(ids, device=model_device)}
+                    except Exception:
+                        enc = None
+                if enc is None:
+                    enc2 = tok(prompt, return_tensors="pt", truncation=True, max_length=int(max_in))
+                    enc = {k: v.to(model_device) for k, v in enc2.items()}
+
+                do_sample = bool(float(temperature) > 0.0)
+                gen_kwargs = {
+                    "max_new_tokens": int(max_new_tokens),
+                    "do_sample": bool(do_sample),
+                    "pad_token_id": int(tok.pad_token_id) if tok.pad_token_id is not None else None,
+                    "eos_token_id": int(tok.eos_token_id) if tok.eos_token_id is not None else None,
+                    # Basic anti-looping
+                    "repetition_penalty": 1.08,
+                    "no_repeat_ngram_size": 3,
+                }
+                if do_sample:
+                    gen_kwargs["temperature"] = float(max(1e-6, float(temperature)))
+                    gen_kwargs["top_p"] = float(top_p)
+
+                gen = mdl.generate(**enc, **gen_kwargs)
+
+                prompt_len = int(enc["input_ids"].shape[-1])
+                new_tokens = gen[0][prompt_len:]
+                out = tok.decode(new_tokens, skip_special_tokens=True)
+                raw_out = out.strip()
+                candidate = _autocite(raw_out)
+                llm_raw = candidate
+                if not candidate:
+                    llm_status = f"empty_output: {attempt_model}"
+                    attempt_notes.append((attempt_model, "empty_output"))
+                    answer_text = None
+                    continue
+                if _is_degenerate(candidate, str(query)):
+                    # One-shot repair pass: rewrite into strict Korean-only, no-math, cited answer.
+                    def _repair_once(bad_text: str) -> str | None:
+                        try:
+                            bad = str(bad_text).strip()
+                            if len(bad) > 700:
+                                bad = bad[:700].rstrip() + " ..."
+                            max_ref = int(len(sources))
+                            repair_prompt_parts = [
+                                "너는 문서 기반 어시스턴트다.",
+                                "아래 FACTS에 있는 내용만으로 질문에 답해라.",
+                                "FACTS에 근거가 없으면 \"모르겠다.\" 한 문장만 출력해라.",
+                                "조건: 한국어만(한자/일본어/중국어 금지), 수식/LaTeX 금지($, \\\\, \\frac, \\sum, \\boxed, \\begin, \\end 등), 2~4문장, 각 문장 끝에 [n] 출처를 붙여라.",
+                                f"출처 번호 n은 1..{max_ref} 범위만 허용한다.",
+                                "",
+                                "[SOURCES]",
+                                sources_text,
+                                "",
+                                "[FACTS]",
+                                facts_text,
+                                "",
+                                f"[QUESTION]\n{query}",
+                                "",
+                                "[RAW_OUTPUT]",
+                                bad,
+                                "",
+                                "[ANSWER]",
+                            ]
+                            repair_prompt = "\n".join([p for p in repair_prompt_parts if p is not None]).strip() + "\n"
+                            enc_r = tok(repair_prompt, return_tensors="pt", truncation=True, max_length=int(max_in))
+                            enc_r = {k: v.to(model_device) for k, v in enc_r.items()}
+                            gen_r = mdl.generate(
+                                **enc_r,
+                                max_new_tokens=int(min(160, int(max_new_tokens))),
+                                do_sample=False,
+                                pad_token_id=int(tok.pad_token_id) if tok.pad_token_id is not None else None,
+                                eos_token_id=int(tok.eos_token_id) if tok.eos_token_id is not None else None,
+                                repetition_penalty=1.08,
+                                no_repeat_ngram_size=3,
+                            )
+                            plen = int(enc_r["input_ids"].shape[-1])
+                            new = gen_r[0][plen:]
+                            txt = tok.decode(new, skip_special_tokens=True).strip()
+                            return txt if txt else None
+                        except Exception:
+                            return None
+
+                    repaired = _repair_once(raw_out)
+                    if repaired:
+                        repaired2 = _autocite(repaired)
+                        llm_raw = repaired2
+                        if not _is_degenerate(repaired2, str(query)):
+                            answer_text = repaired2
+                            llm_status = None
+                            attempt_notes.append((attempt_model, "ok_repair"))
+                            break
+
+                    llm_status = f"degenerate_output: {attempt_model}"
+                    attempt_notes.append((attempt_model, "degenerate_output"))
+                    answer_text = None
+                    continue
+
+                answer_text = candidate
+                llm_status = None
+                attempt_notes.append((attempt_model, "ok"))
+                break
+            except Exception as e:
+                last_exc = e
+                llm_status = str(e)
+                attempt_notes.append((attempt_model, f"exception:{type(e).__name__}"))
+                answer_text = None
+            finally:
+                try:
+                    if mdl is not None:
+                        del mdl
                 except Exception:
                     pass
+                try:
+                    if tok is not None:
+                        del tok
+                except Exception:
+                    pass
+                if str(device).startswith("cuda"):
+                    try:
+                        torch.cuda.empty_cache()
+                    except Exception:
+                        pass
 
-                toks = [t for t in re.split(r"\s+", ans.strip().lower()) if t]
-                if len(toks) >= 30:
-                    freq: Dict[str, int] = {}
-                    for t in toks:
-                        freq[t] = freq.get(t, 0) + 1
-                    most = max(freq.values()) if freq else 0
-                    if most / max(1, len(toks)) > 0.30:
-                        return True
-                if len(toks) >= 20 and len(set(toks)) <= 5:
-                    return True
-
-                # Repetitive bigram pattern check
-                if len(toks) >= 20:
-                    bigrams = list(zip(toks, toks[1:]))
-                    if bigrams:
-                        uniq_ratio = len(set(bigrams)) / float(len(bigrams))
-                        if uniq_ratio < 0.80:
-                            return True
-
-                # If the question is Korean but answer has no Korean, it's likely unusable.
-                if _has_korean(q) and not _has_korean(ans):
-                    return True
-
-                # Grounding check: require at least one "key" token from draft that's not just the query term.
-                ans_compact = re.sub(r"\s+", "", ans.strip().lower())
-                has_domain = any(
-                    kw in ans_compact
-                    for kw in [
-                        "저주파",
-                        "고주파",
-                        "r_low",
-                        "sigma",
-                        "라플라시안",
-                        "lbo",
-                        "스펙트럼",
-                        "모드",
-                        "고유",
-                        "다양체",
-                        "붕괴",
-                        "회복",
-                        "안정성",
-                        "비율",
-                    ]
-                ) or ("σ" in ans) or ("\\sigma" in ans) or ("\\phi" in ans) or ("\\lambda" in ans)
-
-                q_set = _token_set(q)
-                d_text = "\n".join(draft) if draft else ""
-                d_set = _token_set(d_text)
-                a_set = _token_set(ans)
-                key = {t for t in d_set if t not in q_set}
-                key_strong = {t for t in key if len(t) >= 3}
-                if (not has_domain) and key_strong and len(a_set & key_strong) == 0:
-                    return True
-
-                return False
-
-            if _is_degenerate(answer_text, str(query)):
-                llm_status = "degenerate_output"
-                answer_text = None
-        else:
-            answer_text = None
+        if answer_text is None and last_exc is not None and llm_status is None:
+            llm_status = str(last_exc)
     except Exception as e:
         llm_status = str(e)
         answer_text = None
@@ -1011,6 +1314,11 @@ def _run_chat(
         print("llm_status:")
         print(llm_status)
         print()
+        if bool(debug_llm) and attempt_notes:
+            print("llm_attempts:")
+            for model, note in attempt_notes:
+                print(f"- {model}: {note}")
+            print()
         if bool(debug_llm) and llm_raw:
             raw = str(llm_raw).strip()
             if len(raw) > 800:
@@ -1080,7 +1388,7 @@ def main() -> int:
     p_chat.add_argument("--adj-weight", type=float, default=1.0)
     p_chat.add_argument("--link-weight", type=float, default=0.7)
     p_chat.add_argument("--max-chars", type=int, default=6000)
-    p_chat.add_argument("--model", type=str, default="sshleifer/tiny-gpt2", help="HF model name or local path.")
+    p_chat.add_argument("--model", type=str, default="Qwen/Qwen2.5-1.5B-Instruct", help="HF model name or local path.")
     p_chat.add_argument("--device", type=str, default="auto", help="auto|cpu|cuda")
     p_chat.add_argument("--max-new-tokens", type=int, default=192)
     p_chat.add_argument("--temperature", type=float, default=0.2)

@@ -227,6 +227,9 @@ def _answer_from_hits(query: str, hits: List[Tuple[float, float, Chunk]], *, max
                 continue
             if s.startswith("```") or s.endswith("```"):
                 continue
+            # Avoid markdown tables in answers.
+            if s.strip().startswith("|") or s.count("|") >= 3:
+                continue
             if len(s) < 20:
                 continue
 
@@ -376,6 +379,192 @@ def _build_graph(chunks: List[Chunk], *, adj_weight: float, link_weight: float) 
 
     np.fill_diagonal(w, 0.0)
     return w
+
+
+def _fold_partition(w: np.ndarray, *, k: int, min_size: int) -> np.ndarray:
+    """
+    "Wrinkle/Fold" compression for the doc graph.
+
+    Use low-frequency Laplacian eigenmodes to partition nodes into nodal-sign domains,
+    then merge tiny domains into nearest larger ones in eigenvector space.
+
+    Returns:
+      groups: (n,) int array mapping each node -> group id in [0..m-1]
+    """
+    n = int(w.shape[0])
+    if n <= 0:
+        return np.zeros((0,), dtype=np.int64)
+    if int(k) <= 0 or n <= 2:
+        return np.zeros((n,), dtype=np.int64)
+
+    # Symmetrize to make L eigendecomposition stable.
+    ws = 0.5 * (w + w.T)
+    L = build_laplacian_matrix(ws.astype(np.float32, copy=False)).astype(np.float64)
+    L = 0.5 * (L + L.T)
+    _evals, evecs = np.linalg.eigh(L)  # columns are eigenvectors
+
+    kk = int(min(int(k), max(1, n - 1)))
+    feat = evecs[:, 1 : (kk + 1)]  # skip trivial (near-constant) mode
+    if feat.size == 0:
+        return np.zeros((n,), dtype=np.int64)
+
+    # Binary sign code per node -> group.
+    codes = (feat >= 0.0).astype(np.int8)
+    mapping: Dict[Tuple[int, ...], int] = {}
+    groups = np.zeros((n,), dtype=np.int64)
+    for i in range(n):
+        key = tuple(int(x) for x in codes[i].tolist())
+        gid = mapping.get(key)
+        if gid is None:
+            gid = int(len(mapping))
+            mapping[key] = gid
+        groups[i] = int(gid)
+
+    m0 = int(groups.max()) + 1
+    if m0 <= 1:
+        return np.zeros((n,), dtype=np.int64)
+
+    # Merge tiny groups into nearest large group in eigenvector space.
+    min_sz = int(max(1, int(min_size)))
+    counts = np.bincount(groups, minlength=m0).astype(np.int64)
+    if min_sz > 1 and np.any(counts < min_sz):
+        cent = np.zeros((m0, feat.shape[1]), dtype=np.float64)
+        for g in range(m0):
+            idx = np.where(groups == g)[0]
+            if idx.size > 0:
+                cent[g] = np.mean(feat[idx], axis=0)
+
+        big = [g for g in range(m0) if int(counts[g]) >= min_sz]
+        if big:
+            big_cent = cent[np.array(big, dtype=np.int64)]
+            for g in range(m0):
+                if int(counts[g]) >= min_sz:
+                    continue
+                d = np.sum((big_cent - cent[g]) ** 2, axis=1)
+                target = int(big[int(np.argmin(d))])
+                groups[groups == g] = target
+
+            # Re-index to compact ids.
+            uniq = sorted({int(x) for x in groups.tolist()})
+            remap = {old: i for i, old in enumerate(uniq)}
+            groups = np.array([remap[int(x)] for x in groups], dtype=np.int64)
+
+    return groups
+
+
+def _coarsen_graph(w: np.ndarray, groups: np.ndarray) -> np.ndarray:
+    """
+    Coarsen adjacency by folding groups.
+    Wg[a,b] = mean_{i in a, j in b} W[i,j]
+    """
+    n = int(w.shape[0])
+    if n <= 0:
+        return np.zeros((0, 0), dtype=np.float32)
+    if groups.shape[0] != n:
+        raise ValueError("groups must have shape (n,)")
+    m = int(groups.max()) + 1 if n > 0 else 0
+    if m <= 0:
+        return np.zeros((0, 0), dtype=np.float32)
+    if m == 1:
+        return np.zeros((1, 1), dtype=np.float32)
+
+    # Sum edges into group-pairs.
+    ii = np.repeat(groups.astype(np.int64, copy=False), n)
+    jj = np.tile(groups.astype(np.int64, copy=False), n)
+    vals = w.astype(np.float64, copy=False).ravel()
+    wg = np.zeros((m, m), dtype=np.float64)
+    np.add.at(wg, (ii, jj), vals)
+
+    # Normalize to mean weight between groups.
+    sz = np.bincount(groups.astype(np.int64, copy=False), minlength=m).astype(np.float64)
+    denom = np.maximum(1.0, sz[:, None] * sz[None, :])
+    wg = wg / denom
+    np.fill_diagonal(wg, 0.0)
+    wg = 0.5 * (wg + wg.T)
+    return wg.astype(np.float32)
+
+
+def _search_fold(
+    *,
+    chunks: List[Chunk],
+    w: np.ndarray,
+    query: str,
+    topk: int,
+    rho: float,
+    nu: float,
+    fold_k: int,
+    fold_min: int,
+) -> List[Tuple[float, float, Chunk]]:
+    """
+    Fold-compressed search:
+      1) fold the doc graph via low-frequency eigenmodes (wrinkle domains)
+      2) aggregate each domain into a "super node" (overlap removal / quotient)
+      3) score domains (query->domain cosine) + LBO resolvent smoothing on coarsened graph
+      4) expand only the top domains and rank chunks inside them
+    """
+    q_tokens = _tokenize(query)
+    q_norm = _norm(q_tokens)
+
+    if len(chunks) <= 2:
+        raw = np.zeros((len(chunks),), dtype=np.float32)
+        for c in chunks:
+            raw[c.id] = float(_cosine(q_tokens, q_norm, c.tokens, c.norm))
+        idx = np.argsort(-raw)[: max(1, int(topk))]
+        return [(float(raw[i]), float(raw[i]), chunks[int(i)]) for i in idx]
+
+    groups = _fold_partition(w, k=int(fold_k), min_size=int(fold_min))
+    m = int(groups.max()) + 1 if groups.size > 0 else 0
+    if m <= 1:
+        # Fallback: original smoothing (no effective folds).
+        raw = np.zeros((len(chunks),), dtype=np.float32)
+        for c in chunks:
+            raw[c.id] = float(_cosine(q_tokens, q_norm, c.tokens, c.norm))
+        smoothed = solve_resolvent(w, raw, rho=float(rho), nu=float(nu), kappa=0.0).astype(np.float32)
+        idx = np.argsort(-smoothed)[: max(1, int(topk))]
+        return [(float(smoothed[i]), float(raw[i]), chunks[int(i)]) for i in idx]
+
+    wg = _coarsen_graph(w, groups)
+    # Aggregate tokens per fold/domain (removes overlap by quotienting).
+    group_tokens: List[Dict[str, int]] = [dict() for _ in range(int(m))]
+    for c in chunks:
+        g = int(groups[int(c.id)])
+        gt = group_tokens[g]
+        for k, v in c.tokens.items():
+            gt[k] = gt.get(k, 0) + int(v)
+    group_norm = [float(_norm(t)) for t in group_tokens]
+
+    raw_g = np.zeros((m,), dtype=np.float32)
+    for g in range(int(m)):
+        raw_g[g] = float(_cosine(q_tokens, q_norm, group_tokens[g], float(group_norm[g])))
+
+    sm_g = solve_resolvent(wg, raw_g, rho=float(rho), nu=float(nu), kappa=0.0).astype(np.float32)
+    g_score = raw_g * (1.0 + sm_g)
+
+    # Expand only a small set of best domains, then rank chunks inside them.
+    top_groups = int(min(int(m), max(1, int(topk) * 2)))
+    g_idx = np.argsort(-g_score)[:top_groups]
+    members: List[List[int]] = [[] for _ in range(int(m))]
+    for i in range(len(chunks)):
+        members[int(groups[i])].append(int(i))
+
+    cand: List[Tuple[float, float, Chunk]] = []
+    per_group = 3
+    for g in [int(x) for x in g_idx.tolist()]:
+        ids = members[g]
+        if not ids:
+            continue
+        local: List[Tuple[float, float, Chunk]] = []
+        boost = 1.0 + float(sm_g[g])
+        for i in ids:
+            c = chunks[int(i)]
+            r = float(_cosine(q_tokens, q_norm, c.tokens, c.norm))
+            s = r * float(boost)
+            local.append((float(s), float(r), c))
+        local.sort(key=lambda x: -x[0])
+        cand.extend(local[: int(per_group)])
+
+    cand.sort(key=lambda x: -x[0])
+    return cand[: max(1, int(topk))]
 
 
 def _search(
@@ -708,6 +897,37 @@ def _strip_md(s: str) -> str:
     return t
 
 
+def _demath_for_llm(text: str) -> str:
+    """
+    Convert math-heavy extractive text into plain Korean-friendly text for LLM rewriting.
+    Keeps citation markers like [2].
+    """
+    s = str(text or "").strip()
+    if not s:
+        return s
+
+    # Replace boxed/equation blocks with a plain description.
+    def repl_block(m: re.Match[str]) -> str:
+        block = m.group(0)
+        low = block.lower()
+        if ("\\boxed" in low or "i :=" in low or "i:=" in low) and ("sigma" in low or "\\sigma" in low or "σ" in block):
+            return "지능 지수 I는 저주파 에너지 비율과 저주파 안정성을 곱한 값으로 정의된다."
+        if ("i =" in low or "i=" in low) and ("r_" in low or "r_low" in low or "s_" in low or "s_low" in low):
+            return "지능 지수 I는 저주파 에너지 비율과 저주파 안정성을 곱한 값으로 정의된다."
+        return ""
+
+    s = re.sub(r"\$\$[\s\S]*?\$\$", repl_block, s)
+    # Drop inline math and LaTeX wrappers
+    s = re.sub(r"\\\([\s\S]*?\\\)", " ", s)
+    s = re.sub(r"\\\[[\s\S]*?\\\]", " ", s)
+    s = re.sub(r"\$[^$]{1,200}\$", " ", s)
+    # Remove lingering LaTeX commands/braces/backslashes.
+    s = s.replace("\\", " ")
+    s = re.sub(r"[{}]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
 def _draft_to_paragraph(query: str, draft: List[str]) -> str:
     # Simple extractive paragraph: select a few informative lines and stitch.
     if not draft:
@@ -741,6 +961,9 @@ def _draft_to_paragraph(query: str, draft: List[str]) -> str:
     for line in draft:
         t = _strip_md(line)
         if not t or len(t) < 8:
+            continue
+        # Skip table-like lines in the final paragraph.
+        if t.strip().startswith("|") or t.count("|") >= 3:
             continue
         low = t.lower()
         score = 0.0
@@ -803,6 +1026,9 @@ def _run_chat(
     no_llm: bool,
     trust_remote_code: bool,
     debug_llm: bool,
+    fold: bool,
+    fold_k: int,
+    fold_min: int,
 ) -> None:
     chunks = _build_chunks(list(roots), max_chars=int(max_chars))
     if not chunks:
@@ -811,7 +1037,19 @@ def _run_chat(
         return
 
     w = _build_graph(chunks, adj_weight=float(adj_weight), link_weight=float(link_weight))
-    hits = _search(chunks=chunks, w=w, query=str(query), topk=int(topk), rho=float(rho), nu=float(nu))
+    if bool(fold):
+        hits = _search_fold(
+            chunks=chunks,
+            w=w,
+            query=str(query),
+            topk=int(topk),
+            rho=float(rho),
+            nu=float(nu),
+            fold_k=int(fold_k),
+            fold_min=int(fold_min),
+        )
+    else:
+        hits = _search(chunks=chunks, w=w, query=str(query), topk=int(topk), rho=float(rho), nu=float(nu))
     ctx, sources = _format_context(hits, max_context_chars=int(max_context_chars), chunk_chars=int(chunk_chars))
     used_n = int(len(sources))
     hits_used = hits[:used_n] if used_n > 0 else hits
@@ -832,31 +1070,33 @@ def _run_chat(
         print("- 모르겠다")
     print()
     print("answer_extractive:")
-    print(_draft_to_paragraph(str(query), draft))
+    extractive_paragraph = _draft_to_paragraph(str(query), draft)
+    print(extractive_paragraph)
     print()
 
     if bool(no_llm):
         return
 
     sources_text = "\n".join([f"[{i}] {s}" for i, s in enumerate(sources, start=1)]).strip()
-    facts_text = "\n".join([f"- {s}" for s in draft]).strip() if draft else "- 모르겠다."
+    base_text = _demath_for_llm(extractive_paragraph)
+    if not base_text:
+        base_text = "모르겠다."
 
-    # LLM prompt: keep it simple and grounded. Use extracted FACTS (already cited) + SOURCES list.
+    # LLM prompt: rewrite the extractive base into clean Korean sentences with citations.
     prompt_parts = [
         "너는 문서 기반 어시스턴트다.",
-        "아래 FACTS에 있는 내용만으로 질문에 답해라.",
-        "FACTS에 근거가 없으면 \"모르겠다\"라고 답해라.",
-        "핵심 주장마다 반드시 [n] 출처를 붙여라. [n]은 SOURCES 번호를 따른다.",
-        "답변에는 SOURCES/FACTS/QUESTION/DRAFT/CONTEXT 같은 라벨을 다시 출력하지 마라.",
-        "답변은 한국어로만 작성하라. 한자/일본어/중국어(漢字) 사용 금지.",
-        "수식/LaTeX는 출력하지 마라(예: $, \\\\, \\frac, \\sum, \\boxed 금지). 의미 설명만 해라.",
-        "형식: 2~4문장, 각 문장 끝에 [n] 출처를 붙여라.",
+        "아래 BASE에 있는 내용만 사용해 질문에 답해라.",
+        "BASE에 근거가 없으면 \"모르겠다.\" 한 문장만 출력해라.",
+        "답변은 한국어로만. 한자/일본어/중국어(漢字) 금지.",
+        "수식/LaTeX 출력 금지($, \\\\, \\frac, \\sum, \\boxed, \\begin, \\end 등).",
+        "형식: 2~4문장. 각 문장 끝에 [n] 출처를 붙여라. [n]은 SOURCES 번호 범위만 허용.",
+        "SOURCES/BASE/QUESTION 같은 라벨을 답변에 출력하지 마라.",
         "",
         "[SOURCES]",
         sources_text,
         "",
-        "[FACTS]",
-        facts_text,
+        "[BASE]",
+        base_text,
         "",
         f"[QUESTION]\n{query}",
         "",
@@ -1156,18 +1396,18 @@ def _run_chat(
                             "[SOURCES]",
                             sources_text,
                             "",
-                            "[FACTS]",
-                            facts_text,
+                            "[BASE]",
+                            base_text,
                             "",
                         ]
                         user_parts += [
                             "",
                             f"[QUESTION]\n{query}",
                             "",
-                            "답은 한국어로만. 한자/일본어/중국어(漢字) 금지. 수식/LaTeX 출력 금지($, \\\\, \\frac, \\sum, \\boxed 등). 2~4문장으로 짧게 설명하고, 각 문장 끝에 [1] 같은 출처를 붙여라. SOURCES/FACTS/QUESTION 같은 라벨은 출력하지 마라. 근거가 없으면 '모르겠다'.",
+                            "답은 한국어로만. 한자/일본어/중국어(漢字) 금지. 수식/LaTeX 출력 금지($, \\\\, \\frac, \\sum, \\boxed, \\begin, \\end 등). 2~4문장. 각 문장 끝에 [n] 출처를 붙여라(범위는 SOURCES). SOURCES/BASE/QUESTION 같은 라벨은 출력하지 마라. BASE에 근거가 없으면 '모르겠다.' 한 문장만 출력해라.",
                         ]
                         messages = [
-                            {"role": "system", "content": "너는 문서 기반 어시스턴트다. FACTS에 있는 내용만 사용한다. 답변의 핵심 주장마다 반드시 [n] 형태로 출처를 붙인다."},
+                            {"role": "system", "content": "너는 문서 기반 어시스턴트다. BASE에 있는 내용만 사용한다. 답변의 각 문장 끝에 반드시 [n] 형태로 출처를 붙인다."},
                             {"role": "user", "content": "\n".join([p for p in user_parts if p is not None]).strip()},
                         ]
                         ids = tok.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, return_tensors="pt")
@@ -1213,27 +1453,21 @@ def _run_chat(
                     # One-shot repair pass: rewrite into strict Korean-only, no-math, cited answer.
                     def _repair_once(bad_text: str) -> str | None:
                         try:
-                            bad = str(bad_text).strip()
-                            if len(bad) > 700:
-                                bad = bad[:700].rstrip() + " ..."
                             max_ref = int(len(sources))
                             repair_prompt_parts = [
                                 "너는 문서 기반 어시스턴트다.",
-                                "아래 FACTS에 있는 내용만으로 질문에 답해라.",
-                                "FACTS에 근거가 없으면 \"모르겠다.\" 한 문장만 출력해라.",
+                                "아래 BASE에 있는 내용만 사용해 질문에 답해라.",
+                                "BASE에 근거가 없으면 \"모르겠다.\" 한 문장만 출력해라.",
                                 "조건: 한국어만(한자/일본어/중국어 금지), 수식/LaTeX 금지($, \\\\, \\frac, \\sum, \\boxed, \\begin, \\end 등), 2~4문장, 각 문장 끝에 [n] 출처를 붙여라.",
                                 f"출처 번호 n은 1..{max_ref} 범위만 허용한다.",
                                 "",
                                 "[SOURCES]",
                                 sources_text,
                                 "",
-                                "[FACTS]",
-                                facts_text,
+                                "[BASE]",
+                                base_text,
                                 "",
                                 f"[QUESTION]\n{query}",
-                                "",
-                                "[RAW_OUTPUT]",
-                                bad,
                                 "",
                                 "[ANSWER]",
                             ]
@@ -1347,6 +1581,9 @@ def main() -> int:
     p_search.add_argument("--adj-weight", type=float, default=1.0, help="Within-file adjacency edge weight.")
     p_search.add_argument("--link-weight", type=float, default=0.7, help="Markdown link edge weight.")
     p_search.add_argument("--max-chars", type=int, default=6000, help="Max characters per chunk (splits long sections).")
+    p_search.add_argument("--fold", action="store_true", help="Fold/compress the doc graph using Laplacian eigenmodes before smoothing.")
+    p_search.add_argument("--fold-k", type=int, default=6, help="Number of low-frequency modes to define folds.")
+    p_search.add_argument("--fold-min", type=int, default=2, help="Minimum fold size (tiny folds are merged).")
     p_search.add_argument("--show", type=int, default=400, help="Show up to N chars per result (0 = no text).")
     p_search.add_argument("--answer", action="store_true", help="Print an extractive answer draft from retrieved chunks.")
     p_search.add_argument("--answer-items", type=int, default=6, help="Max number of answer bullet points.")
@@ -1388,6 +1625,9 @@ def main() -> int:
     p_chat.add_argument("--adj-weight", type=float, default=1.0)
     p_chat.add_argument("--link-weight", type=float, default=0.7)
     p_chat.add_argument("--max-chars", type=int, default=6000)
+    p_chat.add_argument("--fold", action="store_true", help="Fold/compress the doc graph using Laplacian eigenmodes before smoothing.")
+    p_chat.add_argument("--fold-k", type=int, default=6, help="Number of low-frequency modes to define folds.")
+    p_chat.add_argument("--fold-min", type=int, default=2, help="Minimum fold size (tiny folds are merged).")
     p_chat.add_argument("--model", type=str, default="Qwen/Qwen2.5-1.5B-Instruct", help="HF model name or local path.")
     p_chat.add_argument("--device", type=str, default="auto", help="auto|cpu|cuda")
     p_chat.add_argument("--max-new-tokens", type=int, default=192)
@@ -1413,14 +1653,26 @@ def main() -> int:
             return 2
 
         w = _build_graph(chunks, adj_weight=float(args.adj_weight), link_weight=float(args.link_weight))
-        hits = _search(
-            chunks=chunks,
-            w=w,
-            query=str(args.query),
-            topk=int(args.topk),
-            rho=float(args.rho),
-            nu=float(args.nu),
-        )
+        if bool(getattr(args, "fold", False)):
+            hits = _search_fold(
+                chunks=chunks,
+                w=w,
+                query=str(args.query),
+                topk=int(args.topk),
+                rho=float(args.rho),
+                nu=float(args.nu),
+                fold_k=int(getattr(args, "fold_k", 6)),
+                fold_min=int(getattr(args, "fold_min", 2)),
+            )
+        else:
+            hits = _search(
+                chunks=chunks,
+                w=w,
+                query=str(args.query),
+                topk=int(args.topk),
+                rho=float(args.rho),
+                nu=float(args.nu),
+            )
 
         print(f"indexed_chunks={len(chunks)} query={args.query!r}")
         if bool(args.answer):
@@ -1502,6 +1754,9 @@ def main() -> int:
             no_llm=bool(args.no_llm),
             trust_remote_code=bool(args.trust_remote_code),
             debug_llm=bool(args.debug_llm),
+            fold=bool(getattr(args, "fold", False)),
+            fold_k=int(getattr(args, "fold_k", 6)),
+            fold_min=int(getattr(args, "fold_min", 2)),
         )
         return 0
 

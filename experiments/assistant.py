@@ -18,6 +18,8 @@ def run_balance(
     board_size: int = 12,
     max_steps: int = 800,
     spawn_mode: str = "zones",
+    n_rounds: int = 10,
+    lr: float = 0.3,
 ) -> Dict[str, Any]:
     count_list = [int(x.strip()) for x in counts.split(",")]
     if len(count_list) != n_factions:
@@ -34,7 +36,7 @@ def run_balance(
         config[f"p{f}_units"] = c
 
     env = GridCombatEnv(config)
-    result = env.simulate(n_games)
+    result = env.simulate(n_games, n_rounds=int(n_rounds), lr=float(lr))
 
     print("=" * 50, flush=True)
     print("BALANCE REPORT", flush=True)
@@ -120,6 +122,8 @@ def main() -> int:
     p_bal.add_argument("--board-size", type=int, default=12)
     p_bal.add_argument("--max-steps", type=int, default=800)
     p_bal.add_argument("--spawn-mode", type=str, default="zones")
+    p_bal.add_argument("--n-rounds", type=int, default=10)
+    p_bal.add_argument("--lr", type=float, default=0.3)
 
     p_uni = sub.add_parser("uniform", aliases=["u"])
     p_uni.add_argument("--n-factions", type=int, default=8)
@@ -143,6 +147,8 @@ def main() -> int:
             board_size=int(getattr(args, "board_size", 12)),
             max_steps=int(getattr(args, "max_steps", 800)),
             spawn_mode=str(getattr(args, "spawn_mode", "zones")),
+            n_rounds=int(getattr(args, "n_rounds", 10)),
+            lr=float(getattr(args, "lr", 0.3)),
         )
         return 0
 

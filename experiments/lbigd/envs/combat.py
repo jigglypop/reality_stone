@@ -4,10 +4,15 @@ from typing import Dict, List, Tuple, Any, Optional
 from experiments.lbigd.core.lbo import get_laplacian, smooth_winrate
 
 
-ALL_DIRS = [(0, -1), (0, 1), (-1, 0), (1, 0), (-1, -1), (-1, 1), (1, -1), (1, 1)]
+ORTH_DIRS = [(0, -1), (0, 1), (-1, 0), (1, 0)]
+DIAG_DIRS = [(-1, -1), (1, 1), (-1, 1), (1, -1)]
+ALL_DIRS = ORTH_DIRS + DIAG_DIRS
+
 DIR_MIN = 2
 DIR_MAX = len(ALL_DIRS)
 RANGE_MIN = 1
+DEFAULT_UNIT_SPREAD_FRAC = 0.35
+KNIGHT_OFFSETS = [(-2, -1), (-2, 1), (2, -1), (2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2)]
 
 
 class GridCombatEnv:
@@ -27,28 +32,58 @@ class GridCombatEnv:
         min_u = min(self.n_units)
         spread = max(1, max_u - min_u)
         
-        unit_dir_spread = float(config.get("unit_dir_spread", 0.35 * float(DIR_MAX - DIR_MIN)))
-        unit_range_spread = float(config.get("unit_range_spread", 0.35 * float(self.board_size - RANGE_MIN)))
+        unit_dir_spread = float(config.get("unit_dir_spread", DEFAULT_UNIT_SPREAD_FRAC * float(DIR_MAX - DIR_MIN)))
+        unit_range_spread = float(config.get("unit_range_spread", DEFAULT_UNIT_SPREAD_FRAC * float(self.board_size - RANGE_MIN)))
+
+        self.cannon_ratio: List[float] = []
+        self.knight_ratio: List[float] = []
+        self.unit_key: List[List[float]] = []
 
         self.dir_count: List[List[float]] = []
         self.max_range: List[List[float]] = []
         self.sliding: List[List[bool]] = []
+        self.cannon: List[List[bool]] = []
+        self.knight: List[List[bool]] = []
         for f in range(self.n_factions):
             u = self.n_units[f]
             ratio = (max_u - u) / spread
-            dc_mean = float(3 + int(ratio * 5))
-            mr_mean = float(3 + int(ratio * 5))
+            dc_mean = float(DIR_MIN) + ratio * float(DIR_MAX - DIR_MIN)
+            mr_mean = float(RANGE_MIN) + ratio * float(self.board_size - RANGE_MIN)
+            cannon_ratio = float(config.get("cannon_ratio", 1.0 - ratio))
+            knight_ratio = float(config.get("knight_ratio", 0.0))
+            if cannon_ratio < 0.0:
+                cannon_ratio = 0.0
+            if knight_ratio < 0.0:
+                knight_ratio = 0.0
+            if cannon_ratio + knight_ratio > 1.0:
+                s = float(cannon_ratio + knight_ratio)
+                if s > 0.0:
+                    cannon_ratio = cannon_ratio / s
+                    knight_ratio = knight_ratio / s
+                else:
+                    cannon_ratio = 0.0
+                    knight_ratio = 0.0
+
+            self.cannon_ratio.append(float(cannon_ratio))
+            self.knight_ratio.append(float(knight_ratio))
 
             if u <= 0:
+                self.unit_key.append([])
                 self.dir_count.append([])
                 self.max_range.append([])
                 self.sliding.append([])
+                self.cannon.append([])
+                self.knight.append([])
                 continue
+
+            self.unit_key.append([float(x) for x in self.rng.random(u)])
 
             if u == 1:
                 self.dir_count.append([dc_mean])
                 self.max_range.append([mr_mean])
                 self.sliding.append([True])
+                self.cannon.append([False])
+                self.knight.append([False])
                 continue
 
             base = np.linspace(-1.0, 1.0, u, dtype=np.float32)
@@ -59,18 +94,51 @@ class GridCombatEnv:
             self.dir_count.append([float(x) for x in dirs])
             self.max_range.append([float(x) for x in rngs])
             self.sliding.append([True] * u)
+            self.cannon.append([False] * u)
+            self.knight.append([False] * u)
         
+        self._assign_patterns()
+
         self.positions: List[List[Tuple[int, int]]] = []
         self.alive: List[List[bool]] = []
         self.king_idx: List[int] = []
         self.reset()
 
+    def _assign_patterns(self) -> None:
+        for f in range(self.n_factions):
+            u = len(self.unit_key[f])
+            if u == 0:
+                continue
+
+            kp = float(self.knight_ratio[f])
+            cp = float(self.cannon_ratio[f])
+            if kp < 0.0:
+                kp = 0.0
+            if cp < 0.0:
+                cp = 0.0
+            if kp + cp > 1.0:
+                s = float(kp + cp)
+                if s > 0.0:
+                    kp = kp / s
+                    cp = cp / s
+                else:
+                    kp = 0.0
+                    cp = 0.0
+                self.knight_ratio[f] = kp
+                self.cannon_ratio[f] = cp
+
+            for i in range(u):
+                r = float(self.unit_key[f][i])
+                self.knight[f][i] = bool(r < kp)
+                self.cannon[f][i] = bool((not self.knight[f][i]) and (r < kp + cp))
+
     def _dir_i(self, f: int, i: int) -> int:
         v = int(round(float(self.dir_count[f][i])))
         if v < DIR_MIN:
             return DIR_MIN
-        if v > DIR_MAX:
-            return DIR_MAX
+        vmax = len(ORTH_DIRS) if bool(self.cannon[f][i]) else DIR_MAX
+        if v > vmax:
+            return vmax
         return v
 
     def _range_i(self, f: int, i: int) -> int:
@@ -152,48 +220,97 @@ class GridCombatEnv:
                     occ[(x, y)] = (ff, ii)
         return occ
 
-    def _targets(self, f: int, i: int, occupied: Optional[Dict[Tuple[int, int], Tuple[int, int]]] = None) -> List[Tuple[int, int]]:
+    def _moves_unit(
+        self,
+        f: int,
+        i: int,
+        occupied: Dict[Tuple[int, int], Tuple[int, int]],
+    ) -> Tuple[List[Tuple[int, int, int, int]], List[Tuple[int, int]]]:
         if not self.alive[f][i]:
-            return []
+            return [], []
         x, y = self.positions[f][i]
+        if bool(self.knight[f][i]):
+            cap: List[Tuple[int, int, int, int]] = []
+            mv: List[Tuple[int, int]] = []
+            for dx, dy in KNIGHT_OFFSETS:
+                nx, ny = x + dx, y + dy
+                if not (0 <= nx < self.board_size and 0 <= ny < self.board_size):
+                    continue
+                hit = occupied.get((nx, ny), None)
+                if hit is None:
+                    mv.append((nx, ny))
+                    continue
+                of, oi = hit
+                if of != f:
+                    cap.append((nx, ny, of, oi))
+            return cap, mv
         dc = self._dir_i(f, i)
         mr = self._range_i(f, i)
         sl = self.sliding[f][i]
         dirs = ALL_DIRS[:dc]
-        occ = occupied if occupied is not None else self._occupied()
-        out = []
+        cap: List[Tuple[int, int, int, int]] = []
+        mv: List[Tuple[int, int]] = []
+        is_cannon = bool(self.cannon[f][i])
+
         for dx, dy in dirs:
             rng = range(1, mr + 1) if sl else [1]
+            if not is_cannon:
+                for d in rng:
+                    nx, ny = x + dx * d, y + dy * d
+                    if not (0 <= nx < self.board_size and 0 <= ny < self.board_size):
+                        break
+                    hit = occupied.get((nx, ny), None)
+                    if hit is None:
+                        mv.append((nx, ny))
+                        continue
+                    of, oi = hit
+                    if of != f:
+                        cap.append((nx, ny, of, oi))
+                    break
+                continue
+
+            screen = False
             for d in rng:
                 nx, ny = x + dx * d, y + dy * d
                 if not (0 <= nx < self.board_size and 0 <= ny < self.board_size):
                     break
-                hit = occ.get((nx, ny), None)
+                hit = occupied.get((nx, ny), None)
+                if not screen:
+                    if hit is None:
+                        mv.append((nx, ny))
+                        continue
+                    screen = True
+                    continue
                 if hit is None:
                     continue
                 of, oi = hit
                 if of != f:
-                    out.append((of, oi))
+                    cap.append((nx, ny, of, oi))
                 break
-        return out
 
-    def step(self, action: Tuple[int, int, int], occupied: Optional[Dict[Tuple[int, int], Tuple[int, int]]] = None) -> Tuple[Any, List[float], bool, Dict]:
-        f, i, a = action
+        return cap, mv
+
+    def step(self, action: Tuple[int, int, int, int], occupied: Dict[Tuple[int, int], Tuple[int, int]]) -> Tuple[Any, List[float], bool, Dict]:
+        f, i, nx, ny = action
         rewards = [0.0] * self.n_factions
         if f >= self.n_factions or i >= len(self.alive[f]) or not self.alive[f][i]:
             self.step_idx += 1
             return {}, rewards, False, {}
-        occ = occupied if occupied is not None else self._occupied()
-        targets = self._targets(f, i, occ)
-        king_killed = None
+        occ = occupied
         eliminated = None
-        if targets and a == 1:
-            tf, ti = targets[int(self.rng.integers(0, len(targets)))]
-            self.alive[tf][ti] = False
-            pos = self.positions[tf][ti]
-            if pos in occ:
-                del occ[pos]
+        src = self.positions[f][i]
+        if src in occ:
+            del occ[src]
 
+        hit = occ.get((nx, ny), None)
+        if hit is not None:
+            tf, ti = hit
+            if tf == f:
+                self.step_idx += 1
+                occ[src] = (f, i)
+                return {}, rewards, False, {}
+            self.alive[tf][ti] = False
+            del occ[(nx, ny)]
             if self.game_mode == "reverse":
                 rewards[f] -= 1.0
                 rewards[tf] += 1.0
@@ -202,8 +319,9 @@ class GridCombatEnv:
             else:
                 rewards[f] += 1.0
                 rewards[tf] -= 1.0
-                if ti == self.king_idx[tf]:
-                    king_killed = tf
+
+        self.positions[f][i] = (int(nx), int(ny))
+        occ[(int(nx), int(ny))] = (f, i)
         self.step_idx += 1
         done = False
         winner = None
@@ -212,9 +330,6 @@ class GridCombatEnv:
                 done = True
                 winner = eliminated
         else:
-            if king_killed is not None:
-                done = True
-                winner = f
             if not done:
                 active = [ff for ff in range(self.n_factions) if self.king_idx[ff] >= 0 and self.alive[ff][self.king_idx[ff]]]
                 if len(active) == 1:
@@ -224,8 +339,11 @@ class GridCombatEnv:
             done = True
             alive_counts = [sum(self.alive[ff]) for ff in range(self.n_factions)]
             if self.game_mode == "reverse":
-                best = int(min(alive_counts))
-                cand = [ff for ff, c in enumerate(alive_counts) if int(c) == best]
+                alive_ratio = [
+                    (float(alive_counts[ff]) / float(max(1, self.n_units[ff])), ff) for ff in range(self.n_factions)
+                ]
+                best = min(alive_ratio)[0] if alive_ratio else 1.0
+                cand = [ff for r, ff in alive_ratio if float(r) == float(best)]
                 winner = int(self.rng.choice(cand)) if cand else -1
             else:
                 winner = int(np.argmax(alive_counts))
@@ -239,10 +357,26 @@ class GridCombatEnv:
             idx = self._alive_idx(f)
             if not idx:
                 continue
-            i = int(self.rng.choice(idx))
-            t = self._targets(f, i, occ)
-            a = 1 if t else 0
-            _, _, done, info = self.step((f, i, a), occ)
+            cap_moves: List[Tuple[int, int, int, int]] = []
+            mv_moves: List[Tuple[int, int, int, int]] = []
+            for i in idx:
+                cap, mv = self._moves_unit(f, int(i), occ)
+                for nx, ny, tf, ti in cap:
+                    cap_moves.append((f, int(i), int(nx), int(ny)))
+                for nx, ny in mv:
+                    mv_moves.append((f, int(i), int(nx), int(ny)))
+
+            action = None
+            if cap_moves:
+                action = cap_moves[int(self.rng.integers(0, len(cap_moves)))]
+            elif mv_moves:
+                action = mv_moves[int(self.rng.integers(0, len(mv_moves)))]
+
+            if action is None:
+                self.step_idx += 1
+                continue
+
+            _, _, done, info = self.step(action, occ)
             if done:
                 return info.get("winner", -1)
         return -1
@@ -275,6 +409,20 @@ class GridCombatEnv:
                         self.max_range[f][i] = float(RANGE_MIN)
                     if float(self.max_range[f][i]) > float(self.board_size):
                         self.max_range[f][i] = float(self.board_size)
+
+                ratio_delta = float((-sign) * lr * float(err[f]))
+                self.cannon_ratio[f] = float(np.clip(self.cannon_ratio[f] + ratio_delta, 0.0, 1.0))
+                self.knight_ratio[f] = float(np.clip(self.knight_ratio[f] + ratio_delta, 0.0, 1.0))
+                if self.cannon_ratio[f] + self.knight_ratio[f] > 1.0:
+                    s = float(self.cannon_ratio[f] + self.knight_ratio[f])
+                    if s > 0.0:
+                        self.cannon_ratio[f] = self.cannon_ratio[f] / s
+                        self.knight_ratio[f] = self.knight_ratio[f] / s
+                    else:
+                        self.cannon_ratio[f] = 0.0
+                        self.knight_ratio[f] = 0.0
+
+            self._assign_patterns()
         
         wins = {f: 0 for f in range(self.n_factions)}
         for g in range(n_games):
@@ -289,7 +437,12 @@ class GridCombatEnv:
         for f in range(self.n_factions):
             unit_patterns = []
             for i in range(len(self.dir_count[f])):
-                unit_patterns.append((self._dir_i(f, i), self._range_i(f, i)))
+                if bool(self.knight[f][i]):
+                    unit_patterns.append(("knight", int(len(KNIGHT_OFFSETS)), 1))
+                elif bool(self.cannon[f][i]):
+                    unit_patterns.append(("cannon", self._dir_i(f, i), self._range_i(f, i)))
+                else:
+                    unit_patterns.append(("normal", self._dir_i(f, i), self._range_i(f, i)))
             patterns.append(unit_patterns)
         return {
             "wins": wins,

@@ -12,6 +12,7 @@ DIR_MIN = 2
 DIR_MAX = len(ALL_DIRS)
 RANGE_MIN = 1
 DEFAULT_UNIT_SPREAD_FRAC = 0.35
+DEFAULT_KNIGHT_SCALE = 0.25
 KNIGHT_OFFSETS = [(-2, -1), (-2, 1), (2, -1), (2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2)]
 
 
@@ -23,6 +24,39 @@ class GridCombatEnv:
         self.board_size = int(config.get("board_size", 12))
         self.max_steps = int(config.get("max_steps", 800))
         self.game_mode = str(config.get("game_mode", "normal")).lower()
+        self.start_mode = str(config.get("start_mode", "rotate")).lower()
+        self._start_f = int(config.get("start_f", 0))
+
+        obstacles_raw = config.get("obstacles", None)
+        self.obstacles = set()
+        if obstacles_raw is not None:
+            for xy in obstacles_raw:
+                if not isinstance(xy, (list, tuple)) or len(xy) != 2:
+                    continue
+                x, y = int(xy[0]), int(xy[1])
+                if not (0 <= x < self.board_size and 0 <= y < self.board_size):
+                    raise ValueError(f"obstacle {(x, y)} out of bounds for board_size={self.board_size}")
+                self.obstacles.add((x, y))
+        else:
+            obstacle_mode = str(config.get("obstacle_mode", "none")).lower()
+            n_obstacles = int(config.get("n_obstacles", 0))
+            if n_obstacles > 0 and obstacle_mode != "none":
+                if obstacle_mode == "zones":
+                    per = int(n_obstacles // self.n_factions)
+                    rem = int(n_obstacles % self.n_factions)
+                    for f in range(self.n_factions):
+                        k = int(per + (1 if f < rem else 0))
+                        if k <= 0:
+                            continue
+                        zone_start = f * self.board_size // self.n_factions
+                        zone_end = (f + 1) * self.board_size // self.n_factions
+                        cells = [(x, y) for x in range(zone_start, zone_end) for y in range(self.board_size)]
+                        self.rng.shuffle(cells)
+                        self.obstacles.update(cells[:k])
+                else:
+                    cells = [(x, y) for x in range(self.board_size) for y in range(self.board_size)]
+                    self.rng.shuffle(cells)
+                    self.obstacles.update(cells[:n_obstacles])
         
         self.n_units = []
         for f in range(self.n_factions):
@@ -49,8 +83,15 @@ class GridCombatEnv:
             ratio = (max_u - u) / spread
             dc_mean = float(DIR_MIN) + ratio * float(DIR_MAX - DIR_MIN)
             mr_mean = float(RANGE_MIN) + ratio * float(self.board_size - RANGE_MIN)
-            cannon_ratio = float(config.get("cannon_ratio", 1.0 - ratio))
-            knight_ratio = float(config.get("knight_ratio", 0.0))
+            if self.game_mode == "reverse":
+                default_cannon_ratio = 1.0 - ratio
+                default_knight_ratio = 0.0
+            else:
+                default_cannon_ratio = ratio
+                default_knight_ratio = DEFAULT_KNIGHT_SCALE * ratio
+
+            cannon_ratio = float(config.get("cannon_ratio", default_cannon_ratio))
+            knight_ratio = float(config.get("knight_ratio", default_knight_ratio))
             if cannon_ratio < 0.0:
                 cannon_ratio = 0.0
             if knight_ratio < 0.0:
@@ -171,7 +212,7 @@ class GridCombatEnv:
         self.king_idx = []
         
         total_units = int(sum(self.n_units))
-        capacity = int(self.board_size * self.board_size)
+        capacity = int(self.board_size * self.board_size) - int(len(self.obstacles))
         if total_units > capacity:
             raise ValueError(f"total units {total_units} exceeds board capacity {capacity}")
 
@@ -180,13 +221,13 @@ class GridCombatEnv:
             for f in range(self.n_factions):
                 zone_start = f * self.board_size // self.n_factions
                 zone_end = (f + 1) * self.board_size // self.n_factions
-                zone_w = int(max(0, zone_end - zone_start))
-                if self.n_units[f] > zone_w * self.board_size:
+                zone_cells = [(x, y) for x in range(zone_start, zone_end) for y in range(self.board_size) if (x, y) not in self.obstacles]
+                if self.n_units[f] > len(zone_cells):
                     spawn_mode = "global"
                     break
 
         if spawn_mode == "global":
-            cells = [(x, y) for x in range(self.board_size) for y in range(self.board_size)]
+            cells = [(x, y) for x in range(self.board_size) for y in range(self.board_size) if (x, y) not in self.obstacles]
             self.rng.shuffle(cells)
             cur = 0
             for f in range(self.n_factions):
@@ -201,7 +242,7 @@ class GridCombatEnv:
                 n = int(self.n_units[f])
                 zone_start = f * self.board_size // self.n_factions
                 zone_end = (f + 1) * self.board_size // self.n_factions
-                zone_cells = [(x, y) for x in range(zone_start, zone_end) for y in range(self.board_size)]
+                zone_cells = [(x, y) for x in range(zone_start, zone_end) for y in range(self.board_size) if (x, y) not in self.obstacles]
                 self.rng.shuffle(zone_cells)
                 pos_list = zone_cells[:n]
                 self.positions.append([(int(x), int(y)) for (x, y) in pos_list])
@@ -236,6 +277,8 @@ class GridCombatEnv:
                 nx, ny = x + dx, y + dy
                 if not (0 <= nx < self.board_size and 0 <= ny < self.board_size):
                     continue
+                if (nx, ny) in self.obstacles:
+                    continue
                 hit = occupied.get((nx, ny), None)
                 if hit is None:
                     mv.append((nx, ny))
@@ -259,6 +302,8 @@ class GridCombatEnv:
                     nx, ny = x + dx * d, y + dy * d
                     if not (0 <= nx < self.board_size and 0 <= ny < self.board_size):
                         break
+                    if (nx, ny) in self.obstacles:
+                        break
                     hit = occupied.get((nx, ny), None)
                     if hit is None:
                         mv.append((nx, ny))
@@ -273,6 +318,8 @@ class GridCombatEnv:
             for d in rng:
                 nx, ny = x + dx * d, y + dy * d
                 if not (0 <= nx < self.board_size and 0 <= ny < self.board_size):
+                    break
+                if (nx, ny) in self.obstacles:
                     break
                 hit = occupied.get((nx, ny), None)
                 if not screen:
@@ -296,13 +343,18 @@ class GridCombatEnv:
         if f >= self.n_factions or i >= len(self.alive[f]) or not self.alive[f][i]:
             self.step_idx += 1
             return {}, rewards, False, {}
+        nx_i, ny_i = int(nx), int(ny)
+        if (nx_i, ny_i) in self.obstacles:
+            self.step_idx += 1
+            return {}, rewards, False, {}
         occ = occupied
         eliminated = None
+        king_killed = None
         src = self.positions[f][i]
         if src in occ:
             del occ[src]
 
-        hit = occ.get((nx, ny), None)
+        hit = occ.get((nx_i, ny_i), None)
         if hit is not None:
             tf, ti = hit
             if tf == f:
@@ -310,7 +362,7 @@ class GridCombatEnv:
                 occ[src] = (f, i)
                 return {}, rewards, False, {}
             self.alive[tf][ti] = False
-            del occ[(nx, ny)]
+            del occ[(nx_i, ny_i)]
             if self.game_mode == "reverse":
                 rewards[f] -= 1.0
                 rewards[tf] += 1.0
@@ -319,9 +371,11 @@ class GridCombatEnv:
             else:
                 rewards[f] += 1.0
                 rewards[tf] -= 1.0
+                if ti == self.king_idx[tf]:
+                    king_killed = tf
 
-        self.positions[f][i] = (int(nx), int(ny))
-        occ[(int(nx), int(ny))] = (f, i)
+        self.positions[f][i] = (nx_i, ny_i)
+        occ[(nx_i, ny_i)] = (f, i)
         self.step_idx += 1
         done = False
         winner = None
@@ -330,6 +384,9 @@ class GridCombatEnv:
                 done = True
                 winner = eliminated
         else:
+            if king_killed is not None:
+                done = True
+                winner = f
             if not done:
                 active = [ff for ff in range(self.n_factions) if self.king_idx[ff] >= 0 and self.alive[ff][self.king_idx[ff]]]
                 if len(active) == 1:
@@ -352,8 +409,13 @@ class GridCombatEnv:
     def run_game(self) -> int:
         self.reset()
         occ = self._occupied()
+        if self.start_mode == "random":
+            start_f = int(self.rng.integers(0, self.n_factions))
+        else:
+            start_f = int(self._start_f % self.n_factions)
+            self._start_f = int((start_f + 1) % self.n_factions)
         for s in range(self.max_steps * self.n_factions):
-            f = s % self.n_factions
+            f = (start_f + s) % self.n_factions
             idx = self._alive_idx(f)
             if not idx:
                 continue
@@ -366,14 +428,21 @@ class GridCombatEnv:
                 for nx, ny in mv:
                     mv_moves.append((f, int(i), int(nx), int(ny)))
 
-            action = None
-            if cap_moves:
-                action = cap_moves[int(self.rng.integers(0, len(cap_moves)))]
-            elif mv_moves:
-                action = mv_moves[int(self.rng.integers(0, len(mv_moves)))]
+            moves = cap_moves + mv_moves
+            action = moves[int(self.rng.integers(0, len(moves)))] if moves else None
 
             if action is None:
                 self.step_idx += 1
+                if self.step_idx >= self.max_steps:
+                    alive_counts = [sum(self.alive[ff]) for ff in range(self.n_factions)]
+                    if self.game_mode == "reverse":
+                        alive_ratio = [
+                            (float(alive_counts[ff]) / float(max(1, self.n_units[ff])), ff) for ff in range(self.n_factions)
+                        ]
+                        best = min(alive_ratio)[0] if alive_ratio else 1.0
+                        cand = [ff for r, ff in alive_ratio if float(r) == float(best)]
+                        return int(self.rng.choice(cand)) if cand else -1
+                    return int(np.argmax(alive_counts))
                 continue
 
             _, _, done, info = self.step(action, occ)

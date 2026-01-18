@@ -20,6 +20,10 @@ def run_balance(
     spawn_mode: str = "zones",
     n_rounds: int = 10,
     lr: float = 0.3,
+    game_mode: str = "normal",
+    start_mode: str = "rotate",
+    obstacle_mode: str = "none",
+    n_obstacles: int = 0,
 ) -> Dict[str, Any]:
     count_list = [int(x.strip()) for x in counts.split(",")]
     if len(count_list) != n_factions:
@@ -28,9 +32,12 @@ def run_balance(
     config = {
         "board_size": board_size,
         "n_factions": n_factions,
-        "game_mode": "reverse",
+        "game_mode": game_mode,
         "max_steps": max_steps,
         "spawn_mode": spawn_mode,
+        "start_mode": start_mode,
+        "obstacle_mode": obstacle_mode,
+        "n_obstacles": int(n_obstacles),
     }
     for f, c in enumerate(count_list):
         config[f"p{f}_units"] = c
@@ -61,6 +68,10 @@ def run_uniform(
     case: str = "both",
     dir_count: int = DIR_MIN,
     max_range: int = RANGE_MIN,
+    game_mode: str = "normal",
+    start_mode: str = "rotate",
+    obstacle_mode: str = "none",
+    n_obstacles: int = 0,
 ) -> Dict[str, Any]:
     count_list = [int(x.strip()) for x in counts.split(",")]
     if len(count_list) != n_factions:
@@ -69,9 +80,12 @@ def run_uniform(
     config = {
         "board_size": board_size,
         "n_factions": n_factions,
-        "game_mode": "reverse",
+        "game_mode": game_mode,
         "max_steps": max_steps,
         "spawn_mode": spawn_mode,
+        "start_mode": start_mode,
+        "obstacle_mode": obstacle_mode,
+        "n_obstacles": int(n_obstacles),
     }
     for f, c in enumerate(count_list):
         config[f"p{f}_units"] = c
@@ -124,6 +138,10 @@ def main() -> int:
     p_bal.add_argument("--spawn-mode", type=str, default="zones")
     p_bal.add_argument("--n-rounds", type=int, default=10)
     p_bal.add_argument("--lr", type=float, default=0.3)
+    p_bal.add_argument("--game-mode", type=str, default="normal")
+    p_bal.add_argument("--start-mode", type=str, choices=["rotate", "random"], default="rotate")
+    p_bal.add_argument("--obstacle-mode", type=str, choices=["none", "random", "zones"], default="none")
+    p_bal.add_argument("--n-obstacles", type=int, default=0)
 
     p_uni = sub.add_parser("uniform", aliases=["u"])
     p_uni.add_argument("--n-factions", type=int, default=8)
@@ -135,6 +153,10 @@ def main() -> int:
     p_uni.add_argument("--case", type=str, choices=["min", "max", "both", "custom"], default="both")
     p_uni.add_argument("--dir", type=int, default=DIR_MIN)
     p_uni.add_argument("--range", type=int, default=RANGE_MIN)
+    p_uni.add_argument("--game-mode", type=str, default="normal")
+    p_uni.add_argument("--start-mode", type=str, choices=["rotate", "random"], default="rotate")
+    p_uni.add_argument("--obstacle-mode", type=str, choices=["none", "random", "zones"], default="none")
+    p_uni.add_argument("--n-obstacles", type=int, default=0)
 
     args = parser.parse_args()
     cmd = args.cmd
@@ -149,6 +171,10 @@ def main() -> int:
             spawn_mode=str(getattr(args, "spawn_mode", "zones")),
             n_rounds=int(getattr(args, "n_rounds", 10)),
             lr=float(getattr(args, "lr", 0.3)),
+            game_mode=str(getattr(args, "game_mode", "normal")),
+            start_mode=str(getattr(args, "start_mode", "rotate")),
+            obstacle_mode=str(getattr(args, "obstacle_mode", "none")),
+            n_obstacles=int(getattr(args, "n_obstacles", 0)),
         )
         return 0
 
@@ -163,6 +189,10 @@ def main() -> int:
             case=str(getattr(args, "case", "both")),
             dir_count=int(getattr(args, "dir", DIR_MIN)),
             max_range=int(getattr(args, "range", RANGE_MIN)),
+            game_mode=str(getattr(args, "game_mode", "normal")),
+            start_mode=str(getattr(args, "start_mode", "rotate")),
+            obstacle_mode=str(getattr(args, "obstacle_mode", "none")),
+            n_obstacles=int(getattr(args, "n_obstacles", 0)),
         )
         return 0
 

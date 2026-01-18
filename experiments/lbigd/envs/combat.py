@@ -26,6 +26,7 @@ class GridCombatEnv:
         self.game_mode = str(config.get("game_mode", "normal")).lower()
         self.start_mode = str(config.get("start_mode", "rotate")).lower()
         self._start_f = int(config.get("start_f", 0))
+        self.last_start_f = None
 
         obstacles_raw = config.get("obstacles", None)
         self.obstacles = set()
@@ -414,6 +415,7 @@ class GridCombatEnv:
         else:
             start_f = int(self._start_f % self.n_factions)
             self._start_f = int((start_f + 1) % self.n_factions)
+        self.last_start_f = start_f
         for s in range(self.max_steps * self.n_factions):
             f = (start_f + s) % self.n_factions
             idx = self._alive_idx(f)
@@ -457,8 +459,15 @@ class GridCombatEnv:
         
         for rd in range(n_rounds):
             wins = {f: 0 for f in range(self.n_factions)}
+            start_games = {f: 0 for f in range(self.n_factions)}
+            start_wins = {f: 0 for f in range(self.n_factions)}
             for g in range(n_games):
                 w = self.run_game()
+                sf = self.last_start_f
+                if sf is not None and 0 <= int(sf) < self.n_factions:
+                    start_games[int(sf)] += 1
+                    if w == int(sf):
+                        start_wins[int(sf)] += 1
                 if w is not None and w >= 0:
                     wins[w] = wins.get(w, 0) + 1
             
@@ -494,8 +503,15 @@ class GridCombatEnv:
             self._assign_patterns()
         
         wins = {f: 0 for f in range(self.n_factions)}
+        start_games = {f: 0 for f in range(self.n_factions)}
+        start_wins = {f: 0 for f in range(self.n_factions)}
         for g in range(n_games):
             w = self.run_game()
+            sf = self.last_start_f
+            if sf is not None and 0 <= int(sf) < self.n_factions:
+                start_games[int(sf)] += 1
+                if w == int(sf):
+                    start_wins[int(sf)] += 1
             if w is not None and w >= 0:
                 wins[w] = wins.get(w, 0) + 1
         
@@ -513,9 +529,18 @@ class GridCombatEnv:
                 else:
                     unit_patterns.append(("normal", self._dir_i(f, i), self._range_i(f, i)))
             patterns.append(unit_patterns)
+
+        start_total = int(sum(start_games.values()))
+        start_win_total = int(sum(start_wins.values()))
+        start_win_rate = float(start_win_total) / float(max(1, start_total))
         return {
             "wins": wins,
             "rates": {f: round(wr[f], 4) for f in range(self.n_factions)},
             "smoothed": [round(x, 4) for x in sm],
             "patterns": patterns,
+            "start": {
+                "games": start_games,
+                "wins": start_wins,
+                "rate": round(start_win_rate, 4),
+            },
         }

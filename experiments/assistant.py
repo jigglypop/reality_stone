@@ -54,8 +54,101 @@ def run_balance(
     print(f"wins: {result['wins']}", flush=True)
     print(f"rates: {result['rates']}", flush=True)
     print(f"smoothed: {result['smoothed']}", flush=True)
+    if "start" in result:
+        print(f"start: {result['start']}", flush=True)
     
     return result
+
+
+def run_report(
+    n_factions: int = 8,
+    counts: str = "25,23,20,18,16,14,12,10",
+    n_games: int = 200,
+    board_size: int = 12,
+    max_steps: int = 800,
+    spawn_mode: str = "zones",
+    start_mode: str = "rotate",
+    obstacle_mode: str = "none",
+    n_obstacles: int = 0,
+    n_rounds: int = 10,
+    lr: float = 0.3,
+    game_mode: str = "normal",
+    fmt: str = "json",
+) -> Dict[str, Any]:
+    count_list = [int(x.strip()) for x in counts.split(",")]
+    if len(count_list) != n_factions:
+        count_list = count_list[:n_factions] if len(count_list) > n_factions else count_list + [10] * (n_factions - len(count_list))
+
+    config = {
+        "board_size": board_size,
+        "n_factions": n_factions,
+        "game_mode": game_mode,
+        "max_steps": max_steps,
+        "spawn_mode": spawn_mode,
+        "start_mode": start_mode,
+        "obstacle_mode": obstacle_mode,
+        "n_obstacles": int(n_obstacles),
+    }
+    for f, c in enumerate(count_list):
+        config[f"p{f}_units"] = c
+
+    env = GridCombatEnv(config)
+    result = env.simulate(n_games, n_rounds=int(n_rounds), lr=float(lr))
+
+    factions = []
+    for f in range(n_factions):
+        patterns = result["patterns"][f]
+        kind_counts = {"normal": 0, "cannon": 0, "knight": 0}
+        for p in patterns:
+            k = str(p[0])
+            if k in kind_counts:
+                kind_counts[k] += 1
+
+        king = None
+        if len(patterns) > 0:
+            king = {"idx": 0, "pattern": patterns[0]}
+
+        factions.append(
+            {
+                "faction": f,
+                "units": int(count_list[f]),
+                "king": king,
+                "counts": kind_counts,
+                "patterns": patterns,
+            }
+        )
+
+    report = {
+        "config": config,
+        "counts": count_list,
+        "result": {
+            "wins": result.get("wins"),
+            "rates": result.get("rates"),
+            "start": result.get("start"),
+        },
+        "factions": factions,
+    }
+
+    if fmt == "text":
+        print("=" * 50, flush=True)
+        print("PATTERN REPORT", flush=True)
+        print("=" * 50, flush=True)
+        print(f"config: {config}", flush=True)
+        print(f"counts: {count_list}", flush=True)
+        print(f"rates: {report['result']['rates']}", flush=True)
+        if report["result"]["start"] is not None:
+            print(f"start: {report['result']['start']}", flush=True)
+        for f in factions:
+            print("-" * 50, flush=True)
+            print(f"faction {f['faction']} units={f['units']} counts={f['counts']}", flush=True)
+            print(f"king: {f['king']}", flush=True)
+            print(f"patterns: {f['patterns']}", flush=True)
+    else:
+        import json
+
+        print(json.dumps(report, ensure_ascii=False), flush=True)
+
+    return report
 
 
 def run_uniform(
@@ -158,6 +251,21 @@ def main() -> int:
     p_uni.add_argument("--obstacle-mode", type=str, choices=["none", "random", "zones"], default="none")
     p_uni.add_argument("--n-obstacles", type=int, default=0)
 
+    p_rep = sub.add_parser("report", aliases=["r"])
+    p_rep.add_argument("--n-factions", type=int, default=8)
+    p_rep.add_argument("--counts", type=str, default="25,23,20,18,16,14,12,10")
+    p_rep.add_argument("--n-games", type=int, default=200)
+    p_rep.add_argument("--board-size", type=int, default=12)
+    p_rep.add_argument("--max-steps", type=int, default=800)
+    p_rep.add_argument("--spawn-mode", type=str, default="zones")
+    p_rep.add_argument("--start-mode", type=str, choices=["rotate", "random"], default="rotate")
+    p_rep.add_argument("--obstacle-mode", type=str, choices=["none", "random", "zones"], default="none")
+    p_rep.add_argument("--n-obstacles", type=int, default=0)
+    p_rep.add_argument("--n-rounds", type=int, default=10)
+    p_rep.add_argument("--lr", type=float, default=0.3)
+    p_rep.add_argument("--game-mode", type=str, default="normal")
+    p_rep.add_argument("--format", type=str, choices=["json", "text"], default="json")
+
     args = parser.parse_args()
     cmd = args.cmd
 
@@ -193,6 +301,24 @@ def main() -> int:
             start_mode=str(getattr(args, "start_mode", "rotate")),
             obstacle_mode=str(getattr(args, "obstacle_mode", "none")),
             n_obstacles=int(getattr(args, "n_obstacles", 0)),
+        )
+        return 0
+
+    if cmd in ("report", "r"):
+        run_report(
+            n_factions=int(getattr(args, "n_factions", 8)),
+            counts=str(getattr(args, "counts", "25,23,20,18,16,14,12,10")),
+            n_games=int(getattr(args, "n_games", 200)),
+            board_size=int(getattr(args, "board_size", 12)),
+            max_steps=int(getattr(args, "max_steps", 800)),
+            spawn_mode=str(getattr(args, "spawn_mode", "zones")),
+            start_mode=str(getattr(args, "start_mode", "rotate")),
+            obstacle_mode=str(getattr(args, "obstacle_mode", "none")),
+            n_obstacles=int(getattr(args, "n_obstacles", 0)),
+            n_rounds=int(getattr(args, "n_rounds", 10)),
+            lr=float(getattr(args, "lr", 0.3)),
+            game_mode=str(getattr(args, "game_mode", "normal")),
+            fmt=str(getattr(args, "format", "json")),
         )
         return 0
 

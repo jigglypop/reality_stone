@@ -56,6 +56,8 @@ class RSULFTransformerConverter:
         checkpoint_interval: int = 4,
         verbose: bool = False,
         exact: bool = False,
+        use_geodesic_flow: bool = False,
+        geodesic_blend: float = 0.0,
     ):
         if not HAS_RUST:
             raise RuntimeError("reality_stone._rust not available")
@@ -80,6 +82,8 @@ class RSULFTransformerConverter:
         self.checkpoint_interval = checkpoint_interval
         self.verbose = verbose
         self.exact = exact
+        self.use_geodesic_flow = bool(use_geodesic_flow)
+        self.geodesic_blend = float(max(0.0, min(1.0, geodesic_blend)))
         self.stats = ConversionStats()
 
     def extract_weights(self, layer) -> Dict[str, np.ndarray]:
@@ -255,6 +259,8 @@ class RSULFTransformerConverter:
                 norm_mode=str(weights.get("norm_mode", "layernorm")),
                 ffn_mode=str(weights.get("ffn_mode", "gelu")),
                 use_fast=bool((not self.exact) and (self.calibration_samples > 1)),
+                use_geodesic_flow=self.use_geodesic_flow,
+                geodesic_blend=self.geodesic_blend,
             )
             if "WV" in weights and "WO" in weights:
                 rsulf.set_attention_weights(weights["WV"], weights["WO"])
@@ -400,6 +406,8 @@ class RSULFTransformerConverter:
                         use_fast=False,
                         norm_mode=str(weights.get("norm_mode", "layernorm")),
                         ffn_mode=str(weights.get("ffn_mode", "gelu")),
+                        use_geodesic_flow=self.use_geodesic_flow,
+                        geodesic_blend=self.geodesic_blend,
                     )
                     if "WV" in weights and "WO" in weights:
                         rsulf.set_attention_weights(weights["WV"], weights["WO"])
@@ -508,6 +516,8 @@ class RSULFTransformerConverter:
                     norm_mode=str(weights.get("norm_mode", "layernorm")),
                     ffn_mode=str(weights.get("ffn_mode", "gelu")),
                     use_fast=bool(self.calibration_samples > 1),
+                    use_geodesic_flow=self.use_geodesic_flow,
+                    geodesic_blend=self.geodesic_blend,
                 )
                 if "WV" in weights and "WO" in weights:
                     rsulf.set_attention_weights(weights["WV"], weights["WO"])

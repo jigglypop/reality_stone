@@ -135,12 +135,14 @@ def run_rsulf_rank_sweep(original_model, tokenizer, device, prompt, human_decode
     current_r = start_r
     while current_r >= 1:
         print(f"\n--- Testing with rank r={current_r} ---")
+        geo_flow = os.environ.get("RSULF_GEO_FLOW", "").strip().lower() in ("1", "true", "yes")
+        geo_blend = float(os.environ.get("RSULF_GEO_BLEND", "0.0"))
         config = {
             "d_model": original_model.config.n_embd,
             "r": current_r,
             "eta": 0.005,
             "alpha": 0.01,
-            "beta": 0.0,
+            "beta": 0.01,
             "gamma": 0.99,
             "seq_len": 32,
             "window": 4,
@@ -156,6 +158,8 @@ def run_rsulf_rank_sweep(original_model, tokenizer, device, prompt, human_decode
             "pfc_window": 8,
             "pfc_layers": 3,
             "pfc_speed_gate": 1.25,
+            "use_geodesic_flow": geo_flow,
+            "geodesic_blend": geo_blend,
         }
         converter = RSULFTransformerConverter(**config)
         rs_layers = converter.convert_model(original_model)

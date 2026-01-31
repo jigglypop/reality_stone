@@ -50,6 +50,8 @@ class RSULFLayerCUDA(nn.Module):
         pfc_speed_gate: float = 1.0,
         norm_mode: str = "layernorm",
         ffn_mode: str = "gelu",
+        use_geodesic_flow: bool = False,
+        geodesic_blend: float = 0.0,
     ):
         super().__init__()
         if not HAS_RUST:
@@ -152,6 +154,107 @@ class RSULFLayerCUDA(nn.Module):
         
         self.use_hybrid_mode = True
         self.engine = "torch"
+        
+        self.use_geodesic_flow = bool(use_geodesic_flow)
+        self.geodesic_blend = float(max(0.0, min(1.0, geodesic_blend)))
+        self._eta = float(eta)
+        self._alpha = float(alpha)
+        self._beta = float(beta)
+        self._gamma = float(gamma)
+        
+        self._graph_laplacian_cache: Dict[int, torch.Tensor] = {}
+        self._bellman_memory: Optional[torch.Tensor] = None
+
+    def _get_graph_laplacian(self, seq_len: int, device: torch.device) -> torch.Tensor:
+        if seq_len in self._graph_laplacian_cache:
+            L = self._graph_laplacian_cache[seq_len]
+            if L.device != device:
+                L = L.to(device)
+                self._graph_laplacian_cache[seq_len] = L
+            return L
+        w = max(1, self.window)
+        A = torch.zeros(seq_len, seq_len, dtype=torch.float32)
+        for i in range(seq_len):
+            for j in range(max(0, i - w), i):
+                A[i, j] = 1.0 / (1.0 + abs(i - j))
+        D = torch.diag(A.sum(dim=1))
+        L = D - A
+        L = L.to(device)
+        self._graph_laplacian_cache[seq_len] = L
+        return L
+
+    def _compute_riemannian_laplacian(self, x: torch.Tensor) -> torch.Tensor:
+        x_mean = x.mean(dim=1, keepdim=True)
+        delta_x = x - x_mean
+        g_inv = self.g_inv_param.to(x.device)
+        return delta_x * g_inv.unsqueeze(0).unsqueeze(0)
+
+    def _compute_graph_diffusion(self, x: torch.Tensor) -> torch.Tensor:
+        batch, seq_len, dim = x.shape
+        L = self._get_graph_laplacian(seq_len, x.device)
+        Lx = torch.bmm(L.unsqueeze(0).expand(batch, -1, -1), x)
+        return Lx
+
+    def _update_bellman_memory(self, phi: torch.Tensor) -> torch.Tensor:
+        if self._bellman_memory is None:
+            self._bellman_memory = phi.detach()
+        else:
+            if self._bellman_memory.shape != phi.shape:
+                self._bellman_memory = phi.detach()
+            else:
+                self._bellman_memory = self._gamma * self._bellman_memory + phi.detach()
+        return self._bellman_memory
+
+    def reset_bellman_memory(self):
+        self._bellman_memory = None
+
+    def _compute_potential_and_gradient(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        batch, seq_len, dim = x.shape
+        x_flat = x.reshape(-1, dim)
+        h = x_flat @ self.ffn_v1
+        h = h * self.ffn_s1.unsqueeze(0)
+        h = h @ self.ffn_u1.T
+        h = h + self.b1.unsqueeze(0)
+        if self.ffn_mode in ("swiglu", "silu_gated", "gated"):
+            if self.ffn_gate_w.numel() == 0:
+                h = F.silu(h)
+            else:
+                gate = F.linear(x_flat, self.ffn_gate_w, self.ffn_gate_b)
+                gate = F.silu(gate)
+                h = h * gate
+        elif self.ffn_mode in ("silu", "swish"):
+            h = F.silu(h)
+        else:
+            if self.ffn_mode in ("gelu_new", "gelu_new_tanh"):
+                h = self._gelu_new(h)
+            else:
+                h = F.gelu(h)
+        f_x = h @ self.ffn_v2
+        f_x = f_x * self.ffn_s2.unsqueeze(0)
+        f_x = f_x @ self.ffn_u2.T
+        f_x = f_x + self.b2.unsqueeze(0)
+        phi = 0.5 * (f_x * f_x).sum(dim=-1)
+        phi = phi.view(batch, seq_len)
+        grad_phi = f_x.view(batch, seq_len, dim)
+        return phi, grad_phi
+
+    def _geodesic_update(self, x: torch.Tensor, v_mem: Optional[torch.Tensor] = None) -> torch.Tensor:
+        batch, seq_len, dim = x.shape
+        phi, grad_phi = self._compute_potential_and_gradient(x)
+        g_inv = self.g_inv_param.to(x.device).unsqueeze(0).unsqueeze(0)
+        riem_grad = grad_phi * g_inv
+        delta_g_x = self._compute_riemannian_laplacian(x)
+        L_x = self._compute_graph_diffusion(x)
+        V_t = self._update_bellman_memory(phi)
+        V_t_expanded = V_t.unsqueeze(-1).expand(-1, -1, dim)
+        v = (
+            -self._eta * riem_grad
+            + self._alpha * delta_g_x
+            + self._beta * L_x
+            + self._gamma * V_t_expanded * 0.01
+        )
+        x_next = x + v
+        return x_next
 
     def set_ffn_gate(self, w_gate, b_gate=None):
         self.ffn_gate_w.data = torch.from_numpy(w_gate).float()
@@ -415,7 +518,16 @@ class RSULFLayerCUDA(nn.Module):
         
         ffn_out = ffn_out * 1.0 
         
-        x_out = x_mid + ffn_out
+        x_out_attn = x_mid + ffn_out
+        
+        if self.use_geodesic_flow or self.geodesic_blend > 0.0:
+            x_out_geo = self._geodesic_update(x, v_mem)
+            blend = self.geodesic_blend
+            if self.use_geodesic_flow and blend == 0.0:
+                blend = 1.0
+            x_out = (1.0 - blend) * x_out_attn + blend * x_out_geo
+        else:
+            x_out = x_out_attn
         
         if squeeze:
             x_out = x_out[:, 0, :]
@@ -591,6 +703,8 @@ class RSULFWrapperCUDA(nn.Module):
     def reset_memory(self):
         self.v_mem = None
         self.time_step = 0
+        if hasattr(self.rsulf, 'reset_bellman_memory'):
+            self.rsulf.reset_bellman_memory()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.original_block is not None:

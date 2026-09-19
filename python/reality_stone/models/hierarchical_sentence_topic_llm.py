@@ -209,9 +209,13 @@ class TreeNodeOperator(nn.Module):
         self.enable_dynamic_manifold = enable_dynamic_manifold
         self.aggregator = RiemannianAggregation(d_model, manifold, c, temperature=1.0)
         if enable_dynamic_manifold:
-            self.kappa_poincare = nn.Parameter(torch.zeros(()))
-            self.kappa_lorentz = nn.Parameter(torch.zeros(()))
-            self.kappa_klein = nn.Parameter(torch.zeros(()))
+            c_min = 1e-6
+            c_max = 5e-2
+            c_init = min(max(abs(float(c)), c_min), c_max)
+            logit_init = torch.logit(torch.tensor((c_init - c_min) / (c_max - c_min)))
+            self.kappa_poincare = nn.Parameter(logit_init.clone())
+            self.kappa_lorentz = nn.Parameter(logit_init.clone())
+            self.kappa_klein = nn.Parameter(logit_init.clone())
         
         if enable_dynamic_manifold:
             self.manifold_selector = nn.Sequential(
@@ -556,9 +560,7 @@ class MetricContextRouter(nn.Module):
             self._metrikey = None
             self._has_metrikey = False
 
-        self._metrikey = None
-        self._has_metrikey = False
-        
+
         self.metric_adjustment = nn.Parameter(torch.zeros(d_head, d_head))
 
     def _clamp_eigen(self, G: torch.Tensor) -> torch.Tensor:
@@ -933,6 +935,8 @@ class _DecoderBlock(nn.Module):
             topk_cfg=topk_cfg,
             c=c_used,
         )
+        gate = torch.sigmoid(self.lambda_p) + 0.1 * torch.sigmoid(self.lambda_l)
+        y = y * gate
         y = y.transpose(1, 2).contiguous().view(B, S, self.d_model)
         y = self.out_proj(y)
         x = x + y
@@ -1076,7 +1080,7 @@ class HierarchicalSentenceTopicLLM(nn.Module):
     @classmethod
     def from_checkpoint(cls, checkpoint: Dict) -> "HierarchicalSentenceTopicLLM":
         """
-        scripts/train.py 에서 사용하던 checkpoint dict 로부터 모델을 재구성하는 helper.
+        학습 checkpoint dict 로부터 모델을 재구성하는 helper.
 
         checkpoint 형식:
             {
@@ -1197,6 +1201,7 @@ class HierarchicalSentenceTopicLLM(nn.Module):
         paragraph_embedding = self.paragraph_aggregator(
             sentence_embeddings,  # [B, T, d_model]
             metric_ctx=metric_ctx_paragraph,
+            temperature_override=temperature_override,
         )  # [B, d_model]
         return paragraph_embedding
 
@@ -2046,10 +2051,16 @@ def infer_hierarchical_llm_on_text(
                 sorted_probs = sorted_probs.clone()
                 sorted_probs[mask_p] = 0.0
                 sorted_probs = sorted_probs / (sorted_probs.sum(dim=-1, keepdim=True) + 1e-10)
-                sampled_sorted_idx = torch.multinomial(sorted_probs.view(-1, V), num_samples=1).view(probs.shape[:-1], 1)
+                sampled_sorted_idx = torch.multinomial(
+                    sorted_probs.reshape(-1, V),
+                    num_samples=1,
+                ).reshape(*probs.shape[:-1], 1)
                 pred_ids_flat = sorted_indices.gather(-1, sampled_sorted_idx).squeeze(-1)
             else:
-                pred_ids_flat = torch.multinomial(probs.view(-1, V), num_samples=1).view(probs.shape[:-1])
+                pred_ids_flat = torch.multinomial(
+                    probs.reshape(-1, V),
+                    num_samples=1,
+                ).reshape(*probs.shape[:-1])
         else:
             pred_ids_flat = torch.argmax(logits, dim=-1)
         
@@ -2159,7 +2170,7 @@ def build_sentence_index_from_corpus(
 ) -> List[Dict[str, object]]:
     if not _HAS_SENTENCE_TOPIC_DATASET:
         raise RuntimeError(
-            "SentenceTopicDataset 이 로드되지 않았습니다. scripts/train.py 위치를 확인하세요."
+            "SentenceTopicDataset 이 로드되지 않았습니다. reality_stone.data 설치 상태를 확인하세요."
         )
     device = next(model.parameters()).device
     dataset = SentenceTopicDataset(data_path, max_paragraphs=max_paragraphs)

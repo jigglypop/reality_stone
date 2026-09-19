@@ -1,0 +1,11 @@
+include Cargo.toml Cargo.lock build.rs LICENSE README.md MIGRATION.md ce-source-manifest.json
+recursive-include src *.rs *.cu *.cuh
+recursive-include python *.py
+include python/reality_stone/clarus/core/Cargo.toml
+include python/reality_stone/clarus/core/Cargo.lock
+recursive-include python/reality_stone/clarus/core/src *.rs *.cu *.cuh
+recursive-include tools *.py
+recursive-include tests *.py *.rs
+prune target
+prune python/reality_stone/clarus/core/target
+global-exclude __pycache__ *.pyc *.pyo *.pyd *.so *.dll *.whl

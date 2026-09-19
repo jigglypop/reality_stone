@@ -3,6 +3,20 @@ from torch import Tensor
 from torch.autograd import Function
 from .. import _rust, _has_cuda
 from .poincare import poincare_to_lorentz
+from .._fallback import (
+    autograd_vjp,
+    dynamic_curvature,
+    dynamic_curvature_torch,
+    lorentz_add_torch,
+    lorentz_distance_torch,
+    lorentz_geodesic_torch,
+    lorentz_inner_torch,
+    lorentz_scalar_torch,
+    poincare_to_lorentz_torch,
+)
+
+# The pure-Python ``_rust.py`` stub is not a native backend; only a compiled module is.
+_HAS_NATIVE = _rust is not None and not bool(getattr(_rust, "IS_FALLBACK", False))
 
 class LorentzDistance(Function):
     """
@@ -13,6 +27,8 @@ class LorentzDistance(Function):
         ctx.c = c
         ctx.save_for_backward(u, v)
         
+        if not _HAS_NATIVE:
+            return lorentz_distance_torch(u, v, c)
         if u.is_cuda and _has_cuda:
             # CUDA 구현 사용
             output = torch.empty(u.shape[0], dtype=u.dtype, device=u.device)
@@ -63,6 +79,9 @@ class LorentzDistance(Function):
         return grad_u, grad_v, None
 
 def lorentz_distance(x: Tensor, y: Tensor, c: float | Tensor) -> Tensor:
+    if not _HAS_NATIVE:
+        c_val = float(c.detach().cpu().item()) if isinstance(c, Tensor) else float(c)
+        return lorentz_distance_torch(x, y, c_val)
     if isinstance(c, Tensor):
         eps = 1e-7
         inner = x[..., 0] * y[..., 0] - (x[..., 1:] * y[..., 1:]).sum(dim=-1)
@@ -81,6 +100,8 @@ class LorentzLayer(Function):
         ctx.c = c
         ctx.t = t
         ctx.save_for_backward(u, v)
+        if not _HAS_NATIVE:
+            return lorentz_geodesic_torch(u, v, float(c), float(t))
         if u.is_cuda and _has_cuda:
             output = torch.empty_like(u)
             _rust.lorentz_layer_forward_cuda(
@@ -97,6 +118,12 @@ class LorentzLayer(Function):
         u, v = ctx.saved_tensors
         c, t = ctx.c, ctx.t
         grad_u = grad_v = None
+        if not _HAS_NATIVE:
+            grad_u, grad_v = autograd_vjp(
+                lambda u_, v_: lorentz_geodesic_torch(u_, v_, float(c), float(t)),
+                grad_output, u, v,
+            )
+            return grad_u, grad_v, None, None
         if grad_output.is_cuda and _has_cuda:
             grad_u = torch.empty_like(u)
             grad_v = torch.empty_like(v)
@@ -117,6 +144,8 @@ def lorentz_add(u: Tensor, v: Tensor, c: float) -> Tensor:
     """
     로렌츠 덧셈 (자이로벡터 합)
     """
+    if not _HAS_NATIVE:
+        return lorentz_add_torch(u, v, float(c))
     result_np = _rust.lorentz_add(u.cpu().numpy(), v.cpu().numpy(), c)
     return torch.from_numpy(result_np).to(u.device)
 
@@ -124,6 +153,8 @@ def lorentz_scalar_mul(x: Tensor, r: float, c: float) -> Tensor:
     """
     로렌츠 스칼라 곱
     """
+    if not _HAS_NATIVE:
+        return lorentz_scalar_torch(x, float(r), float(c))
     result_np = _rust.lorentz_scalar(x.cpu().numpy(), r, c)
     return torch.from_numpy(result_np).to(x.device)
 
@@ -131,6 +162,8 @@ def lorentz_inner(u: Tensor, v: Tensor) -> Tensor:
     """
     로렌츠 민코프스키 내적
     """
+    if not _HAS_NATIVE:
+        return lorentz_inner_torch(u, v)
     result_np = _rust.lorentz_inner(u.cpu().numpy(), v.cpu().numpy())
     return torch.from_numpy(result_np).to(u.device)
 
@@ -138,6 +171,9 @@ def lorentz_to_poincare(x: Tensor, c: float) -> Tensor:
     """
     로렌츠 -> 푸앵카레 변환
     """
+    if not _HAS_NATIVE:
+        denom = x[..., :1] + (1.0 / float(c)) ** 0.5
+        return x[..., 1:] / denom.clamp_min(1e-7)
     result_np = _rust.lorentz_to_poincare(x.cpu().numpy(), c)
     return torch.from_numpy(result_np).to(x.device)
 
@@ -145,6 +181,8 @@ def lorentz_to_klein(x: Tensor, c: float) -> Tensor:
     """
     로렌츠 -> 클라인 변환
     """
+    if not _HAS_NATIVE:
+        return x[..., 1:] / x[..., :1].clamp_min(1e-7)
     result_np = _rust.lorentz_to_klein(x.cpu().numpy(), c)
     return torch.from_numpy(result_np).to(x.device) 
 
@@ -179,6 +217,9 @@ class LorentzBallLayer(Function):
                 kappa_val = kappas.item()
             else:
                 kappa_val = kappas[layer_idx].item()
+            if not _HAS_NATIVE:
+                ctx.c_val = dynamic_curvature(kappa_val, c_min, c_max)
+                return lorentz_geodesic_torch(u, v, float(ctx.c_val), float(t))
             # 네이티브 바인딩이 있다면 우선 사용
             if hasattr(_rust, 'lorentz_layer_layerwise_cpu'):
                 out_np, c_val = _rust.lorentz_layer_layerwise_cpu(
@@ -197,6 +238,8 @@ class LorentzBallLayer(Function):
             ctx.use_dynamic = False
             ctx.c = c if c is not None else 1.0
             ctx.save_for_backward(u.clone(), v.clone())
+            if not _HAS_NATIVE:
+                return lorentz_geodesic_torch(u, v, float(ctx.c), float(t))
             out_np = _rust.lorentz_layer_forward(u.cpu().numpy(), v.cpu().numpy(), ctx.c, t)
             return torch.from_numpy(out_np).to(u.device)
 
@@ -218,6 +261,21 @@ class LorentzBallLayer(Function):
                 c_val = (c_min + (c_max - c_min) * sig.item())
                 ctx.c_val = c_val
             
+            if not _HAS_NATIVE:
+                def _fn(u_, v_, k_):
+                    return lorentz_geodesic_torch(
+                        u_, v_, dynamic_curvature_torch(k_, float(c_min), float(c_max)), float(t)
+                    )
+
+                kappa_leaf = kappas if kappas.dim() == 0 else kappas[layer_idx]
+                grad_u, grad_v, grad_k = autograd_vjp(_fn, grad_output, u, v, kappa_leaf)
+                if kappas.dim() == 0:
+                    grad_kappas = grad_k.reshape(()).to(kappas.dtype)
+                else:
+                    grad_kappas = torch.zeros_like(kappas)
+                    grad_kappas[layer_idx] = grad_k.to(kappas.dtype)
+                return grad_u, grad_v, None, None, grad_kappas, None, None, None
+
             # 정적 역전파를 통한 u, v 그라디언트 계산
             if grad_output.is_cuda and _has_cuda:
                 grad_u = torch.empty_like(u)
@@ -240,7 +298,7 @@ class LorentzBallLayer(Function):
 
             eps = 1e-7
             inner = minkowski_inner(u, v)  # (B,1)
-            z = torch.clamp_min(-float(c_val) * inner, 1.0 + eps)
+            z = torch.clamp_min(float(c_val) * inner, 1.0 + eps)
             alpha = torch.acosh(z)
             sinh_a = torch.sinh(alpha).clamp_min(eps)
             cosh_a = torch.cosh(alpha)
@@ -257,7 +315,7 @@ class LorentzBallLayer(Function):
             dw2_da = torch.where(alpha.abs() < 1e-6, torch.zeros_like(alpha), num2 / denom)
 
             dalpha_dz = 1.0 / (torch.sqrt(torch.clamp_min(z+1.0, 1.0+eps)) * torch.sqrt(torch.clamp_min(z-1.0, eps)))
-            dz_dc = -inner
+            dz_dc = inner
             dalpha_dc = dalpha_dz * dz_dc
 
             dw1_dc = dw1_da * dalpha_dc
@@ -279,6 +337,12 @@ class LorentzBallLayer(Function):
         else:
             u, v = ctx.saved_tensors
             c = ctx.c
+            if not _HAS_NATIVE:
+                grad_u, grad_v = autograd_vjp(
+                    lambda u_, v_: lorentz_geodesic_torch(u_, v_, float(c), float(t)),
+                    grad_output, u, v,
+                )
+                return grad_u, grad_v, None, None, None, None, None, None
             if grad_output.is_cuda and _has_cuda:
                 grad_u = torch.empty_like(u)
                 grad_v = torch.empty_like(v)
@@ -315,7 +379,10 @@ class LorentzFromPoincare(Function):
             ctx.c_max = c_max
             ctx.save_for_backward(x, kappas)
             
-            output_np, c_val = _rust.from_poincare_dynamic_cpu(
+            if not _HAS_NATIVE:
+                ctx.c_val = dynamic_curvature(float(kappas.item()), c_min, c_max)
+                return poincare_to_lorentz_torch(x, abs(ctx.c_val))
+            output_np, c_val = _rust.lorentz_from_poincare_dynamic_cpu(
                 x.cpu().numpy(), kappas.item(), c_min, c_max
             )
             ctx.c_val = c_val
@@ -332,15 +399,25 @@ class LorentzFromPoincare(Function):
     def backward(ctx, grad_output: Tensor):
         if ctx.use_dynamic:
             x, kappas = ctx.saved_tensors
-            grad_x_np, grad_kappa_val = _rust.from_poincare_dynamic_backward_cpu(
+            if not _HAS_NATIVE:
+                c_min, c_max = float(ctx.c_min), float(ctx.c_max)
+
+                def _fn(x_, k_):
+                    return poincare_to_lorentz_torch(x_, dynamic_curvature_torch(k_, c_min, c_max).abs())
+
+                grad_x, grad_k = autograd_vjp(_fn, grad_output, x, kappas.reshape(()))
+                return grad_x, None, grad_k.reshape(kappas.shape), None, None
+            grad_x_np, grad_kappa_val = _rust.lorentz_from_poincare_dynamic_backward_cpu(
                 grad_output.cpu().numpy(), x.cpu().numpy(), kappas.item(), ctx.c_min, ctx.c_max
             )
             grad_x = torch.from_numpy(grad_x_np).to(grad_output.device)
             grad_kappas = torch.tensor(grad_kappa_val, device=kappas.device)
             return grad_x, None, grad_kappas, None, None
         else:
+            # The static conversion is an exact torch formula; its VJP comes from autograd
+            # regardless of backend.
             x, = ctx.saved_tensors
-            grad_x = torch.zeros_like(x)
+            (grad_x,) = autograd_vjp(lambda x_: poincare_to_lorentz_torch(x_, float(ctx.c)), grad_output, x)
             return grad_x, None, None, None, None
 
 def from_poincare(x: Tensor, c: float = None, kappas: Tensor = None, c_min: float = -2.0, c_max: float = -0.1) -> Tensor:

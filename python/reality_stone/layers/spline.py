@@ -105,16 +105,20 @@ class SplineLinear(nn.Module):
         spline_layer = cls(linear.in_features, linear.out_features, k, 
                           bias=(linear.bias is not None), use_residual=use_residual)
         
-        weight_np = linear.weight.detach().cpu().numpy()
-        
-        rust_spline_instance = _rust.spline.SplineLayer.from_weight_py(
-            weight_np, k, learning_rate, steps
-        )
-        
-        optimized_control_points = torch.from_numpy(
-            rust_spline_instance.control_points
-        ).to(device=linear.weight.device, dtype=linear.weight.dtype)
-        
+        weight = linear.weight.detach()
+        native_spline = getattr(_rust, "spline", None)
+        if native_spline is not None and hasattr(native_spline, "SplineLayer"):
+            rust_spline_instance = native_spline.SplineLayer.from_weight_py(
+                weight.cpu().numpy(), k, learning_rate, steps
+            )
+            optimized_control_points = torch.from_numpy(
+                rust_spline_instance.control_points
+            ).to(device=weight.device, dtype=weight.dtype)
+        else:
+            # Pure-torch fallback: least-squares fit W ~= B @ C for the fixed blend matrix B.
+            spline_layer._refresh_blend_matrix()
+            blend = spline_layer.blend_matrix.to(device=weight.device, dtype=weight.dtype)
+            optimized_control_points = torch.linalg.lstsq(blend, weight).solution
         spline_layer.control_points.data.copy_(optimized_control_points)
         
         if use_residual:

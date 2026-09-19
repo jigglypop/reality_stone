@@ -103,16 +103,9 @@ pub struct FoldedMetric {
 
 use rand::Rng;
 
-pub fn randomized_svd(
-    a: &Array2<f32>,
-    k: usize,
-    _n_oversamples: usize,
-    _n_iter: usize,
-) -> (Array2<f32>, Array1<f32>, Array2<f32>) {
+fn dense_svd(a: &Array2<f32>, k: usize) -> (Array2<f32>, Array1<f32>, Array2<f32>) {
     let m = a.nrows();
     let n = a.ncols();
-
-    // Use faer for high-performance SVD
     let mat = Mat::from_fn(m, n, |i, j| a[[i, j]]);
     let svd = mat.svd();
 
@@ -135,6 +128,105 @@ pub fn randomized_svd(
             v[[i, j]] = v_faer.read(i, j);
         }
     }
+
+    (u, s, v)
+}
+
+fn orthonormalize_columns(mut y: Array2<f32>) -> Array2<f32> {
+    let rows = y.nrows();
+    let cols = y.ncols();
+    let mut rank = 0usize;
+
+    for j in 0..cols {
+        for p in 0..rank {
+            let mut dot = 0.0_f32;
+            for i in 0..rows {
+                dot += y[[i, j]] * y[[i, p]];
+            }
+            for i in 0..rows {
+                y[[i, j]] -= dot * y[[i, p]];
+            }
+        }
+
+        for p in 0..rank {
+            let mut dot = 0.0_f32;
+            for i in 0..rows {
+                dot += y[[i, j]] * y[[i, p]];
+            }
+            for i in 0..rows {
+                y[[i, j]] -= dot * y[[i, p]];
+            }
+        }
+
+        let mut norm_sq = 0.0_f32;
+        for i in 0..rows {
+            norm_sq += y[[i, j]] * y[[i, j]];
+        }
+
+        let norm = norm_sq.sqrt();
+        if norm <= 1e-8 {
+            continue;
+        }
+
+        if rank != j {
+            for i in 0..rows {
+                y[[i, rank]] = y[[i, j]];
+            }
+        }
+        for i in 0..rows {
+            y[[i, rank]] /= norm;
+        }
+        rank += 1;
+    }
+
+    y.slice(s![.., 0..rank]).to_owned()
+}
+
+pub fn randomized_svd(
+    a: &Array2<f32>,
+    k: usize,
+    n_oversamples: usize,
+    n_iter: usize,
+) -> (Array2<f32>, Array1<f32>, Array2<f32>) {
+    let m = a.nrows();
+    let n = a.ncols();
+
+    if k == 0 || m == 0 || n == 0 {
+        return (
+            Array2::<f32>::zeros((m, 0)),
+            Array1::<f32>::zeros(0),
+            Array2::<f32>::zeros((n, 0)),
+        );
+    }
+
+    let min_dim = m.min(n);
+    if min_dim <= 128 || k >= min_dim {
+        return dense_svd(a, k);
+    }
+
+    let l = (k + n_oversamples).min(min_dim);
+    let mut rng = rand::thread_rng();
+    let scale = 1.0_f32 / (l as f32).sqrt();
+    let omega = Array2::<f32>::from_shape_fn((n, l), |_| rng.gen_range(-1.0..1.0) * scale);
+
+    let mut y = a.dot(&omega);
+    for _ in 0..n_iter {
+        let z = a.t().dot(&y);
+        y = a.dot(&z);
+    }
+
+    let q = orthonormalize_columns(y);
+    if q.ncols() == 0 {
+        return (
+            Array2::<f32>::zeros((m, 0)),
+            Array1::<f32>::zeros(0),
+            Array2::<f32>::zeros((n, 0)),
+        );
+    }
+
+    let b = q.t().dot(a);
+    let (u_hat, s, v) = dense_svd(&b, k);
+    let u = q.dot(&u_hat);
 
     (u, s, v)
 }
@@ -1343,7 +1435,13 @@ impl RSULFLayer {
             gamma_corr = z.dot(&self.ffn.v1.t());
             let inv_r = 1.0 / (r as f32);
             let coeff = self.curvature.max(-1.0).min(1.0) * inv_r;
-            gamma_corr.mapv_inplace(|v| v * coeff);
+            for i in 0..batch_total {
+                let v_norm = v_total.row(i).dot(&v_total.row(i)).sqrt();
+                let velocity_scale = v_norm.min(1.0);
+                for k in 0..d {
+                    gamma_corr[[i, k]] *= coeff * velocity_scale;
+                }
+            }
         }
 
         let x_next = &x_arr + &v_total + &christoffel + &gamma_corr;

@@ -1,7 +1,7 @@
 // src/layers/spline.rs
 
 use ndarray::{Array1, Array2};
-use ndarray_rand::rand::{thread_rng, Rng};
+use rand::{thread_rng, Rng};
 use numpy::{PyArray2, PyReadonlyArray2, ToPyArray};
 use pyo3::prelude::*;
 use std::ops::AddAssign;

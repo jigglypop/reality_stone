@@ -11,7 +11,11 @@ fn safe_sqrt(x: f32) -> f32 {
 
 #[inline]
 fn safe_acosh(x: f32) -> f32 {
-    (x.max(1.0 + EPS)).acosh()
+    if x <= 1.0 {
+        0.0
+    } else {
+        x.acosh()
+    }
 }
 
 /// 로렌츠 민코프스키 내적 (Minkowski Inner Product)
@@ -214,7 +218,7 @@ pub fn lorentz_log0_space_backward(
 pub fn lorentz_distance(u: &ArrayView2<f32>, v: &ArrayView2<f32>, c: f32) -> Array1<f32> {
     let inner = lorentz_inner(u, v);
     let sqrtc = c.sqrt();
-    inner.mapv(|x| safe_acosh((c * x).max(1.0 + EPS)) / sqrtc)
+    inner.mapv(|x| safe_acosh((c * x).max(1.0)) / sqrtc)
 }
 
 /// 로렌츠 덧셈 (Lorentz Addition)

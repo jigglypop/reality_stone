@@ -273,7 +273,7 @@ pub fn mobius_add_vjp(
     let xy = dot_batched(&x, &y).insert_axis(Axis(1));
 
     let den = 1.0 + 2.0 * c * &xy + c * c * &x2 * &y2;
-    let den_clamp = den.mapv(|v| v.max(EPS));
+    let den_clamp = den.mapv(|v| v.max(MIN_DENOMINATOR));
 
     let u = (1.0 + 2.0 * c * &xy + c * &y2) * x + (1.0 - c * &x2) * y;
     let output = &u / &den_clamp;
@@ -281,7 +281,8 @@ pub fn mobius_add_vjp(
     let grad_u = grad_output / &den_clamp;
     let grad_den = -(grad_output * &output / &den_clamp)
         .sum_axis(Axis(1))
-        .insert_axis(Axis(1));
+        .insert_axis(Axis(1))
+        * den.mapv(|v| if v >= MIN_DENOMINATOR { 1.0 } else { 0.0 });
 
     let grad_x_from_u = &grad_u * (1.0 + 2.0 * c * &xy + c * &y2);
     let grad_y_from_u = &grad_u * (1.0 - c * &x2);
@@ -290,6 +291,8 @@ pub fn mobius_add_vjp(
         .sum_axis(Axis(1))
         .insert_axis(Axis(1));
     let grad_x2_from_u = (-c * (&grad_u * y)).sum_axis(Axis(1)).insert_axis(Axis(1));
+    // The numerator also depends on |y|^2 through (1 + 2c<x,y> + c|y|^2)x.
+    let grad_y2_from_u = (c * (&grad_u * x)).sum_axis(Axis(1)).insert_axis(Axis(1));
 
     let grad_xy_from_den = 2.0 * c * &grad_den;
     let grad_x2_from_den = c * c * &y2 * &grad_den;
@@ -297,7 +300,7 @@ pub fn mobius_add_vjp(
 
     let grad_xy = grad_xy_from_u + grad_xy_from_den;
     let grad_x2 = grad_x2_from_u + grad_x2_from_den;
-    let grad_y2 = grad_y2_from_den;
+    let grad_y2 = grad_y2_from_u + grad_y2_from_den;
 
     let grad_x = grad_x_from_u + 2.0 * &grad_x2 * x + &grad_xy * y;
     let grad_y = grad_y_from_u + 2.0 * &grad_y2 * y + &grad_xy * x;

@@ -1,0 +1,5 @@
+# Preserve imported research source bytes across Windows and Unix checkouts.
+python/** -text
+src/** -text
+tests/** -text
+examples/** -text

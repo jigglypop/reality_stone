@@ -699,6 +699,7 @@ class RSULFWrapperCUDA(nn.Module):
         self.v_mem: Optional[torch.Tensor] = None
         self.d_model = rsulf_layer.d_model
         self.time_step = 0
+        self.geodesic_memory = getattr(rsulf_layer, "geodesic_memory", None)
 
     def reset_memory(self):
         self.v_mem = None

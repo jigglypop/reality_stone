@@ -14,7 +14,6 @@ pub mod riemann;
 pub mod spline;
 pub mod spline_cache;
 pub mod suppression;
-pub mod utils;
 
 // 통합 리만 시스템
 pub mod bellman_lagrangian;

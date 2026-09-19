@@ -91,11 +91,6 @@ impl GeodesicMemory {
             .unwrap_or_else(|x| x);
 
         if idx == 0 {
-            if self.control_points.len() == 1 && !self.buffer.is_empty() {
-                if let Some((t_buf, _x_buf)) = self.buffer.last() {
-                    if t > (self.control_points[0].t as f32) && t <= (*t_buf as f32) {}
-                }
-            }
             return self.control_points[0].x.clone();
         }
         if idx >= self.control_points.len() {

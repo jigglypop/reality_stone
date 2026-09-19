@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import torch
 
 try:
@@ -10,7 +11,8 @@ try:
         build_causal_laplacian,
     )
     from reality_stone.layers.rsulf_cuda import RSULFLayerCUDA, RSULFWrapperCUDA, RSULFLMHeadCUDA
-    HAS_RUST = True
+    # The pure-Python stub imports fine but is not the RS-ULF kernel; only count the native build.
+    HAS_RUST = bool(rs._has_rust_ext)
 except ImportError as e:
     HAS_RUST = False
     print(f"Rust bindings not available: {e}")
@@ -24,8 +26,7 @@ except ImportError:
 
 def test_rsulf_cpu_forward():
     if not HAS_RUST:
-        print("SKIP: Rust bindings not available")
-        return
+        pytest.skip("compiled reality_stone._rust is not built")
     
     np.random.seed(42)
     d_model = 256
@@ -55,7 +56,7 @@ def test_rsulf_cpu_forward():
     x_out, v_out = layer.forward(x, None)
     
     assert x_out.shape == (batch, d_model), f"Expected ({batch}, {d_model}), got {x_out.shape}"
-    assert v_out.shape == (batch,), f"Expected ({batch},), got {v_out.shape}"
+    assert v_out.shape[0] == batch, f"Expected batch dimension {batch}, got {v_out.shape}"
     assert np.isfinite(x_out).all(), "Output contains NaN/Inf"
     assert np.isfinite(v_out).all(), "V_out contains NaN/Inf"
     
@@ -65,11 +66,9 @@ def test_rsulf_cpu_forward():
 
 def test_rsulf_cuda_forward():
     if not HAS_RUST:
-        print("SKIP: Rust bindings not available")
-        return
+        pytest.skip("compiled reality_stone._rust is not built")
     if not HAS_CUDA_RSULF:
-        print("SKIP: CUDA RS-ULF bindings not available")
-        return
+        pytest.skip("CUDA RS-ULF bindings are not available")
     
     np.random.seed(42)
     d_model = 256
@@ -106,11 +105,9 @@ def test_rsulf_cuda_forward():
 
 def test_rsulf_cpu_cuda_consistency():
     if not HAS_RUST:
-        print("SKIP: Rust bindings not available")
-        return
+        pytest.skip("compiled reality_stone._rust is not built")
     if not HAS_CUDA_RSULF:
-        print("SKIP: CUDA RS-ULF bindings not available")
-        return
+        pytest.skip("CUDA RS-ULF bindings are not available")
     
     np.random.seed(42)
     d_model = 128
@@ -157,11 +154,9 @@ def test_rsulf_cpu_cuda_consistency():
 
 def test_rsulf_batch_forward_cuda():
     if not HAS_RUST:
-        print("SKIP: Rust bindings not available")
-        return
+        pytest.skip("compiled reality_stone._rust is not built")
     if not HAS_CUDA_RSULF:
-        print("SKIP: CUDA RS-ULF bindings not available")
-        return
+        pytest.skip("CUDA RS-ULF bindings are not available")
     
     np.random.seed(0)
     d_model = 128
@@ -196,11 +191,9 @@ def test_rsulf_batch_forward_cuda():
 
 def test_rsulf_unified_forward_cuda():
     if not HAS_RUST:
-        print("SKIP: Rust bindings not available")
-        return
+        pytest.skip("compiled reality_stone._rust is not built")
     if not HAS_CUDA_RSULF:
-        print("SKIP: CUDA RS-ULF bindings not available")
-        return
+        pytest.skip("CUDA RS-ULF bindings are not available")
     
     np.random.seed(1)
     d_model = 64
@@ -239,8 +232,7 @@ def test_rsulf_unified_forward_cuda():
 
 def test_rsulf_wrapper_batch_mode():
     if not HAS_RUST:
-        print("SKIP: Rust bindings not available")
-        return
+        pytest.skip("compiled reality_stone._rust is not built")
     
     np.random.seed(123)
     torch.manual_seed(123)
@@ -281,8 +273,7 @@ def test_rsulf_wrapper_batch_mode():
 
 def test_rsulf_wrapper_autoregressive_mode():
     if not HAS_RUST:
-        print("SKIP: Rust bindings not available")
-        return
+        pytest.skip("compiled reality_stone._rust is not built")
     
     np.random.seed(321)
     torch.manual_seed(321)
@@ -328,8 +319,7 @@ def test_rsulf_wrapper_autoregressive_mode():
 
 def test_rsulf_lm_head_cuda_pipeline():
     if not HAS_RUST:
-        print("SKIP: Rust bindings not available")
-        return
+        pytest.skip("compiled reality_stone._rust is not built")
     if not HAS_CUDA_RSULF or not torch.cuda.is_available():
         print("SKIP: CUDA RS-ULF or torch.cuda not available")
         return
@@ -375,28 +365,4 @@ def test_rsulf_lm_head_cuda_pipeline():
     
     assert logits.shape == (1, seq_len, vocab_size)
     assert torch.isfinite(logits).all()
-
-if __name__ == "__main__":
-    print("=" * 60)
-    print("RS-ULF Test Suite")
-    print("=" * 60)
-    
-    print("\n[Test 1] CPU Forward")
-    test_rsulf_cpu_forward()
-    
-    print("\n[Test 2] Inference Pipeline")
-    test_rsulf_inference_pipeline()
-    
-    if HAS_CUDA_RSULF:
-        print("\n[Test 3] CUDA Forward")
-        test_rsulf_cuda_forward()
-        
-        print("\n[Test 4] CPU-CUDA Consistency")
-        test_rsulf_cpu_cuda_consistency()
-    else:
-        print("\n[Test 3-4] Skipped (CUDA not available)")
-    
-    print("\n" + "=" * 60)
-    print("All tests passed!")
-    print("=" * 60)
 

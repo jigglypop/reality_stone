@@ -1,6 +1,6 @@
 [package]
 name = "reality_stone"
-version = "0.2.10"
+version = "0.3.0"
 edition = "2021"
 authors = ["jigglypop <donghwanyeom@gmail.com>"]
 description = "High-performance hyperbolic neural networks library powered by Rust"
@@ -18,14 +18,8 @@ keywords = [
 ]
 categories = ["science", "mathematics", "algorithms"]
 exclude = [
-    "experiments/**",
-    "scripts/**",
-    "docs/**",
-    "examples/**",
     "tests/**",
-    "*.md",
-    ".git/**",
-    ".github/**",
+    "target/**",
 ]
 
 [lib]
@@ -37,26 +31,16 @@ pyo3 = { version = "0.21.2", features = ["extension-module"] }
 ndarray = { version = "0.15", features = ["rayon", "approx"] }
 numpy = "0.21.0"
 rayon = "1.8.0"
-indicatif = "0.17"
-num-traits = "0.2"
-num-integer = "0.1"
-num-rational = "0.4"
-simba = "0.8"
 approx = "0.4.0"
-anyhow = "1.0"
-thiserror = "1.0"
-ndarray-rand = "0.15.0"
-rand = "0.8.5"
-libc = "0.2"
-rustfft = "6.4.0"
+rand = { version = "0.8.5", features = ["small_rng"] }
 faer = "0.19"
 
 [build-dependencies]
 cc = "1.0"
 glob = "0.3"
-bindgen = { version = "0.69", optional = true }
 
 [features]
 default = []
-cuda = ["bindgen"]
+# `cuda` compiles src/**/*.cu with nvcc in build.rs; no extra crate is needed.
+cuda = []
 abi3-py310 = ["pyo3/abi3-py310"]

@@ -1,12 +1,17 @@
 import sys
 from pathlib import Path
+import os
 sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
+import pytest
 import torch
 from reality_stone._rust import PyRSULFLayer
 from reality_stone.models.transformer_converter import RSULFTransformerConverter, build_rsulf_causal_lm
 
 
 def test_llm_compression_inference():
+    if os.environ.get("REALITY_STONE_RUN_LLM_INFERENCE") != "1":
+        pytest.skip("large HuggingFace inference smoke test is opt-in")
+    pytest.importorskip("accelerate")
     from transformers import AutoModelForCausalLM, AutoTokenizer
     model_name = "Qwen/Qwen2.5-0.5B"
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)

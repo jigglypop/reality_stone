@@ -1,125 +1,62 @@
-name: Release
-
+name: CPU wheels and release
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ['v*']
   workflow_dispatch:
-
 permissions:
   contents: read
-
 jobs:
-  linux:
-    runs-on: ubuntu-latest
+  wheels:
+    needs: [sdist]
     strategy:
+      fail-fast: false
       matrix:
-        target: [x86_64]
+        os: [ubuntu-latest, windows-latest, macos-14]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
-      - name: Build wheels
-        uses: PyO3/maturin-action@v1
+          python-version: '3.11'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/download-artifact@v4
         with:
-          target: ${{ matrix.target }}
-          args: --release --out dist -i python3.10 -i python3.11 -i python3.12
-          sccache: 'true'
-          manylinux: auto
-      - name: Upload wheels
-        uses: actions/upload-artifact@v4
+          name: source-distribution
+          path: source-dist
+      - uses: pypa/cibuildwheel@v3.4
         with:
-          name: wheels-linux-${{ matrix.target }}
-          path: dist
-
-  linux-aarch64:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+          package-dir: source-dist/reality_stone-0.3.0.tar.gz
+          output-dir: wheelhouse
+      - uses: actions/upload-artifact@v4
         with:
-          python-version: '3.10'
-      - name: Build wheels
-        uses: PyO3/maturin-action@v1
-        with:
-          target: aarch64-unknown-linux-gnu
-          args: --release --out dist -i python3.10 -i python3.11 -i python3.12
-          sccache: 'true'
-          manylinux: auto
-      - name: Upload wheels
-        uses: actions/upload-artifact@v4
-        with:
-          name: wheels-linux-aarch64
-          path: dist
-
-  windows:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-      - name: Build wheels
-        uses: PyO3/maturin-action@v1
-        with:
-          args: --release --out dist -i python
-          sccache: 'true'
-      - name: Upload wheels
-        uses: actions/upload-artifact@v4
-        with:
-          name: wheels-windows-x64
-          path: dist
-
-  macos:
-    runs-on: macos-latest
-    strategy:
-      matrix:
-        target: [x86_64-apple-darwin, aarch64-apple-darwin]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-      - name: Build wheels
-        uses: PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.target }}
-          args: --release --out dist -i python3.10 -i python3.11 -i python3.12
-          sccache: 'true'
-      - name: Upload wheels
-        uses: actions/upload-artifact@v4
-        with:
-          name: wheels-macos-${{ matrix.target }}
-          path: dist
-
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
   sdist:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build sdist
-        uses: PyO3/maturin-action@v1
+      - uses: actions/setup-python@v5
         with:
-          command: sdist
-          args: --out dist
-      - name: Upload sdist
-        uses: actions/upload-artifact@v4
+          python-version: '3.11'
+      - run: python -m pip install build twine
+      - run: python -m build --sdist
+      - run: python -m twine check --strict dist/*
+      - uses: actions/upload-artifact@v4
         with:
-          name: wheels-sdist
-          path: dist
-
-  release:
-    name: Release
+          name: source-distribution
+          path: dist/*.tar.gz
+          if-no-files-found: error
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [wheels, sdist]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-    needs: [linux, linux-aarch64, windows, macos, sdist]
     steps:
       - uses: actions/download-artifact@v4
-      - name: Publish to PyPI
-        uses: PyO3/maturin-action@v1
-        env:
-          MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
         with:
-          command: upload
-          args: --non-interactive --skip-existing wheels-*/*
-
+          merge-multiple: true
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          packages-dir: dist/

@@ -260,7 +260,7 @@ pub fn lorentz_ball_layer_backward_cuda(
 }
 
 #[pyfunction]
-fn from_poincare_dynamic_cpu<'py>(
+fn lorentz_from_poincare_dynamic_cpu<'py>(
     py: Python<'py>,
     x: PyReadonlyArray2<'py, f32>,
     kappa: f32,
@@ -275,7 +275,7 @@ fn from_poincare_dynamic_cpu<'py>(
 }
 
 #[pyfunction]
-fn from_poincare_dynamic_backward_cpu<'py>(
+fn lorentz_from_poincare_dynamic_backward_cpu<'py>(
     py: Python<'py>,
     grad_output: PyReadonlyArray2<'py, f32>,
     x: PyReadonlyArray2<'py, f32>,
@@ -311,8 +311,8 @@ pub fn register(m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(lorentz_layer_dynamic_backward_cpu, m)?)?;
     m.add_function(wrap_pyfunction!(lorentz_layer_layerwise_cpu, m)?)?;
     m.add_function(wrap_pyfunction!(lorentz_layer_layerwise_backward_cpu, m)?)?;
-    m.add_function(wrap_pyfunction!(from_poincare_dynamic_cpu, m)?)?;
-    m.add_function(wrap_pyfunction!(from_poincare_dynamic_backward_cpu, m)?)?;
+    m.add_function(wrap_pyfunction!(lorentz_from_poincare_dynamic_cpu, m)?)?;
+    m.add_function(wrap_pyfunction!(lorentz_from_poincare_dynamic_backward_cpu, m)?)?;
 
     #[cfg(feature = "cuda")]
     {

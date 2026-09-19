@@ -5,14 +5,29 @@ import copy
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, field
 
+_REQUIRED_NATIVE = (
+    "verify_metric_consistency",
+    "analyze_layer",
+    "create_compression_plan",
+    "extract_global_basis",
+)
 try:
-    from reality_stone._rust import (
-        verify_metric_consistency,
-        analyze_layer,
-        create_compression_plan,
-        extract_global_basis
+    from reality_stone import _rust as _rust_mod
+
+    # The pure-Python ``_rust.py`` stub reports IS_FALLBACK=True and lacks the RS-ULF analysis
+    # entry points, so it must not count as a native backend here.
+    HAS_RUST = (
+        _rust_mod is not None
+        and not bool(getattr(_rust_mod, "IS_FALLBACK", False))
+        and all(hasattr(_rust_mod, name) for name in _REQUIRED_NATIVE)
     )
-    HAS_RUST = True
+    if HAS_RUST:
+        from reality_stone._rust import (
+            verify_metric_consistency,
+            analyze_layer,
+            create_compression_plan,
+            extract_global_basis,
+        )
 except ImportError:
     HAS_RUST = False
 
@@ -60,7 +75,11 @@ class RSULFTransformerConverter:
         geodesic_blend: float = 0.0,
     ):
         if not HAS_RUST:
-            raise RuntimeError("reality_stone._rust not available")
+            raise RuntimeError(
+                "RSULFTransformerConverter needs the compiled reality_stone._rust extension "
+                "(analyze_layer/create_compression_plan); the pure-Python fallback does not "
+                "implement them. Build it with .codex/hooks/build-native.cmd."
+            )
         
         self.d_model = d_model
         self.r = r
@@ -1055,7 +1074,7 @@ class FFNPotential(nn.Module):
         x_in = x.detach().requires_grad_(True)
         with torch.enable_grad():
             phi = self.forward(x_in).sum()
-            grad = torch.autograd.grad(phi, x_in, create_graph=False)[0]
+            grad = torch.autograd.grad(phi, x_in, create_graph=True)[0]
         return grad
 
 

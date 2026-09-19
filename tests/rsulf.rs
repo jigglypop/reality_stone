@@ -406,7 +406,7 @@ fn rsulf_폴딩_정확도_임계값_대형() {
 
     for (d, r) in test_cases {
         let handle = thread::Builder::new()
-            .stack_size(8 * 1024 * 1024)
+            .stack_size(64 * 1024 * 1024)
             .spawn(move || {
                 let wq = Array2::<f32>::from_shape_fn((d, d), |_| rand::random::<f32>() * 0.1);
                 let wk = Array2::<f32>::from_shape_fn((d, d), |_| rand::random::<f32>() * 0.1);

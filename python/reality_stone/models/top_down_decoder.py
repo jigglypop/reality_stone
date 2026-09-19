@@ -25,7 +25,7 @@ class TopDownDecoder(nn.Module):
         batch_size = paragraph_embedding.shape[0]
         sent = self.sentence_proj(paragraph_embedding)
         sentence_embeddings = sent.unsqueeze(1).expand(batch_size, num_sentences, self.d_model)
-        token_logits = self.token_proj(sentence_embeddings.view(batch_size * num_sentences, self.d_model))
+        token_logits = self.token_proj(sentence_embeddings.reshape(batch_size * num_sentences, self.d_model))
         token_ids = token_logits.argmax(dim=-1)
         tokens = token_ids.view(batch_size, num_sentences, -1)
         seq_len = tokens.shape[2]

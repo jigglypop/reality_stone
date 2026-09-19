@@ -4,7 +4,6 @@ use super::bellman_lagrangian::{
 };
 use super::geodesic::{geodesic_interpolation, geodesic_path};
 use super::metric::{DiagonalMetric, KleinMetric, LorentzMetric, MetricType, PoincareMetric};
-use indicatif::ProgressBar;
 use ndarray::parallel::prelude::*;
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2, Axis};
 
@@ -279,7 +278,6 @@ pub fn laplace_beltrami_matrix(
     let dim = x.ncols();
     let metric_trait = metric.as_trait();
     let mut dist_sq = Array2::<f32>::zeros((n, n));
-    let pb_dist = ProgressBar::new(n as u64);
     {
         let x_ref = x;
         dist_sq
@@ -287,7 +285,6 @@ pub fn laplace_beltrami_matrix(
             .into_par_iter()
             .enumerate()
             .for_each(|(i, mut row)| {
-                pb_dist.inc(1);
                 let xi = x_ref.slice(s![i..i + 1, 0..dim]);
                 for j in (i + 1)..n {
                     let xj = x_ref.slice(s![j..j + 1, 0..dim]);
@@ -298,7 +295,6 @@ pub fn laplace_beltrami_matrix(
                 }
             });
     }
-    pb_dist.finish_and_clear();
     for i in 0..n {
         for j in (i + 1)..n {
             let v = dist_sq[[i, j]];
@@ -317,14 +313,12 @@ pub fn laplace_beltrami_matrix(
     }
     let mut w = Array2::<f32>::zeros((n, n));
     let denom = 2.0 * sigma * sigma.max(eps);
-    let pb_w = ProgressBar::new(n as u64);
     {
         let vol_ref = &vol;
         w.axis_iter_mut(Axis(0))
             .into_par_iter()
             .enumerate()
             .for_each(|(i, mut row)| {
-                pb_w.inc(1);
                 for j in (i + 1)..n {
                     let d2 = dist_sq[[i, j]];
                     let mut value = (-d2 / denom).exp();
@@ -334,7 +328,6 @@ pub fn laplace_beltrami_matrix(
                 }
             });
     }
-    pb_w.finish_and_clear();
     for i in 0..n {
         for j in (i + 1)..n {
             let v = w[[i, j]];
@@ -342,13 +335,11 @@ pub fn laplace_beltrami_matrix(
         }
     }
     let mut l = Array2::<f32>::zeros((n, n));
-    let pb_l = ProgressBar::new(n as u64);
     {
         l.axis_iter_mut(Axis(0))
             .into_par_iter()
             .enumerate()
             .for_each(|(i, mut row)| {
-                pb_l.inc(1);
                 let mut sum = 0.0f32;
                 for j in 0..n {
                     sum += w[[i, j]];
@@ -361,7 +352,6 @@ pub fn laplace_beltrami_matrix(
                 }
             });
     }
-    pb_l.finish_and_clear();
     l
 }
 

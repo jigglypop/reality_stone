@@ -43,10 +43,3 @@ impl PySplineCache {
         self.inner.clear();
     }
 }
-
-pub fn register_spline_cache_module(py: Python, parent_module: &PyModule) -> PyResult<()> {
-    let m = PyModule::new(py, "spline_cache")?;
-    m.add_class::<PySplineCache>()?;
-    parent_module.add_submodule(m)?;
-    Ok(())
-}

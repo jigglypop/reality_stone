@@ -46,7 +46,6 @@ MNIST
 .mypy_cache
 dist
 uv.lock
-Cargo.lock
 target
 original_model
 
@@ -83,3 +82,7 @@ data
 data/*.env
 .pypirc
 .env
+
+*.egg-info/
+*.pyd
+wheelhouse/

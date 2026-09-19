@@ -50,6 +50,9 @@ fn main() {
         let cu_files: Vec<_> = glob("src/**/*.cu")
             .expect("Failed to read glob pattern")
             .filter_map(Result::ok)
+            .filter(|path| {
+                path.file_name().and_then(|name| name.to_str()) != Some("test_kernels.cu")
+            })
             .collect();
 
         for file in &cu_files {

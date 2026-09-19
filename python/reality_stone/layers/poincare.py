@@ -6,6 +6,18 @@ import torch.nn.functional as F
 from .. import _rust, _has_cuda
 from ..core.mobius import MobiusAdd, MobiusScalarMul
 import math
+from .._fallback import (
+    autograd_vjp,
+    dynamic_curvature,
+    dynamic_curvature_torch,
+    mobius_add_torch,
+    poincare_ball_layer_torch,
+    poincare_to_klein_torch,
+    poincare_to_lorentz_torch,
+)
+
+# The pure-Python ``_rust.py`` stub is not a native backend; only a compiled module is.
+_HAS_NATIVE = _rust is not None and not bool(getattr(_rust, "IS_FALLBACK", False))
 
 def project_to_ball(x: Tensor, epsilon: float = 1e-7) -> Tensor:
     """
@@ -43,6 +55,10 @@ class PoincareBallLayer(Function):
             else:
                 kappa_val = kappas[layer_idx].item()
                 
+            if not _HAS_NATIVE:
+                c_val = dynamic_curvature(kappa_val, c_min, c_max)
+                ctx.c_val = c_val
+                return poincare_ball_layer_torch(u, v, c_val, float(t))
             output_np, c_val = _rust.poincare_ball_layer_layerwise_cpu(
                 u.cpu().numpy(), v.cpu().numpy(), kappa_val, layer_idx, c_min, c_max, t
             )
@@ -53,6 +69,8 @@ class PoincareBallLayer(Function):
             ctx.c = c if c is not None else 1.0
             ctx.save_for_backward(u, v)
             # CUDA 경로는 실제 바인딩이 존재할 때만 사용 (안전 가드)
+            if not _HAS_NATIVE:
+                return poincare_ball_layer_torch(u, v, float(ctx.c), float(t))
             if (
                 u.is_cuda
                 and _has_cuda
@@ -86,6 +104,21 @@ class PoincareBallLayer(Function):
             layer_idx = ctx.layer_idx
             c_min = ctx.c_min
             c_max = ctx.c_max
+            if not _HAS_NATIVE:
+                kappa_leaf = kappas if kappas.dim() == 0 else kappas[layer_idx]
+
+                def _fn(u_, v_, k_):
+                    return poincare_ball_layer_torch(
+                        u_, v_, dynamic_curvature_torch(k_, c_min, c_max), float(t)
+                    )
+
+                grad_u, grad_v, grad_k = autograd_vjp(_fn, grad_output, u, v, kappa_leaf)
+                if kappas.dim() == 0:
+                    grad_kappas = grad_k.reshape(()).to(kappas.dtype)
+                else:
+                    grad_kappas = torch.zeros_like(kappas)
+                    grad_kappas[layer_idx] = grad_k.to(kappas.dtype)
+                return grad_u, grad_v, None, None, grad_kappas, None, None, None
             
             # kappas가 0차원 텐서면 바로 item(), 1차원 이상이면 인덱싱
             if kappas.dim() == 0:
@@ -113,6 +146,12 @@ class PoincareBallLayer(Function):
             u, v = ctx.saved_tensors
             c = ctx.c
             grad_u = grad_v = None
+            if not _HAS_NATIVE:
+                grad_u, grad_v = autograd_vjp(
+                    lambda u_, v_: poincare_ball_layer_torch(u_, v_, float(c), float(t)),
+                    grad_output, u, v,
+                )
+                return grad_u, grad_v, None, None, None, None, None, None
             # CUDA 경로는 실제 바인딩이 존재할 때만 사용
             if (
                 grad_output.is_cuda
@@ -187,6 +226,8 @@ def poincare_to_lorentz(x: Tensor, c: float) -> Tensor:
     """
     푸앵카레 공 모델에서 로렌츠 모델로 변환합니다.
     """
+    if not _HAS_NATIVE:
+        return poincare_to_lorentz_torch(x, c)
     output_np = _rust.poincare_to_lorentz_cpu(x.cpu().numpy(), c)
     return torch.from_numpy(output_np).to(x.device)
 
@@ -194,6 +235,8 @@ def poincare_to_klein(x: Tensor, c: float) -> Tensor:
     """
     푸앵카레 공 모델에서 클라인 모델로 변환합니다.
     """
+    if not _HAS_NATIVE:
+        return poincare_to_klein_torch(x, c)
     output_np = _rust.poincare_to_klein_cpu(x.cpu().numpy(), c)
     return torch.from_numpy(output_np).to(x.device)
 

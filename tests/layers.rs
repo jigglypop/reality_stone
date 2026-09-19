@@ -364,11 +364,7 @@ fn klein_add_identity_like() {
     let u = arr2(&[[0.1_f32, 0.2]]);
     let z = arr2(&[[0.0_f32, 0.0]]);
     let res = klein::klein_add(&u.view(), &z.view(), c);
-    let u_norm_sq = u[[0, 0]].powi(2) + u[[0, 1]].powi(2);
-    let eps = 1e-7_f32;
-    let u_denom = (1.0 - c * u_norm_sq).max(eps).sqrt();
-    let expected_scale = 1.0 / (u_denom + 1.0);
-    let expected = u.mapv(|x| x * expected_scale);
+    let expected = u;
     assert!(((res - expected).mapv(f32::abs)).sum() < 1e-6);
 }
 

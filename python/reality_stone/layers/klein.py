@@ -4,6 +4,18 @@ from torch.autograd import Function
 from .. import _rust, _has_cuda
 import math
 from .poincare import poincare_to_klein
+from .._fallback import (
+    autograd_vjp,
+    dynamic_curvature,
+    dynamic_curvature_torch,
+    einstein_add_torch,
+    klein_distance_torch,
+    mobius_scalar_torch,
+    poincare_to_klein_torch,
+)
+
+# The pure-Python ``_rust.py`` stub is not a native backend; only a compiled module is.
+_HAS_NATIVE = _rust is not None and not bool(getattr(_rust, "IS_FALLBACK", False))
 
 class KleinLayer(Function):
     @staticmethod
@@ -29,6 +41,10 @@ class KleinLayer(Function):
                 kappa_val = kappas.item()
             else:
                 kappa_val = kappas[layer_idx].item()
+            if not _HAS_NATIVE:
+                # Klein geodesics are Euclidean chords, so this blend stays on the geodesic.
+                ctx.c_val = dynamic_curvature(kappa_val, c_min, c_max)
+                return (1.0 - float(t)) * u + float(t) * v
             if hasattr(_rust, "klein_layer_layerwise_cpu"):
                 out_np, c_val = _rust.klein_layer_layerwise_cpu(
                     u.cpu().numpy(), v.cpu().numpy(), kappa_val, layer_idx, c_min, c_max, t
@@ -43,6 +59,8 @@ class KleinLayer(Function):
         ctx.use_dynamic = False
         ctx.c = c if c is not None else 1.0
         ctx.save_for_backward(u, v)
+        if not _HAS_NATIVE:
+            return (1.0 - float(t)) * u + float(t) * v
         out_np = _rust.klein_layer_forward(u.cpu().numpy(), v.cpu().numpy(), float(ctx.c), t)
         return torch.from_numpy(out_np).to(u.device)
 
@@ -68,6 +86,8 @@ class KleinLayer(Function):
             u, v = ctx.saved_tensors
             c = float(ctx.c)
         grad_u = grad_v = None
+        if not _HAS_NATIVE:
+            return grad_output * (1.0 - float(t)), grad_output * float(t), None, None, None, None, None, None
         
         if grad_output.is_cuda and _has_cuda:
             grad_u = torch.empty_like(u)
@@ -92,14 +112,21 @@ class KleinLayer(Function):
         return grad_u, grad_v, None, None, None, None, None, None
 
 def klein_add(u: Tensor, v: Tensor, c: float) -> Tensor:
+    if not _HAS_NATIVE:
+        return einstein_add_torch(u, v, c)
     result_np = _rust.klein_add(u.cpu().numpy(), v.cpu().numpy(), c)
     return torch.from_numpy(result_np).to(u.device)
 
 def klein_scalar_mul(x: Tensor, r: float, c: float) -> Tensor:
+    if not _HAS_NATIVE:
+        return mobius_scalar_torch(x, r, c)
     result_np = _rust.klein_scalar(x.cpu().numpy(), r, c)
     return torch.from_numpy(result_np).to(x.device)
 
 def klein_distance(x: Tensor, y: Tensor, c: float) -> Tensor:
+    if not _HAS_NATIVE:
+        c_val = float(c.detach().cpu().item()) if isinstance(c, Tensor) else float(c)
+        return klein_distance_torch(x, y, c_val)
     if isinstance(c, Tensor):
         eps = 1e-7
         c_t = c
@@ -120,10 +147,17 @@ def klein_distance(x: Tensor, y: Tensor, c: float) -> Tensor:
     return torch.from_numpy(result_np).to(x.device)
 
 def klein_to_poincare(x: Tensor, c: float) -> Tensor:
+    if not _HAS_NATIVE:
+        den = 1.0 + torch.sqrt((1.0 - float(c) * (x * x).sum(dim=-1, keepdim=True)).clamp_min(0.0))
+        return x / den.clamp_min(1e-7)
     result_np = _rust.klein_to_poincare(x.cpu().numpy(), c)
     return torch.from_numpy(result_np).to(x.device)
 
 def klein_to_lorentz(x: Tensor, c: float) -> Tensor:
+    if not _HAS_NATIVE:
+        x2 = (x * x).sum(dim=-1, keepdim=True)
+        gamma = torch.rsqrt((1.0 - float(c) * x2).clamp_min(1e-7))
+        return torch.cat([gamma, gamma * x], dim=-1)
     result_np = _rust.klein_to_lorentz(x.cpu().numpy(), c)
     return torch.from_numpy(result_np).to(x.device) 
 
@@ -136,7 +170,10 @@ class KleinFromPoincare(Function):
             ctx.c_max = c_max
             ctx.save_for_backward(x, kappas)
             
-            output_np, c_val = _rust.from_poincare_dynamic_cpu(
+            if not _HAS_NATIVE:
+                ctx.c_val = dynamic_curvature(float(kappas.item()), c_min, c_max)
+                return poincare_to_klein_torch(x, abs(ctx.c_val))
+            output_np, c_val = _rust.klein_from_poincare_dynamic_cpu(
                 x.cpu().numpy(), kappas.item(), c_min, c_max
             )
             ctx.c_val = c_val
@@ -153,16 +190,25 @@ class KleinFromPoincare(Function):
     def backward(ctx, grad_output: Tensor):
         if ctx.use_dynamic:
             x, kappas = ctx.saved_tensors
-            grad_x_np, grad_kappa_val = _rust.from_poincare_dynamic_backward_cpu(
+            if not _HAS_NATIVE:
+                c_min, c_max = float(ctx.c_min), float(ctx.c_max)
+
+                def _fn(x_, k_):
+                    return poincare_to_klein_torch(x_, dynamic_curvature_torch(k_, c_min, c_max).abs())
+
+                grad_x, grad_k = autograd_vjp(_fn, grad_output, x, kappas.reshape(()))
+                return grad_x, None, grad_k.reshape(kappas.shape), None, None
+            grad_x_np, grad_kappa_val = _rust.klein_from_poincare_dynamic_backward_cpu(
                 grad_output.cpu().numpy(), x.cpu().numpy(), kappas.item(), ctx.c_min, ctx.c_max
             )
             grad_x = torch.from_numpy(grad_x_np).to(grad_output.device)
             grad_kappas = torch.tensor(grad_kappa_val, device=kappas.device)
             return grad_x, None, grad_kappas, None, None
         else:
-            # VJP for non-dynamic version is not implemented yet.
+            # The static conversion is an exact torch formula; its VJP comes from autograd
+            # regardless of backend.
             x, = ctx.saved_tensors
-            grad_x = torch.zeros_like(x)
+            (grad_x,) = autograd_vjp(lambda x_: poincare_to_klein_torch(x_, float(ctx.c)), grad_output, x)
             return grad_x, None, None, None, None
 
 def from_poincare(x: Tensor, c: float = None, kappas: Tensor = None, c_min: float = -2.0, c_max: float = -0.1) -> Tensor:

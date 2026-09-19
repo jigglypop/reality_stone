@@ -46,9 +46,9 @@ pub fn extract_metric_cuda(
     (u, g, v)
 }
 
-/// CPU 폴백 (CUDA 없을 때) - Random Projection
-#[cfg(not(feature = "cuda"))]
-pub fn extract_metric_cuda(
+/// CPU random-projection approximation. Always available; `_calibration_data`,
+/// `_num_steps`, `_curvature` and `_lr` are accepted for signature parity only.
+pub fn extract_metric_random_projection(
     w: ArrayView2<f32>,
     _calibration_data: ArrayView2<f32>,
     target_dim: usize,

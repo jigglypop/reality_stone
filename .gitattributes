@@ -3,3 +3,6 @@ python/** -text
 src/** -text
 tests/** -text
 examples/** -text
+.editorconfig -text
+LICENSE -text
+build.rs -text
